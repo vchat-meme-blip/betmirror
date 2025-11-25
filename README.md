@@ -100,8 +100,6 @@ Fund your trading bot from anywhere.
 
 ---
 
----
-
 ## 📸 Screenshots
 
 ![Dashboard View](./docs/assets/dashboard_view.png)
