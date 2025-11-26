@@ -9,7 +9,7 @@ import {
   CheckCircle2, ArrowDownCircle, ArrowUpCircle, Brain, AlertCircle, Trophy, Globe, Zap, LogOut,
   Info, HelpCircle, ChevronRight, Rocket, Gauge, MessageSquare, Star, ArrowRightLeft, LifeBuoy,
   Sun, Moon, Loader2, Timer, Fuel, Check, BarChart3, ChevronDown, MousePointerClick,
-  Zap as ZapIcon
+  Zap as ZapIcon, FileText, Twitter, Github
 } from 'lucide-react';
 import { web3Service, USDC_POLYGON, USDC_ABI } from './src/services/web3.service';
 import { lifiService, BridgeTransactionRecord } from './src/services/lifi-bridge.service';
@@ -1533,7 +1533,7 @@ const HeroBackground = () => {
 }
 
 const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, theme: string, toggleTheme: () => void }) => (
-    <div className="min-h-screen bg-gray-50 dark:bg-[#050505] font-sans transition-colors duration-300 flex flex-col relative overflow-hidden">
+    <div className="min-h-screen bg-gray-50 dark:bg-[#050505] font-sans transition-colors duration-300 flex flex-col relative overflow-x-hidden">
         
         <HeroBackground />
 
@@ -1548,9 +1548,9 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
              </button>
         </div>
 
-        <div className="flex-1 flex flex-col items-center justify-center px-6 z-10 w-full max-w-7xl mx-auto relative">
+        {/* Main Hero Section - Centered Vertically */}
+        <div className="flex-1 flex flex-col items-center justify-center px-6 z-10 w-full max-w-7xl mx-auto relative min-h-[90vh]">
             
-            {/* Main Content - Centered Vertically */}
             <div className="text-center flex flex-col items-center">
                 
                 {/* Logo Icon with Shadow Glow */}
@@ -1561,25 +1561,25 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                     </div>
                 </div>
 
-                {/* V2 Pill - Floating above title */}
+                {/* V2 Pill */}
                 <div className="mb-6 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-100">
                     <span className="px-4 py-1.5 rounded-full bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/50 text-blue-600 dark:text-blue-400 text-[10px] font-bold uppercase tracking-widest">
                         Account Abstraction V2 Live
                     </span>
                 </div>
 
-                {/* Main Title - Clean & Bold */}
+                {/* Main Title */}
                 <h1 className="text-5xl md:text-7xl font-black tracking-tight text-gray-900 dark:text-white mb-6 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-200">
                     BET <span className="text-blue-600">MIRROR</span>
                 </h1>
 
-                {/* Motto - Clean Sans */}
+                {/* Motto */}
                 <p className="text-lg text-gray-500 dark:text-gray-400 font-medium max-w-lg mx-auto leading-relaxed animate-in fade-in slide-in-from-bottom-4 duration-700 delay-300">
                     The institutional-grade prediction market terminal.<br/>
                     Non-Custodial. AI-Powered. 24/7 Cloud Execution.
                 </p>
 
-                {/* CTA Button - High Contrast */}
+                {/* CTA Button */}
                 <div className="mt-12 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-400 w-full max-w-xs">
                     <button 
                         onClick={onConnect} 
@@ -1602,23 +1602,152 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                     </div>
                 </div>
 
-            </div>
-
-            {/* Footer Logos - Pushed to bottom, tiny & subtle */}
-            <div className="absolute bottom-12 left-0 right-0 flex flex-col items-center gap-6 animate-in fade-in duration-1000 delay-700">
-                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.3em] opacity-50">
-                    POWERED BY
-                </p>
-                <div className="flex gap-12 opacity-30 grayscale hover:grayscale-0 hover:opacity-100 transition-all duration-500">
-                    <img src="https://cryptologos.cc/logos/polygon-matic-logo.svg?v=026" alt="Polygon" className="h-5 w-auto" />
-                    <img src="https://cryptologos.cc/logos/ethereum-eth-logo.svg?v=026" alt="Ethereum" className="h-5 w-auto" />
-                    <img src="https://cryptologos.cc/logos/base-base-logo.svg?v=026" alt="Base" className="h-5 w-auto" />
-                    <img src="https://cryptologos.cc/logos/arbitrum-arb-logo.svg?v=026" alt="Arbitrum" className="h-5 w-auto" />
-                    <img src="https://cryptologos.cc/logos/solana-sol-logo.svg?v=026" alt="Solana" className="h-4 w-auto mt-0.5" />
+                {/* Footer Logos - Subtle */}
+                <div className="mt-32 flex flex-col items-center gap-6 animate-in fade-in duration-1000 delay-700">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.3em] opacity-50">
+                        POWERED BY
+                    </p>
+                    <div className="flex gap-12 opacity-30 grayscale hover:grayscale-0 hover:opacity-100 transition-all duration-500">
+                        <img src="https://cryptologos.cc/logos/polygon-matic-logo.svg?v=026" alt="Polygon" className="h-5 w-auto" />
+                        <img src="https://cryptologos.cc/logos/ethereum-eth-logo.svg?v=026" alt="Ethereum" className="h-5 w-auto" />
+                        <img src="https://cryptologos.cc/logos/base-base-logo.svg?v=026" alt="Base" className="h-5 w-auto" />
+                        <img src="https://cryptologos.cc/logos/arbitrum-arb-logo.svg?v=026" alt="Arbitrum" className="h-5 w-auto" />
+                        <img src="https://cryptologos.cc/logos/solana-sol-logo.svg?v=026" alt="Solana" className="h-4 w-auto mt-0.5" />
+                    </div>
                 </div>
+
+            </div>
+            
+            {/* Scroll Indicator */}
+            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 animate-bounce opacity-20">
+                <ChevronDown className="text-gray-400 w-6 h-6"/>
             </div>
 
         </div>
+
+        {/* --- "SECOND PAGE" CONTENT --- */}
+        <div className="w-full bg-gray-100 dark:bg-[#030303] border-t border-gray-200 dark:border-white/5 relative z-20">
+            
+            {/* Markets Status Grid */}
+            <div className="max-w-5xl mx-auto py-32 px-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
+                    
+                    {/* Active Market Card - Rebranded */}
+                    <div className="p-10 rounded-3xl bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 shadow-lg hover:shadow-xl transition-all duration-300 group hover:-translate-y-1">
+                        <div className="flex items-center gap-3 mb-8">
+                            <span className="relative flex h-2.5 w-2.5">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+                            </span>
+                            <span className="text-[10px] font-bold text-green-600 dark:text-green-400 uppercase tracking-wider">Live Integration</span>
+                        </div>
+                        <div className="flex items-center gap-5 mb-6">
+                            <img src="https://assets.polymarket.com/static/logo-round.svg" alt="Polymarket" className="w-14 h-14 rounded-full" referrerPolicy="no-referrer" onError={(e) => e.currentTarget.src = 'https://cryptologos.cc/logos/polygon-matic-logo.svg?v=026'}/>
+                            <h3 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">Polymarket</h3>
+                        </div>
+                        <p className="text-base text-gray-500 dark:text-gray-400 font-medium leading-relaxed mb-6">
+                            The most active market for blockchain wallets trading. Copy any top trader instantly.
+                        </p>
+                        <div className="inline-flex items-center gap-2 text-xs font-bold text-blue-600 dark:text-blue-500 uppercase tracking-wider group-hover:translate-x-1 transition-transform">
+                            Start Copying <ArrowRightLeft size={12}/>
+                        </div>
+                    </div>
+
+                    {/* Coming Soon Card */}
+                    <div className="p-10 rounded-3xl bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/5 opacity-60 hover:opacity-100 transition-all duration-300 group">
+                        <div className="flex items-center gap-3 mb-8">
+                            <span className="w-2.5 h-2.5 rounded-full bg-yellow-500"></span>
+                            <span className="text-[10px] font-bold text-yellow-600 dark:text-yellow-500 uppercase tracking-wider">Coming Soon</span>
+                        </div>
+                        <div className="flex items-center gap-5 mb-6">
+                             <div className="w-14 h-14 rounded-full bg-gray-200 dark:bg-gray-800 flex items-center justify-center font-bold text-gray-500 text-2xl">pb</div>
+                            <h3 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">PredictBase</h3>
+                        </div>
+                        <p className="text-base text-gray-500 dark:text-gray-400 font-medium leading-relaxed">
+                            Next-generation sports & crypto markets with high-frequency liquidity.
+                        </p>
+                    </div>
+
+                </div>
+
+                {/* Suggestion Input */}
+                <div className="pt-24 flex justify-center">
+                    <div className="inline-flex flex-col items-center gap-4 group cursor-pointer opacity-60 hover:opacity-100 transition-opacity">
+                        <div className="p-4 rounded-full bg-white dark:bg-white/10 border border-gray-200 dark:border-white/10 text-gray-400 group-hover:text-blue-500 group-hover:border-blue-200 transition-all">
+                            <MousePointerClick size={24} />
+                        </div>
+                        <p className="text-xs font-bold text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300 transition-colors uppercase tracking-widest">
+                            Suggest a market integration
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {/* --- HOW IT WORKS SECTION --- */}
+            <div className="w-full max-w-7xl mx-auto pb-32 px-6 border-t border-gray-200 dark:border-white/5 pt-32">
+                <div className="text-center mb-24">
+                    <span className="text-blue-600 dark:text-blue-500 text-xs font-bold uppercase tracking-widest">Architecture</span>
+                    <h2 className="text-4xl md:text-5xl font-black text-gray-900 dark:text-white mt-4 tracking-tight">How It Works</h2>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-12">
+                    {/* Step 1 */}
+                    <div className="p-10 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-[2rem] hover:border-blue-500/30 transition-all shadow-sm group">
+                        <div className="w-16 h-16 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
+                            <Wallet size={32}/>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">1. Connect & Deploy</h3>
+                        <p className="text-gray-500 text-sm leading-relaxed">
+                            Link your wallet. We instantly deploy a non-custodial <strong>Smart Account</strong> (ZeroDev Kernel) on Polygon. This is your dedicated trading vault.
+                        </p>
+                    </div>
+
+                    {/* Step 2 */}
+                    <div className="p-10 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-[2rem] hover:border-purple-500/30 transition-all shadow-sm group">
+                        <div className="w-16 h-16 bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
+                            <Key size={32}/>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">2. Total Control</h3>
+                        <p className="text-gray-500 text-sm leading-relaxed">
+                            You hold the "Owner Key". You can revoke our trading permissions or trigger a <strong>trustless withdrawal</strong> directly on the blockchain at any time.
+                        </p>
+                    </div>
+
+                    {/* Step 3 */}
+                    <div className="p-10 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-[2rem] hover:border-green-500/30 transition-all shadow-sm group">
+                        <div className="w-16 h-16 bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
+                            <Server size={32}/>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">3. Passive Alpha</h3>
+                        <p className="text-gray-500 text-sm leading-relaxed">
+                            Find the best trader in the Registry and hit Copy. Our Node.js engine monitors signals 24/7 so you can <strong>earn while you sleep</strong>.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {/* --- FOOTER --- */}
+            <footer className="border-t border-gray-200 dark:border-white/5 bg-white dark:bg-[#020202]">
+                <div className="max-w-7xl mx-auto px-6 py-12 flex flex-col md:flex-row justify-between items-center gap-6">
+                    <div className="flex items-center gap-2 opacity-50 hover:opacity-100 transition-opacity">
+                        <Activity size={16} className="text-blue-600 dark:text-white"/>
+                        <span className="text-xs font-bold text-gray-900 dark:text-white tracking-widest">BET MIRROR PRO</span>
+                    </div>
+                    
+                    <div className="flex gap-8">
+                        <a href="#" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors"><FileText size={16}/></a>
+                        <a href="#" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors"><Twitter size={16}/></a>
+                        <a href="#" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors"><Github size={16}/></a>
+                    </div>
+
+                    <div className="text-[10px] text-gray-400 font-medium">
+                        © 2024 PolyCafe Labs. All rights reserved.
+                    </div>
+                </div>
+            </footer>
+
+        </div>
+
     </div>
 );
 
