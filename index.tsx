@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import axios from 'axios';
+import './src/index.css';
 import { 
   Shield, Play, Square, Activity, Settings, Wallet, Key, 
   Terminal, Trash2, Eye, EyeOff, Save, Lock, Users, RefreshCw, Server, Sparkles, DollarSign,
@@ -759,13 +760,10 @@ const App = () => {
 
       {/* --- MAIN CONTENT --- */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 overflow-hidden">
-        
-        {/* VIEW: DASHBOARD */}
         {activeTab === 'dashboard' && (
             <div className="grid grid-cols-1 md:grid-cols-12 gap-6 h-full animate-in fade-in slide-in-from-bottom-4 duration-300">
                 {/* Left Panel */}
                 <div className="col-span-12 md:col-span-8 flex flex-col gap-6">
-                    
                     {/* Wallet Assets Matrix */}
                     <div className="glass-panel p-5 rounded-xl relative overflow-hidden">
                         <div className="absolute top-0 right-0 p-4 opacity-5 text-blue-600 dark:text-white">
@@ -1544,28 +1542,83 @@ const SmartLogo = ({ src, fallbackText, className }: { src: string, fallbackText
     )
 }
 
+// --- MIRROR BACKGROUND COMPONENT ---
+const MirrorBackground = () => {
+  return (
+    <div className="fixed inset-0 overflow-hidden pointer-events-none z-0 perspective-[1000px]">
+       {/* Styles for the animation */}
+       <style>{`
+         @keyframes riseAndShine {
+           0% { transform: translateY(120vh) scale(0.5) rotateX(10deg) rotateY(0deg); opacity: 0; }
+           20% { opacity: 0.6; }
+           100% { transform: translateY(-20vh) scale(1.5) rotateX(20deg) rotateY(5deg); opacity: 0; }
+         }
+         @keyframes glare {
+           0% { background-position: -200% 0; }
+           100% { background-position: 200% 0; }
+         }
+         .mirror-pane {
+           background: linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.01) 50%, rgba(255,255,255,0.05) 100%);
+           box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+           backdrop-filter: blur(4px);
+           -webkit-backdrop-filter: blur(4px);
+           border: 1px solid rgba(255, 255, 255, 0.18);
+           position: absolute;
+           overflow: hidden;
+         }
+         .mirror-pane::after {
+           content: '';
+           position: absolute;
+           top: 0; left: 0; right: 0; bottom: 0;
+           background: linear-gradient(105deg, transparent 20%, rgba(255,255,255,0.4) 25%, transparent 30%);
+           transform: skewX(-20deg);
+           animation: glare 4s infinite linear;
+           background-size: 200% 100%;
+         }
+       `}</style>
+
+       {/* Ambient Background Layer */}
+       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-900/10 via-[#050505] to-[#050505] pointer-events-none"></div>
+
+       {/* Zone 1: Left Cluster */}
+       <div className="mirror-pane w-64 h-96 left-[5%] bottom-[-20%] rounded-xl opacity-0" 
+            style={{ animation: 'riseAndShine 15s infinite linear', animationDelay: '0s' }}></div>
+       <div className="mirror-pane w-48 h-64 left-[12%] bottom-[-20%] rounded-lg opacity-0" 
+            style={{ animation: 'riseAndShine 12s infinite linear', animationDelay: '5s' }}></div>
+
+       {/* Zone 2: Center Deep */}
+       <div className="mirror-pane w-96 h-[600px] left-[35%] bottom-[-40%] rounded-3xl blur-[2px] opacity-0" 
+            style={{ animation: 'riseAndShine 20s infinite linear', animationDelay: '2s', zIndex: -1 }}></div>
+
+       {/* Zone 3: Right Cluster */}
+       <div className="mirror-pane w-56 h-80 right-[8%] bottom-[-20%] rounded-xl opacity-0" 
+            style={{ animation: 'riseAndShine 18s infinite linear', animationDelay: '1s' }}></div>
+        <div className="mirror-pane w-40 h-60 right-[18%] bottom-[-20%] rounded-lg opacity-0" 
+            style={{ animation: 'riseAndShine 14s infinite linear', animationDelay: '8s' }}></div>
+    </div>
+  )
+}
+
 const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, theme: string, toggleTheme: () => void }) => (
     <div className="fixed inset-0 z-[100] bg-white dark:bg-[#050505] overflow-y-auto overflow-x-hidden font-sans transition-colors duration-300">
         
+        <MirrorBackground />
+
         {/* Floating Header */}
         <div className="absolute top-0 left-0 w-full p-6 flex justify-between items-center z-50">
-             <div className="flex items-center gap-2 opacity-50">
+             <div className="flex items-center gap-2 opacity-80">
                  <Activity size={20} className="text-blue-600 dark:text-white"/>
                  <span className="font-bold text-sm text-gray-900 dark:text-white tracking-widest">BET MIRROR</span>
              </div>
              <button 
                 onClick={toggleTheme} 
-                className="p-3 bg-gray-100 dark:bg-white/10 rounded-full hover:scale-110 transition-all shadow-lg backdrop-blur-md text-gray-600 dark:text-white"
+                className="p-3 bg-white/50 dark:bg-white/10 rounded-full hover:scale-110 transition-all shadow-lg backdrop-blur-md text-gray-600 dark:text-white border border-white/20"
              >
                 {theme === 'light' ? <Moon size={18}/> : <Sun size={18}/>}
              </button>
         </div>
 
-        {/* Ambient Background */}
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-100/50 via-white to-white dark:from-blue-900/20 dark:via-[#050505] dark:to-[#050505] pointer-events-none"></div>
-        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 brightness-100 contrast-150 pointer-events-none mix-blend-overlay"></div>
-
-        <div className="relative min-h-screen flex flex-col items-center pt-32 pb-16 px-6">
+        <div className="relative min-h-screen flex flex-col items-center pt-32 pb-16 px-6 z-10">
             
             {/* Header / Branding */}
             <div className="text-center space-y-8 max-w-4xl w-full animate-in fade-in slide-in-from-bottom-8 duration-700">
@@ -1631,7 +1684,7 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto pt-12 text-left w-full">
                     
                     {/* Active Market Card */}
-                    <div className="relative overflow-hidden p-6 rounded-3xl bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 shadow-xl hover:shadow-2xl hover:border-blue-500/30 transition-all duration-300 group">
+                    <div className="relative overflow-hidden p-6 rounded-3xl bg-white/80 dark:bg-[#0a0a0a]/80 border border-gray-200 dark:border-white/10 shadow-xl hover:shadow-2xl hover:border-blue-500/30 transition-all duration-300 group backdrop-blur-md">
                         <div className="absolute top-0 right-0 p-4 opacity-5 transform group-hover:scale-110 transition-transform duration-500">
                             <TrendingUp size={100} />
                         </div>
@@ -1661,7 +1714,7 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                     </div>
 
                     {/* Coming Soon Card */}
-                    <div className="relative overflow-hidden p-6 rounded-3xl bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/5 opacity-90 hover:opacity-100 transition-opacity duration-300">
+                    <div className="relative overflow-hidden p-6 rounded-3xl bg-gray-50/50 dark:bg-white/5 border border-gray-200 dark:border-white/5 opacity-90 hover:opacity-100 transition-opacity duration-300 backdrop-blur-md">
                         <div className="relative z-10">
                             <div className="flex items-center gap-2 mb-4">
                                 <span className="w-2.5 h-2.5 rounded-full bg-yellow-500"></span>
@@ -1734,7 +1787,7 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                     {/* Step 1 */}
                     <div className="relative group">
                         <div className="absolute inset-0 bg-gradient-to-br from-blue-500/10 to-purple-500/10 rounded-3xl transform group-hover:scale-105 transition-transform duration-500"></div>
-                        <div className="relative p-8 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-3xl h-full flex flex-col">
+                        <div className="relative p-8 bg-white/80 dark:bg-[#0a0a0a]/80 border border-gray-200 dark:border-white/10 rounded-3xl h-full flex flex-col backdrop-blur-md">
                             <div className="w-14 h-14 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-2xl flex items-center justify-center mb-6">
                                 <Wallet size={28}/>
                             </div>
@@ -1748,7 +1801,7 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                     {/* Step 2 */}
                     <div className="relative group">
                         <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 to-pink-500/10 rounded-3xl transform group-hover:scale-105 transition-transform duration-500"></div>
-                        <div className="relative p-8 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-3xl h-full flex flex-col">
+                        <div className="relative p-8 bg-white/80 dark:bg-[#0a0a0a]/80 border border-gray-200 dark:border-white/10 rounded-3xl h-full flex flex-col backdrop-blur-md">
                             <div className="w-14 h-14 bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 rounded-2xl flex items-center justify-center mb-6">
                                 <Key size={28}/>
                             </div>
@@ -1762,7 +1815,7 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                     {/* Step 3 */}
                     <div className="relative group">
                         <div className="absolute inset-0 bg-gradient-to-br from-green-500/10 to-emerald-500/10 rounded-3xl transform group-hover:scale-105 transition-transform duration-500"></div>
-                        <div className="relative p-8 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-3xl h-full flex flex-col">
+                        <div className="relative p-8 bg-white/80 dark:bg-[#0a0a0a]/80 border border-gray-200 dark:border-white/10 rounded-3xl h-full flex flex-col backdrop-blur-md">
                             <div className="w-14 h-14 bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 rounded-2xl flex items-center justify-center mb-6">
                                 <Server size={28}/>
                             </div>
