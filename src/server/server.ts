@@ -89,6 +89,16 @@ async function startUserBot(userId: string, config: BotConfig) {
 
 // --- API ROUTES ---
 
+// 0. Health Check (For Sliplane/AWS/Docker)
+app.get('/health', (req, res) => {
+    res.status(200).json({ 
+        status: 'ok', 
+        uptime: process.uptime(),
+        activeBots: ACTIVE_BOTS.size,
+        timestamp: new Date().toISOString()
+    });
+});
+
 // 1. Check Status / Init
 app.post('/api/wallet/status', async (req: any, res: any) => {
   const { userId } = req.body; 
