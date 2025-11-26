@@ -1549,7 +1549,7 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
         </div>
 
         {/* Main Hero Section - Centered Vertically */}
-        <div className="flex-1 flex flex-col items-center justify-center px-6 z-10 w-full max-w-7xl mx-auto relative min-h-[90vh]">
+        <div className="flex-1 flex flex-col items-center justify-center px-6 z-10 w-full max-w-7xl mx-auto relative min-h-[100vh]">
             
             <div className="text-center flex flex-col items-center">
                 
