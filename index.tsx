@@ -702,7 +702,7 @@ const App = () => {
                 </div>
                 <div>
                     <h1 className="font-bold text-gray-900 dark:text-white tracking-tight leading-none">
-                        <span className="text-blue-600">BET</span> MIRROR
+                        <span className="text-blue-600">BET</span><span className="inline-block [transform:rotateX(180deg)] [text-shadow:0 -1px 0 rgba(0,0,0,0.2)] [background:linear-gradient(to top, rgba(0,0,0,0.1), transparent 40%)] bg-clip-text text-transparent">MIRROR</span>
                     </h1>
                     <span className="text-[10px] text-gray-500 font-mono tracking-widest uppercase">TERMINAL</span>
                 </div>
