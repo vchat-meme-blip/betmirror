@@ -12,8 +12,11 @@ RUN npm ci
 # Copy the rest of the source code
 COPY . .
 
+# CRITICAL FIX: Ensure wallets.txt exists before build/copy
+# This prevents the build from crashing if theres no file locally yet.
+RUN touch wallets.txt
+
 # Run the build script (compiles TS to dist-node and Vite to dist)
-# Ensure your package.json has "build": "tsc && vite build" or similar
 RUN npm run build
 
 # --- Stage 2: Production Runner ---
@@ -36,6 +39,9 @@ COPY --from=builder /app/dist-node ./dist-node
 
 # Copy compiled frontend from builder (for static serving)
 COPY --from=builder /app/dist ./dist
+
+# Copy wallets.txt to the runner's working directory
+COPY --from=builder /app/wallets.txt ./
 
 # Create a non-root user for security
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
