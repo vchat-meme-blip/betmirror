@@ -728,13 +728,21 @@ const App = () => {
       <header className="h-16 border-b border-gray-200 dark:border-terminal-border bg-white/80 dark:bg-terminal-card/50 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 h-full flex items-center justify-between">
             <div className="flex items-center gap-3">
-                <button 
-                    onClick={() => setActiveTab('dashboard')}
-                    className="font-bold text-gray-900 dark:text-white tracking-tight leading-none hover:opacity-80 transition-opacity text-2xl"
-                >
-                    <span className="text-blue-600">BET</span> MIRROR
-                </button>
-                <span className="text-[10px] text-gray-500 font-mono tracking-widest uppercase">TERMINAL</span>
+                <div className="w-8 h-8 rounded bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/30">
+                    <Activity className="text-white" size={18} />
+                </div>
+                <div>
+                    <h1 className="font-bold text-gray-900 dark:text-white tracking-tight leading-none">
+                        <span className="text-blue-600">BET</span>
+                        <span className="relative inline-block">
+                            MIRROR
+                            <span className="absolute left-0 top-full w-full text-center [transform:rotateX(180deg)] scale-y-0.5 origin-top opacity-50 [background:linear-gradient(to top, rgba(0,0,0,0.8), transparent)] bg-clip-text text-transparent">
+                                MIRROR
+                            </span>
+                        </span>
+                    </h1>
+                    <span className="text-[10px] text-gray-500 font-mono tracking-widest uppercase">TERMINAL</span>
+                </div>
             </div>
 
             <nav className="hidden md:flex items-center gap-1 bg-gray-100 dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-lg p-1">
