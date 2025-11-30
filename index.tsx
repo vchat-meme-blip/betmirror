@@ -2078,7 +2078,33 @@ const App = () => {
                     </div>
                 </div>
 
-                {/* 2. CLOB DEEP DIVE */}
+                {/* 2. FUNDING DETAILS (Restored) */}
+                <div className="glass-panel p-8 rounded-2xl border border-gray-200 dark:border-terminal-border relative overflow-hidden group">
+                    <div className="absolute -right-10 -top-10 opacity-5 group-hover:opacity-10 transition-opacity"><Globe size={200}/></div>
+                    <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-6 flex items-center gap-2 relative z-10">
+                        <DollarSign className="text-green-500" size={24}/> Funding Your Bot
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 relative z-10">
+                        <div>
+                            <h4 className="font-bold text-gray-900 dark:text-white flex items-center gap-2 mb-2">
+                                <ArrowRightCircle size={16} className="text-blue-500"/> Direct Deposit
+                            </h4>
+                            <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                                Your Smart Account lives on the <strong>Polygon</strong> blockchain. If you already have USDC on Polygon, simply send it to the address shown in your Dashboard.
+                            </p>
+                        </div>
+                        <div>
+                            <h4 className="font-bold text-gray-900 dark:text-white flex items-center gap-2 mb-2">
+                                <ArrowRightLeft size={16} className="text-orange-500"/> Cross-Chain Bridge
+                            </h4>
+                            <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                                Funds on Solana, Base, or Ethereum? Use the <strong>Bridge Tab</strong>. Our Li.Fi integration will swap your SOL/ETH to USDC and bridge it to Polygon in a single transaction.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* 3. CLOB & ARCHITECTURE (New Tech Specs) */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div className="glass-panel p-8 rounded-2xl border border-gray-200 dark:border-terminal-border bg-blue-50/50 dark:bg-blue-900/5">
                         <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-6 flex items-center gap-2">
@@ -2142,31 +2168,70 @@ const App = () => {
                     </div>
                 </div>
 
-                {/* 3. SECURITY & FAQ */}
+                {/* 4. SECURITY & RECOVERY (Restored Deep Dives) */}
                 <div className="glass-panel p-8 rounded-2xl border border-gray-200 dark:border-terminal-border">
                     <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-6 flex items-center gap-2">
-                        <Lock className="text-orange-500" size={24}/> Non-Custodial Security
+                        <Lock className="text-orange-500" size={24}/> Non-Custodial Security & Recovery
                     </h3>
                     
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <div className="p-4 bg-gray-50 dark:bg-white/5 rounded-xl border border-gray-200 dark:border-white/5">
-                            <h4 className="font-bold text-gray-900 dark:text-white mb-2 text-sm">🔑 Owner Key (You)</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+                        <div className="p-5 bg-gray-50 dark:bg-white/5 rounded-xl border border-gray-200 dark:border-white/5">
+                            <h4 className="font-bold text-gray-900 dark:text-white mb-2 text-sm flex items-center gap-2">
+                                <Key size={16} className="text-blue-500"/> 1. The Owner Key (You)
+                            </h4>
                             <p className="text-xs text-gray-500 leading-relaxed">
-                                Held in your browser wallet. Has <strong>Root Access</strong>. Can withdraw funds, pause the bot, or upgrade the account at any time.
+                                Held in your browser wallet. Has <strong>Root Admin</strong> access. Because the Smart Account is on Polygon, 
+                                you must switch to the Polygon network to sign "Admin" transactions (like withdrawals), even if your main funds are on Solana.
                             </p>
                         </div>
-                        <div className="p-4 bg-gray-50 dark:bg-white/5 rounded-xl border border-gray-200 dark:border-white/5">
-                            <h4 className="font-bold text-gray-900 dark:text-white mb-2 text-sm">🤖 Session Key (Bot)</h4>
+                        <div className="p-5 bg-gray-50 dark:bg-white/5 rounded-xl border border-gray-200 dark:border-white/5">
+                            <h4 className="font-bold text-gray-900 dark:text-white mb-2 text-sm flex items-center gap-2">
+                                <Server size={16} className="text-orange-500"/> 2. The Session Key (Us)
+                            </h4>
                             <p className="text-xs text-gray-500 leading-relaxed">
-                                Held by the server. Restricted by smart contract to <strong>ONLY</strong> call `createOrder`. It physically cannot sign a transfer transaction.
+                                The server holds a limited "Session Key". The Smart Contract is programmed to <strong>REJECT</strong> any withdrawal attempt signed by this key. 
+                                It is only allowed to call `createOrder` on Polymarket.
                             </p>
                         </div>
-                        <div className="p-4 bg-gray-50 dark:bg-white/5 rounded-xl border border-gray-200 dark:border-white/5">
-                            <h4 className="font-bold text-gray-900 dark:text-white mb-2 text-sm">⛽ Zero Gas</h4>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-8 border-t border-gray-200 dark:border-gray-800">
+                        <div>
+                            <h4 className="font-bold text-gray-900 dark:text-white mb-3 text-sm flex items-center gap-2">
+                                <Fuel size={16} className="text-purple-500"/> Gas Abstraction (Paymaster)
+                            </h4>
                             <p className="text-xs text-gray-500 leading-relaxed">
-                                We use a Paymaster. You pay fees in USDC (deducted from trade profit). You never need to buy or hold MATIC/POL.
+                                Normally, you need <strong>MATIC</strong> (POL) to pay for fees on Polygon. This is annoying. 
+                                We use a "Paymaster" service. When you trade, the Paymaster pays the MATIC for you. 
+                                In exchange, the Smart Account takes a tiny amount of USDC to reimburse it. 
+                                <strong>Result: You never need to buy MATIC.</strong>
                             </p>
                         </div>
+                        <div>
+                            <h4 className="font-bold text-gray-900 dark:text-white mb-3 text-sm flex items-center gap-2">
+                                <RefreshCw size={16} className="text-red-500"/> Emergency Recovery
+                            </h4>
+                            <p className="text-xs text-gray-500 leading-relaxed">
+                                <strong>"What if the website disappears?"</strong><br/>
+                                Your funds live on the Blockchain, not our servers. Your address is deterministic. 
+                                You can interact with it directly via any ERC-4337 explorer (like <a href="https://jiffyscan.xyz/" target="_blank" className="text-blue-500 hover:underline">Jiffyscan</a>) or the ZeroDev recovery portal. 
+                                As long as you have your MetaMask seed phrase, your funds are safe.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* 5. ECONOMICS (Restored) */}
+                <div className="glass-panel p-6 rounded-xl border border-gray-200 dark:border-terminal-border bg-green-50/50 dark:bg-green-900/5 flex items-start gap-4">
+                    <div className="p-3 bg-green-100 dark:bg-green-900/20 rounded-full text-green-600 dark:text-green-500 shrink-0">
+                        <Coins size={24}/>
+                    </div>
+                    <div>
+                        <h4 className="font-bold text-gray-900 dark:text-white mb-1">How does the 1% Fee work?</h4>
+                        <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                            When you copy a profitable trade, 1% of the <em>net profit</em> is automatically sent to the wallet that you copied (if they are registered). 
+                            This incentivizes the best traders to list themselves in the Registry.
+                        </p>
                     </div>
                 </div>
 
