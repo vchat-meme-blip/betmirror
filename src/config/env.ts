@@ -17,6 +17,11 @@ export type RuntimeEnv = {
   polymarketApiSecret?: string;
   polymarketApiPassphrase?: string;
   
+  // Polymarket Builder Program Credentials
+  builderApiKey?: string;
+  builderApiSecret?: string;
+  builderApiPassphrase?: string;
+  
   // The Global Registry (The "Backend" that tracks who listed what)
   registryApiUrl: string;
 
@@ -105,9 +110,16 @@ export function loadEnv(): RuntimeEnv {
     aggregationEnabled: String(process.env.TRADE_AGGREGATION_ENABLED ?? 'false') === 'true',
     aggregationWindowSeconds: Number(process.env.TRADE_AGGREGATION_WINDOW_SECONDS ?? 300),
     usdcContractAddress: process.env.USDC_CONTRACT_ADDRESS || '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+    
+    // Trade API Keys
     polymarketApiKey: process.env.POLYMARKET_API_KEY,
     polymarketApiSecret: process.env.POLYMARKET_API_SECRET,
     polymarketApiPassphrase: process.env.POLYMARKET_API_PASSPHRASE,
+    
+    // Builder Program Keys (Attribution)
+    builderApiKey: process.env.POLY_BUILDER_API_KEY,
+    builderApiSecret: process.env.POLY_BUILDER_SECRET,
+    builderApiPassphrase: process.env.POLY_BUILDER_PASSPHRASE,
     
     registryApiUrl: process.env.REGISTRY_API_URL || 'http://localhost:3000/api',
 

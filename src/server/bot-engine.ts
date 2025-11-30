@@ -14,6 +14,7 @@ import { ProxyWalletConfig } from '../domain/wallet.types.js';
 import { ClobClient, Chain, ApiKeyCreds } from '@polymarket/clob-client';
 import { Wallet, AbstractSigner, Provider, JsonRpcProvider, TransactionRequest } from 'ethers';
 import { BotLog } from '../database/index.js';
+import { BuilderConfig, BuilderApiKeyCreds } from '@polymarket/builder-signing-sdk';
 
 // --- ADAPTER: ZeroDev (Viem) -> Ethers.js Signer ---
 class KernelEthersSigner extends AbstractSigner {
@@ -224,12 +225,29 @@ export class BotEngine {
           }
       }
 
-      // Initialize Polymarket Client
+      // --- BUILDER PROGRAM INTEGRATION ---
+      let builderConfig: BuilderConfig | undefined;
+      if (process.env.POLY_BUILDER_API_KEY && process.env.POLY_BUILDER_SECRET && process.env.POLY_BUILDER_PASSPHRASE) {
+           const builderCreds: BuilderApiKeyCreds = {
+              key: process.env.POLY_BUILDER_API_KEY,
+              secret: process.env.POLY_BUILDER_SECRET,
+              passphrase: process.env.POLY_BUILDER_PASSPHRASE
+          };
+          builderConfig = new BuilderConfig({ localBuilderCreds: builderCreds });
+          await this.addLog('info', '👷 Builder Program Attribution Active (Stamping Trades)');
+      }
+
+      // Initialize Polymarket Client with Builder Attribution
       const clobClient = new ClobClient(
           'https://clob.polymarket.com',
           Chain.POLYGON,
           signerImpl, 
-          clobCreds   
+          clobCreds,
+          undefined, // signatureType
+          undefined, // funderAddress
+          undefined, // ...
+          undefined, // ...
+          builderConfig   
       );
 
       this.client = Object.assign(clobClient, { wallet: signerImpl });

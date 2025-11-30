@@ -3,6 +3,8 @@
 
 ![Bet Mirror Header](./docs/assets/header.png)
 
+**Institutional-grade Polymarket Copy Trading Terminal. Features Non-Custodial Smart Accounts (ERC-4337), AI Risk Analysis (Gemini), and Cross-Chain funding via Li.Fi.**
+
 **Bet Mirror Pro** is an enterprise-grade trading terminal designed to democratize algorithmic prediction market trading. Unlike traditional bots that require custodial private keys, Bet Mirror leverages **ERC-4337 Account Abstraction** to offer a fully non-custodial solution. Users retain full control of their funds while granting restricted "Session Keys" to a cloud-based engine that executes trades 24/7 based on **AI Risk Analysis** and **Copy Trading signals**. The platform includes a built-in "Alpha Registry" marketplace, rewarding top traders with a 1% protocol fee from every copier.
 
 Developed by **PolyCafe**.
@@ -46,6 +48,23 @@ The Alpha Marketplace is now powered by a dedicated **Registry Analytics Service
 *   **Win Rate Calculation:** It tracks "Round Trip" trades (Buying an outcome and Selling it later) to calculate realized PnL and Win Rates accurately.
 *   **Auto-Update:** A background worker updates these stats in the MongoDB Registry every 15 minutes.
 *   **Deep Dive:** Users can click on any trader in the Marketplace to see a detailed modal with their last 50 transactions, helping them make informed copy decisions.
+
+---
+
+## 👷 Builder Program Integration
+
+This platform is a registered **Polymarket Builder**. Every trade executed by the bot is cryptographically stamped with attribution headers.
+
+**To configure your Builder Keys (For Platform Admins):**
+Add the following to your `.env` file:
+
+```env
+POLY_BUILDER_API_KEY=your_builder_key
+POLY_BUILDER_SECRET=your_builder_secret
+POLY_BUILDER_PASSPHRASE=your_passphrase
+```
+
+The system will automatically initialize the `BuilderConfig` and stamp all outgoing orders.
 
 ---
 
