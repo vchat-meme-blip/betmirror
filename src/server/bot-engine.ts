@@ -48,6 +48,13 @@ class KernelEthersSigner extends AbstractSigner {
         });
     }
 
+    // --- COMPATIBILITY SHIM ---
+    // The Polymarket SDK (built for Ethers v5) calls _signTypedData.
+    // Ethers v6 removed the underscore. We map it here to prevent "is not a function" errors.
+    async _signTypedData(domain: any, types: any, value: any): Promise<string> {
+        return this.signTypedData(domain, types, value);
+    }
+
     async signTransaction(tx: TransactionRequest): Promise<string> {
         throw new Error("signTransaction is not supported for KernelEthersSigner. Use sendTransaction to dispatch UserOperations.");
     }

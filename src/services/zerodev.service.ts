@@ -1,4 +1,3 @@
-
 import {
   createKernelAccount,
   createZeroDevPaymasterClient,
@@ -84,13 +83,13 @@ export class ZeroDevService {
       try {
           if (!ownerWalletClient) throw new Error("Missing owner wallet client");
 
-          const ecdsaValidator = await signerToEcdsaValidator(this.publicClient, {
+          const ecdsaValidator = await signerToEcdsaValidator(this.publicClient as any, {
               entryPoint: ENTRY_POINT,
               signer: ownerWalletClient as any,
               kernelVersion: KERNEL_VERSION,
           });
 
-          const account = await createKernelAccount(this.publicClient, {
+          const account = await createKernelAccount(this.publicClient as any, {
               entryPoint: ENTRY_POINT,
               plugins: { sudo: ecdsaValidator },
               kernelVersion: KERNEL_VERSION,
@@ -123,13 +122,13 @@ export class ZeroDevService {
 
     // 3. Create/Resolve the Master Smart Account (Kernel)
     // We use the User's main wallet as the sudo validator
-    const ecdsaValidator = await signerToEcdsaValidator(this.publicClient, {
+    const ecdsaValidator = await signerToEcdsaValidator(this.publicClient as any, {
       entryPoint: ENTRY_POINT,
       signer: ownerWalletClient as any, // Viem wallet client
       kernelVersion: KERNEL_VERSION,
     });
 
-    const masterAccount = await createKernelAccount(this.publicClient, {
+    const masterAccount = await createKernelAccount(this.publicClient as any, {
       entryPoint: ENTRY_POINT,
       plugins: {
         sudo: ecdsaValidator,
@@ -142,7 +141,7 @@ export class ZeroDevService {
     // 4. Create the Permission Plugin (The "Session Slip")
     // We use SudoPolicy for 1-click trading (full trading access), 
     // but we can restrict this to specific Polymarket contracts later.
-    const permissionPlugin = await toPermissionValidator(this.publicClient, {
+    const permissionPlugin = await toPermissionValidator(this.publicClient as any, {
       entryPoint: ENTRY_POINT,
       signer: sessionKeySigner,
       policies: [
@@ -152,7 +151,7 @@ export class ZeroDevService {
     });
 
     // 5. Create the Session Key Account Object
-    const sessionKeyAccountObj = await createKernelAccount(this.publicClient, {
+    const sessionKeyAccountObj = await createKernelAccount(this.publicClient as any, {
       entryPoint: ENTRY_POINT,
       plugins: {
         sudo: ecdsaValidator,
@@ -178,7 +177,7 @@ export class ZeroDevService {
   async createBotClient(serializedSessionKey: string) {
     // 1. Deserialize the account
     const sessionKeyAccount = await deserializePermissionAccount(
-      this.publicClient,
+      this.publicClient as any,
       ENTRY_POINT,
       KERNEL_VERSION,
       serializedSessionKey
@@ -196,7 +195,7 @@ export class ZeroDevService {
       account: sessionKeyAccount,
       chain: CHAIN,
       bundlerTransport: http(this.rpcUrl),
-      client: this.publicClient,
+      client: this.publicClient as any,
       paymaster: {
         getPaymasterData(userOperation) {
           return paymasterClient.sponsorUserOperation({ userOperation });
@@ -218,14 +217,14 @@ export class ZeroDevService {
       console.log("Initiating Trustless Withdrawal...");
 
       // 1. Create the Validator using the Owner's Wallet
-      const ecdsaValidator = await signerToEcdsaValidator(this.publicClient, {
+      const ecdsaValidator = await signerToEcdsaValidator(this.publicClient as any, {
         entryPoint: ENTRY_POINT,
         signer: ownerWalletClient as any,
         kernelVersion: KERNEL_VERSION,
       });
 
       // 2. Reconstruct the Account (we know the address and the validator)
-      const account = await createKernelAccount(this.publicClient, {
+      const account = await createKernelAccount(this.publicClient as any, {
         entryPoint: ENTRY_POINT,
         plugins: {
           sudo: ecdsaValidator,
@@ -239,7 +238,7 @@ export class ZeroDevService {
         account,
         chain: CHAIN,
         bundlerTransport: http(this.rpcUrl),
-        client: this.publicClient,
+        client: this.publicClient as any,
         // Optional: User pays gas in MATIC or we sponsor it
       });
 
@@ -259,7 +258,7 @@ export class ZeroDevService {
             data: callData,
           },
         ]),
-      });
+      } as any);
 
       console.log("UserOp Hash:", userOpHash);
       

@@ -1,4 +1,3 @@
-
 import { BrowserProvider, Contract, parseUnits, Eip1193Provider } from 'ethers';
 import { createWalletClient, custom, WalletClient } from 'viem';
 import { polygon } from 'viem/chains';
@@ -52,7 +51,7 @@ export class Web3Service {
       this.viemClient = createWalletClient({
         account,
         chain: polygon, // ZeroDev expects Polygon
-        transport: custom(provider)
+        transport: custom(provider as any)
       });
       
       return this.viemClient;
