@@ -247,13 +247,11 @@ app.get('/api/stats/global', async (req: any, res: any) => {
                 const response = await axios.get<BuilderVolumeData[]>(url, { timeout: 3000 });
                 
                 if (Array.isArray(response.data) && response.data.length > 0) {
-                    const sorted = response.data.sort((a, b) => new Date(b.dt).getTime() - new Date(a.dt).getTime());
-
-
-                builderStats = sorted[0]; // Most recent day
-
-
-                builderHistory = sorted.slice(0, 14); // Last 14 days
+                    // Get the most recent data point for current stats
+                    builderStats = response.data[0];  // First item is already the most recent
+                    
+                    // For history, take the last 14 entries (already in chronological order)
+                    builderHistory = response.data.slice(0, 14);  // Get most recent 14 entries
                 }
             }
         } catch (e) {
