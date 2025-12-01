@@ -6,10 +6,11 @@ import path from 'path';
 import 'dotenv/config';
 import { BotEngine, BotConfig } from './bot-engine.js';
 import { ProxyWalletConfig } from '../domain/wallet.types.js';
-import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog } from '../database/index.js';
+import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog, DepositLog } from '../database/index.js';
 import { loadEnv } from '../config/env.js';
 import { DbRegistryService } from '../services/db-registry.service.js';
 import { registryAnalytics } from '../services/registry-analytics.service.js';
+import { BuilderVolumeData } from '../domain/alpha.types.js';
 import axios from 'axios';
 
 // ESM compatibility
@@ -197,39 +198,69 @@ app.post('/api/wallet/activate', async (req: any, res: any) => {
     }
 });
 
-// 3. Global Stats
+// 3. Global Stats & Builder Data
 app.get('/api/stats/global', async (req: any, res: any) => {
     try {
+        // Internal Stats
         const userCount = await User.countDocuments();
-        
-        // Aggregate stats
-        const agg = await User.aggregate([
-            { $group: { 
-                _id: null, 
-                totalVolume: { $sum: "$stats.totalVolume" },
-                totalRevenue: { $sum: "$stats.totalFeesPaid" }
-            }}
+        const tradeAgg = await Trade.aggregate([
+            { $group: { _id: null, volume: { $sum: "$size" }, count: { $sum: 1 } } }
         ]);
-        
-        const totalVolume = agg[0]?.totalVolume || 0;
-        const totalRevenue = agg[0]?.totalRevenue || 0;
+        const internalVolume = tradeAgg[0]?.volume || 0;
+        const internalTrades = tradeAgg[0]?.count || 0;
 
-        const registryAgg = await Registry.aggregate([
-             { $group: { _id: null, totalGenerated: { $sum: "$copyProfitGenerated" } } }
+        // Platform Revenue (1% Fees)
+        const revenueAgg = await User.aggregate([
+            { $group: { _id: null, total: { $sum: "$stats.totalFeesPaid" } } }
         ]);
-        const registryRevenue = (registryAgg[0]?.totalGenerated || 0) * 0.01;
-        
+        const totalRevenue = revenueAgg[0]?.total || 0;
+
+        // Total Liquidity (Bridged + Direct Deposits)
         const bridgeAgg = await BridgeTransaction.aggregate([
-             { $group: { _id: null, totalBridged: { $sum: { $toDouble: "$amountIn" } } } }
+             { $match: { status: 'COMPLETED' } },
+             { $group: { _id: null, total: { $sum: { $toDouble: "$amountIn" } } } }
         ]);
-        const totalBridged = bridgeAgg[0]?.totalBridged || 0;
+        const directAgg = await DepositLog.aggregate([
+             { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+        
+        const totalBridged = bridgeAgg[0]?.total || 0;
+        const totalDirect = directAgg[0]?.total || 0;
+        const totalLiquidity = totalBridged + totalDirect;
+
+        // External Builder API Stats (Polymarket)
+        let builderStats: BuilderVolumeData | null = null;
+        let builderHistory: BuilderVolumeData[] = [];
+        
+        try {
+            // Fetch daily volume series for 'BetMirror' (or configured builder name)
+            const builderName = 'BetMirror'; 
+            const response = await axios.get<BuilderVolumeData[]>(`https://data-api.polymarket.com/v1/builders/volume?builder=${builderName}&timePeriod=ALL`, { timeout: 3000 });
+            
+            if (Array.isArray(response.data) && response.data.length > 0) {
+                // Sort by date desc
+                const sorted = response.data.sort((a, b) => new Date(b.dt).getTime() - new Date(a.dt).getTime());
+                builderStats = sorted[0]; // Most recent day
+                builderHistory = sorted.slice(0, 14); // Last 14 days for chart
+            }
+        } catch (e) {
+            // Builder API might fail or return 404 if no data yet, don't crash the endpoint
+            // console.warn("Builder API fetch failed:", e.message);
+        }
 
         res.json({
-            totalUsers: userCount,
-            totalVolume,
-            totalRevenue: totalRevenue + registryRevenue,
-            totalBridged: totalBridged,
-            activeBots: ACTIVE_BOTS.size
+            internal: {
+                totalUsers: userCount,
+                totalVolume: internalVolume,
+                totalTrades: internalTrades,
+                totalRevenue,
+                totalLiquidity,
+                activeBots: ACTIVE_BOTS.size
+            },
+            builder: {
+                current: builderStats,
+                history: builderHistory
+            }
         });
     } catch (e) {
         console.error(e);
@@ -335,7 +366,8 @@ app.get('/api/bot/status/:userId', async (req: any, res: any) => {
             isRunning: engine ? engine.isRunning : (user?.isBotRunning || false),
             logs: formattedLogs,
             history: historyUI,
-            stats: user?.stats || null
+            stats: user?.stats || null,
+            config: user?.activeBotConfig || null
         });
     } catch (e) {
         res.status(500).json({ error: 'DB Error' });
@@ -427,6 +459,25 @@ app.post('/api/bridge/record', async (req, res) => {
         res.status(500).json({ error: 'DB Error' });
     }
 });
+
+// 10. Direct Deposit Record (for stats)
+app.post('/api/deposit/record', async (req, res) => {
+    const { userId, amount, txHash } = req.body;
+    if (!userId || !amount || !txHash) { res.status(400).json({ error: 'Missing Data' }); return; }
+    
+    try {
+        await DepositLog.create({
+            userId: userId.toLowerCase(),
+            amount: Number(amount),
+            txHash
+        });
+        res.json({ success: true });
+    } catch (e) {
+        // Duplicate key error means already recorded
+        res.json({ success: true, exists: true });
+    }
+});
+
 
 // --- SPA Fallback ---
 app.get('*', (req, res) => {

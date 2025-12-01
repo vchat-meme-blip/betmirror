@@ -10,13 +10,13 @@ import {
   CheckCircle2, ArrowDownCircle, ArrowUpCircle, Brain, AlertCircle, Trophy, Globe, Zap, LogOut,
   Info, HelpCircle, ChevronRight, Rocket, Gauge, MessageSquare, Star, ArrowRightLeft, LifeBuoy,
   Sun, Moon, Loader2, Timer, Fuel, Check, BarChart3, ChevronDown, MousePointerClick,
-  Zap as ZapIcon, FileText, Twitter, Github, LockKeyhole, BadgeCheck, Search, BookOpen, ArrowRightCircle
+  Zap as ZapIcon, FileText, Twitter, Github, LockKeyhole, BadgeCheck, Search, BookOpen, ArrowRightCircle, AreaChart
 } from 'lucide-react';
 import { web3Service, USDC_POLYGON, USDC_ABI } from './src/services/web3.service';
 import { lifiService, BridgeTransactionRecord } from './src/services/lifi-bridge.service';
 import { ZeroDevService } from './src/services/zerodev.service';
 import { TradeHistoryEntry } from './src/domain/trade.types';
-import { TraderProfile, CashoutRecord } from './src/domain/alpha.types';
+import { TraderProfile, CashoutRecord, BuilderVolumeData } from './src/domain/alpha.types';
 import { UserStats } from './src/domain/user.types';
 import { parseUnits, formatUnits, Contract, BrowserProvider, JsonRpcProvider } from 'ethers';
 
@@ -50,12 +50,19 @@ interface WalletBalances {
     usdc: string;
 }
 
-interface SystemStats {
-    totalUsers: number;
-    totalVolume: number;
-    totalRevenue: number;
-    totalBridged: number;
-    activeBots: number;
+interface GlobalStatsResponse {
+    internal: {
+        totalUsers: number;
+        totalVolume: number;
+        totalTrades: number;
+        totalRevenue: number;
+        totalLiquidity: number;
+        activeBots: number;
+    };
+    builder: {
+        current: BuilderVolumeData | null;
+        history: BuilderVolumeData[];
+    };
 }
 
 interface PolyTrade {
@@ -670,7 +677,7 @@ const App = () => {
   const [history, setHistory] = useState<TradeHistoryEntry[]>([]);
   const [stats, setStats] = useState<UserStats | null>(null);
   const [registry, setRegistry] = useState<TraderProfile[]>([]);
-  const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
+  const [systemStats, setSystemStats] = useState<GlobalStatsResponse | null>(null);
   const [bridgeHistory, setBridgeHistory] = useState<BridgeTransactionRecord[]>([]);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   
@@ -707,6 +714,12 @@ const App = () => {
     maxRetentionAmount: 50,
     coldWalletAddress: ''
   });
+
+  // Helper to update state AND local storage simultaneously
+  const updateConfig = (newConfig: AppConfig) => {
+      setConfig(newConfig);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newConfig));
+  };
 
   // --- LOAD LOCAL CONFIG & THEME ---
   useEffect(() => {
@@ -767,6 +780,30 @@ const App = () => {
             if (res.data.logs) setLogs(res.data.logs); // Now fetches from DB
             if (res.data.history) setHistory(res.data.history);
             if (res.data.stats) setStats(res.data.stats);
+
+            // Sync Config from Server if available
+            if (res.data.config) {
+                 const serverConfig = res.data.config;
+                 // Only auto-sync if we are running (server is truth) OR if local is empty/default
+                 // This prevents overwriting user input while typing, but ensures consistency.
+                 if (res.data.isRunning || config.targets.length === 0) {
+                     setConfig(prev => ({
+                         ...prev,
+                         targets: serverConfig.userAddresses || [],
+                         rpcUrl: serverConfig.rpcUrl,
+                         // Don't overwrite keys if server masks them, but generally good to sync
+                         geminiApiKey: serverConfig.geminiApiKey || prev.geminiApiKey,
+                         multiplier: serverConfig.multiplier,
+                         riskProfile: serverConfig.riskProfile,
+                         autoTp: serverConfig.autoTp,
+                         enableNotifications: serverConfig.enableNotifications,
+                         userPhoneNumber: serverConfig.userPhoneNumber,
+                         enableAutoCashout: serverConfig.autoCashout?.enabled,
+                         maxRetentionAmount: serverConfig.autoCashout?.maxAmount,
+                         coldWalletAddress: serverConfig.autoCashout?.destinationAddress
+                     }));
+                 }
+            }
 
             if (activeTab === 'system') {
                 const sysRes = await axios.get('/api/stats/global');
@@ -954,8 +991,14 @@ const App = () => {
 
       setIsDepositing(true);
       try {
-          await web3Service.deposit(proxyAddress, depositAmount);
+          const txHash = await web3Service.deposit(proxyAddress, depositAmount);
           alert("Deposit Transaction Sent! Funds will arrive shortly.");
+          
+          // Record Deposit for Stats
+          try {
+             await axios.post('/api/deposit/record', { userId: userAddress, amount: requestedAmount, txHash });
+          } catch(ignore){}
+          
           setIsDepositing(false);
       } catch (e: any) {
           // Handle explicit errors
@@ -1111,18 +1154,18 @@ const App = () => {
   const addTarget = () => {
       if (!targetInput.startsWith('0x')) return alert("Invalid Address");
       if (!config.targets.includes(targetInput)) {
-          setConfig(prev => ({ ...prev, targets: [...prev.targets, targetInput] }));
+          updateConfig({ ...config, targets: [...config.targets, targetInput] });
       }
       setTargetInput('');
   };
 
   const removeTarget = (t: string) => {
-      setConfig(prev => ({ ...prev, targets: prev.targets.filter(x => x !== t) }));
+      updateConfig({ ...config, targets: config.targets.filter(x => x !== t) });
   };
   
   const copyFromMarketplace = (address: string) => {
       if (!config.targets.includes(address)) {
-          setConfig(prev => ({ ...prev, targets: [...prev.targets, address] }));
+          updateConfig({ ...config, targets: [...config.targets, address] });
           alert(`Added ${address.slice(0,6)}... to Vault Targets.`);
       } else {
           alert("Already copying this wallet.");
@@ -1434,34 +1477,124 @@ const App = () => {
             </div>
         )}
         
-        {/* SYSTEM PAGE */}
+        {/* SYSTEM PAGE (Revamped) */}
         {activeTab === 'system' && systemStats && (
             <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
-                <div className="flex items-center gap-4">
-                    <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl"><Gauge size={32} className="text-blue-600 dark:text-blue-500"/></div>
-                    <div>
-                        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">System Command</h2>
-                        <p className="text-gray-500">Global Aggregated Data & Platform Metrics</p>
+                
+                {/* Header */}
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                        <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl"><Gauge size={32} className="text-blue-600 dark:text-blue-500"/></div>
+                        <div>
+                            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">System Command</h2>
+                            <p className="text-gray-500">Global Aggregated Data & Platform Metrics</p>
+                        </div>
                     </div>
+                    {systemStats.builder.current?.rank && (
+                        <div className="bg-yellow-50 dark:bg-yellow-900/10 border border-yellow-200 dark:border-yellow-500/30 px-4 py-2 rounded-lg flex items-center gap-3">
+                            <Trophy size={20} className="text-yellow-600 dark:text-yellow-500"/>
+                            <div>
+                                <div className="text-[10px] font-bold text-yellow-600 dark:text-yellow-500 uppercase">Global Rank</div>
+                                <div className="text-lg font-black text-gray-900 dark:text-white">#{systemStats.builder.current.rank}</div>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                    <div className="glass-panel p-6 rounded-xl border border-blue-100 dark:border-blue-500/20 bg-blue-50 dark:bg-blue-900/10">
-                        <h4 className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase mb-2">Total Volume</h4>
-                        <div className="text-3xl font-bold text-gray-900 dark:text-white font-mono">${systemStats.totalVolume.toLocaleString()}</div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    
+                    {/* Left: Internal Metrics */}
+                    <div className="glass-panel p-6 rounded-xl border border-gray-200 dark:border-terminal-border space-y-6">
+                        <h3 className="text-sm font-bold text-gray-500 uppercase tracking-widest border-b border-gray-200 dark:border-gray-800 pb-2 flex items-center gap-2">
+                            <Server size={14}/> Internal Platform Metrics
+                        </h3>
+                        <div className="grid grid-cols-2 gap-6">
+                             <div>
+                                <div className="text-xs text-gray-500 mb-1">Total Trade Volume</div>
+                                <div className="text-2xl font-black text-gray-900 dark:text-white font-mono">
+                                    ${systemStats.internal.totalVolume.toLocaleString()}
+                                </div>
+                                <div className="text-[10px] text-gray-400">{systemStats.internal.totalTrades} trades executed</div>
+                             </div>
+                             <div>
+                                <div className="text-xs text-gray-500 mb-1">Total Liquidity (Deposits)</div>
+                                <div className="text-2xl font-black text-gray-900 dark:text-white font-mono">
+                                    ${systemStats.internal.totalLiquidity.toLocaleString()}
+                                </div>
+                                <div className="text-[10px] text-gray-400">Bridge + Direct</div>
+                             </div>
+                             <div>
+                                <div className="text-xs text-gray-500 mb-1">Protocol Revenue</div>
+                                <div className="text-2xl font-black text-green-600 dark:text-green-500 font-mono">
+                                    ${systemStats.internal.totalRevenue.toFixed(2)}
+                                </div>
+                                <div className="text-[10px] text-gray-400">1% Fee Share</div>
+                             </div>
+                             <div>
+                                <div className="text-xs text-gray-500 mb-1">Active Runners</div>
+                                <div className="text-2xl font-black text-blue-600 dark:text-blue-400 font-mono">
+                                    {systemStats.internal.activeBots} <span className="text-sm text-gray-400 font-normal">/ {systemStats.internal.totalUsers}</span>
+                                </div>
+                                <div className="text-[10px] text-gray-400">Online now</div>
+                             </div>
+                        </div>
                     </div>
-                    <div className="glass-panel p-6 rounded-xl border border-green-100 dark:border-green-500/20 bg-green-50 dark:bg-green-900/10">
-                        <h4 className="text-xs font-bold text-green-600 dark:text-green-400 uppercase mb-2">Platform Revenue</h4>
-                        <div className="text-3xl font-bold text-gray-900 dark:text-white font-mono">${systemStats.totalRevenue.toFixed(2)}</div>
-                        <div className="text-[10px] text-green-600 mt-1">1% Fee Share</div>
-                    </div>
-                    <div className="glass-panel p-6 rounded-xl border border-green-100 dark:border-green-500/20 bg-green-50 dark:bg-green-900/10">
-                        <h4 className="text-xs font-bold text-green-600 dark:text-green-400 uppercase mb-2">Active Bots</h4>
-                        <div className="text-3xl font-bold text-gray-900 dark:text-white font-mono">{systemStats.activeBots} / {systemStats.totalUsers}</div>
-                    </div>
-                    <div className="glass-panel p-6 rounded-xl border border-orange-100 dark:border-orange-500/20 bg-orange-50 dark:bg-orange-900/10">
-                        <h4 className="text-xs font-bold text-orange-600 dark:text-orange-400 uppercase mb-2">Total Bridged</h4>
-                        <div className="text-3xl font-bold text-gray-900 dark:text-white font-mono">${systemStats.totalBridged.toLocaleString()}</div>
+
+                    {/* Right: Verified On-Chain Data (Builder API) */}
+                    <div className="glass-panel p-6 rounded-xl border border-blue-200 dark:border-blue-500/30 bg-blue-50/50 dark:bg-blue-900/10 space-y-6">
+                        <div className="flex justify-between items-center border-b border-blue-200 dark:border-blue-800 pb-2">
+                            <h3 className="text-sm font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest flex items-center gap-2">
+                                <BadgeCheck size={16}/> Verified On-Chain Data
+                            </h3>
+                            <span className="text-[10px] bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded font-mono">
+                                Source: Polymarket API
+                            </span>
+                        </div>
+                        
+                        {systemStats.builder.current ? (
+                            <div className="space-y-6">
+                                <div className="grid grid-cols-2 gap-6">
+                                    <div>
+                                        <div className="text-xs text-blue-500/80 mb-1">24h Attribution Volume</div>
+                                        <div className="text-3xl font-black text-gray-900 dark:text-white font-mono">
+                                            ${systemStats.builder.current.volume.toLocaleString()}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="text-xs text-blue-500/80 mb-1">Active Users (24h)</div>
+                                        <div className="text-3xl font-black text-gray-900 dark:text-white font-mono">
+                                            {systemStats.builder.current.activeUsers}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Mini Chart Visualization */}
+                                <div className="h-32 flex items-end justify-between gap-1 pt-4 border-t border-blue-200 dark:border-blue-800/50">
+                                    {systemStats.builder.history.slice().reverse().map((day, i) => {
+                                        const maxVol = Math.max(...systemStats.builder.history.map(h => h.volume));
+                                        const height = (day.volume / maxVol) * 100;
+                                        return (
+                                            <div key={i} className="flex-1 flex flex-col items-center group relative">
+                                                <div 
+                                                    className="w-full bg-blue-400 dark:bg-blue-600 rounded-t-sm hover:bg-blue-600 dark:hover:bg-blue-400 transition-all"
+                                                    style={{ height: `${Math.max(height, 5)}%` }}
+                                                ></div>
+                                                <div className="opacity-0 group-hover:opacity-100 absolute bottom-full mb-2 bg-black text-white text-[10px] p-1 rounded whitespace-nowrap z-10">
+                                                    ${day.volume.toLocaleString()} <br/> {new Date(day.dt).toLocaleDateString(undefined, {month:'short', day:'numeric'})}
+                                                </div>
+                                            </div>
+                                        )
+                                    })}
+                                </div>
+                                <div className="text-center text-[10px] text-blue-400">14 Day Volume Trend</div>
+                            </div>
+                        ) : (
+                            <div className="flex flex-col items-center justify-center h-40 text-blue-400/50">
+                                <Activity size={48} className="mb-2"/>
+                                <p className="text-sm font-medium">No verifiable on-chain data yet.</p>
+                                <p className="text-xs">Start trading to generate attribution stats.</p>
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>
@@ -1695,7 +1828,7 @@ const App = () => {
                                      type={showSecrets ? "text" : "password"}
                                      className="w-full bg-gray-50 dark:bg-black/40 border border-gray-200 dark:border-terminal-border rounded px-3 py-2 text-sm font-mono text-gray-900 dark:text-white outline-none focus:border-blue-500 dark:focus:border-terminal-accent"
                                      value={config.geminiApiKey}
-                                     onChange={e => setConfig({...config, geminiApiKey: e.target.value})}
+                                     onChange={e => updateConfig({...config, geminiApiKey: e.target.value})}
                                  />
                                  <button onClick={() => setShowSecrets(!showSecrets)} className="absolute right-3 top-2 text-gray-500 hover:text-gray-900 dark:hover:text-white">
                                      {showSecrets ? <EyeOff size={14}/> : <Eye size={14}/>}
@@ -1715,13 +1848,13 @@ const App = () => {
                                     value={targetInput}
                                     onChange={e => setTargetInput(e.target.value)}
                                 />
-                                <button onClick={() => { if(targetInput) { setConfig(p => ({...p, targets: [...p.targets, targetInput]})); setTargetInput(''); }}} className="px-4 bg-blue-600 dark:bg-terminal-accent rounded text-white font-bold text-xs">ADD</button>
+                                <button onClick={addTarget} className="px-4 bg-blue-600 dark:bg-terminal-accent rounded text-white font-bold text-xs">ADD</button>
                             </div>
                             <div className="flex flex-wrap gap-2">
                                 {config.targets.map(t => (
                                     <span key={t} className="px-3 py-1.5 bg-gray-100 dark:bg-white/5 rounded border border-gray-200 dark:border-white/10 text-xs text-gray-700 dark:text-gray-300 font-mono flex gap-2">
                                         {t.slice(0,6)}...{t.slice(-4)} 
-                                        <button onClick={() => setConfig(p => ({...p, targets: p.targets.filter(x => x!==t)}))}><X size={12}/></button>
+                                        <button onClick={() => removeTarget(t)}><X size={12}/></button>
                                     </span>
                                 ))}
                             </div>
@@ -1735,7 +1868,7 @@ const App = () => {
                                 </div>
                                 <div className="space-y-2">
                                     {['conservative', 'balanced', 'degen'].map(mode => (
-                                        <button key={mode} onClick={() => setConfig({...config, riskProfile: mode as any})} className={`w-full py-2 px-3 rounded text-xs font-bold uppercase border transition-all flex justify-between ${config.riskProfile === mode ? 'bg-blue-50 dark:bg-terminal-accent/10 border-blue-500 dark:border-terminal-accent text-blue-600 dark:text-terminal-accent' : 'border-gray-200 dark:border-gray-800 text-gray-500'}`}>
+                                        <button key={mode} onClick={() => updateConfig({...config, riskProfile: mode as any})} className={`w-full py-2 px-3 rounded text-xs font-bold uppercase border transition-all flex justify-between ${config.riskProfile === mode ? 'bg-blue-50 dark:bg-terminal-accent/10 border-blue-500 dark:border-terminal-accent text-blue-600 dark:text-terminal-accent' : 'border-gray-200 dark:border-gray-800 text-gray-500'}`}>
                                             {mode} {config.riskProfile === mode && <CheckCircle2 size={12}/>}
                                         </button>
                                     ))}
@@ -1744,11 +1877,11 @@ const App = () => {
                             <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-xl p-5 space-y-5 shadow-sm dark:shadow-none">
                                 <div>
                                     <label className="text-xs text-gray-500 font-bold uppercase mb-2 block flex justify-between">Multiplier <span className="text-gray-900 dark:text-white">x{config.multiplier}</span></label>
-                                    <input type="number" step="0.1" className="w-full bg-gray-50 dark:bg-black/40 border border-gray-200 dark:border-terminal-border rounded px-3 py-2 text-sm text-gray-900 dark:text-white font-mono" value={config.multiplier} onChange={e => setConfig({...config, multiplier: Number(e.target.value)})}/>
+                                    <input type="number" step="0.1" className="w-full bg-gray-50 dark:bg-black/40 border border-gray-200 dark:border-terminal-border rounded px-3 py-2 text-sm text-gray-900 dark:text-white font-mono" value={config.multiplier} onChange={e => updateConfig({...config, multiplier: Number(e.target.value)})}/>
                                 </div>
                                 <div>
                                     <label className="text-xs text-gray-500 font-bold uppercase mb-2 block flex justify-between">Auto TP <span className="text-green-600 dark:text-terminal-success">+{config.autoTp}%</span></label>
-                                    <input type="range" min="5" max="100" className="w-full accent-green-600 dark:accent-terminal-success h-1 bg-gray-200 dark:bg-gray-800 rounded-lg appearance-none cursor-pointer" value={config.autoTp} onChange={e => setConfig({...config, autoTp: Number(e.target.value)})}/>
+                                    <input type="range" min="5" max="100" className="w-full accent-green-600 dark:accent-terminal-success h-1 bg-gray-200 dark:bg-gray-800 rounded-lg appearance-none cursor-pointer" value={config.autoTp} onChange={e => updateConfig({...config, autoTp: Number(e.target.value)})}/>
                                 </div>
                             </div>
                         </div>
@@ -1764,7 +1897,7 @@ const App = () => {
                                         type="checkbox" 
                                         className="accent-green-500 w-4 h-4"
                                         checked={config.enableAutoCashout}
-                                        onChange={e => setConfig({...config, enableAutoCashout: e.target.checked})}
+                                        onChange={e => updateConfig({...config, enableAutoCashout: e.target.checked})}
                                     />
                                 </div>
                                 <div className="flex-1 space-y-3">
@@ -1780,7 +1913,7 @@ const App = () => {
                                                     type="number"
                                                     className="w-full bg-gray-50 dark:bg-black/40 border border-gray-200 dark:border-terminal-border rounded px-2 py-1.5 text-xs text-gray-900 dark:text-white"
                                                     value={config.maxRetentionAmount}
-                                                    onChange={e => setConfig({...config, maxRetentionAmount: Number(e.target.value)})}
+                                                    onChange={e => updateConfig({...config, maxRetentionAmount: Number(e.target.value)})}
                                                 />
                                             </div>
                                             <div>
@@ -1790,7 +1923,7 @@ const App = () => {
                                                     className="w-full bg-gray-50 dark:bg-black/40 border border-gray-200 dark:border-terminal-border rounded px-2 py-1.5 text-xs text-gray-900 dark:text-white"
                                                     placeholder="0x..."
                                                     value={config.coldWalletAddress}
-                                                    onChange={e => setConfig({...config, coldWalletAddress: e.target.value})}
+                                                    onChange={e => updateConfig({...config, coldWalletAddress: e.target.value})}
                                                 />
                                             </div>
                                         </div>
@@ -1806,7 +1939,7 @@ const App = () => {
                                         type="checkbox" 
                                         className="accent-blue-500 w-4 h-4"
                                         checked={config.enableNotifications}
-                                        onChange={e => setConfig({...config, enableNotifications: e.target.checked})}
+                                        onChange={e => updateConfig({...config, enableNotifications: e.target.checked})}
                                     />
                                 </div>
                                 <div className="flex-1 space-y-3">
@@ -1822,7 +1955,7 @@ const App = () => {
                                                 placeholder="+1234567890"
                                                 className="w-full bg-gray-50 dark:bg-black/40 border border-gray-200 dark:border-terminal-border rounded px-2 py-1.5 text-xs text-gray-900 dark:text-white"
                                                 value={config.userPhoneNumber}
-                                                onChange={e => setConfig({...config, userPhoneNumber: e.target.value})}
+                                                onChange={e => updateConfig({...config, userPhoneNumber: e.target.value})}
                                             />
                                         </div>
                                     )}
@@ -2222,7 +2355,7 @@ const App = () => {
                     </div>
                 </div>
 
-                {/* 5. ECONOMICS */}
+                {/* 5. ECONOMICS (Restored) */}
                 <div className="glass-panel p-6 rounded-xl border border-gray-200 dark:border-terminal-border bg-green-50/50 dark:bg-green-900/5 flex items-start gap-4">
                     <div className="p-3 bg-green-100 dark:bg-green-900/20 rounded-full text-green-600 dark:text-green-500 shrink-0">
                         <Coins size={24}/>

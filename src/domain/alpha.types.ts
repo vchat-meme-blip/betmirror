@@ -47,3 +47,13 @@ export interface UserRewardRecord {
 export interface IRegistryService {
   getListerForWallet(walletAddress: string): Promise<string | null>;
 }
+
+export interface BuilderVolumeData {
+    dt: string;
+    builder: string;
+    builderLogo: string;
+    verified: boolean;
+    volume: number;
+    activeUsers: number;
+    rank: string;
+}
