@@ -422,6 +422,27 @@ export class BotEngine {
       
       for (const pos of positionsToCheck) {
           try {
+              // PRE-CHECK: Verify market is still active to avoid 404 Orderbook errors
+              // If market is closed, we can't trade, so remove from tracker.
+              let isClosed = false;
+              try {
+                  const market = await this.client.getMarket(pos.marketId);
+                  if ((market as any).closed || (market as any).active === false || (market as any).enable_order_book === false) {
+                      isClosed = true;
+                  }
+              } catch (e) {
+                  // If we can't fetch market, assume issue and skip this cycle to avoid spamming orderbook fetch
+                  continue;
+              }
+
+              if (isClosed) {
+                  this.activePositions = this.activePositions.filter(p => p.tokenId !== pos.tokenId);
+                  if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
+                  // Log once to inform user
+                  console.log(`[AutoTP] Market ${pos.marketId} closed/resolved. Removed from Auto-TP.`);
+                  continue;
+              }
+
               const orderBook = await this.client.getOrderBook(pos.tokenId);
               if (orderBook.bids && orderBook.bids.length > 0) {
                   const bestBid = parseFloat(orderBook.bids[0].price);
@@ -452,7 +473,13 @@ export class BotEngine {
                       }
                   }
               }
-          } catch (e) { /* silent fail */ }
+          } catch (e: any) { 
+               // Double Safety: If 404 leaks through, remove the position
+               if (e.message?.includes('404') || e.response?.status === 404) {
+                   this.activePositions = this.activePositions.filter(p => p.tokenId !== pos.tokenId);
+                   if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
+               }
+          }
       }
   }
 
