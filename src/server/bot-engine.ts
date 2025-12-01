@@ -15,6 +15,7 @@ import { ClobClient, Chain, ApiKeyCreds } from '@polymarket/clob-client';
 import { Wallet, AbstractSigner, Provider, JsonRpcProvider, TransactionRequest } from 'ethers';
 import { BotLog } from '../database/index.js';
 import { BuilderConfig, BuilderApiKeyCreds } from '@polymarket/builder-signing-sdk';
+import { getMarket } from '../utils/fetch-data.util.js';
 
 // --- ADAPTER: ZeroDev (Viem) -> Ethers.js Signer ---
 class KernelEthersSigner extends AbstractSigner {
@@ -195,7 +196,13 @@ export class BotEngine {
       if (this.config.walletConfig?.type === 'SMART_ACCOUNT' && this.config.walletConfig.serializedSessionKey) {
           await this.addLog('info', '🔐 Initializing ZeroDev Smart Account Session...');
           
-          const aaService = new ZeroDevService(this.config.zeroDevRpc || 'https://rpc.zerodev.app/api/v2/bundler/DEFAULT');
+          // Check if RPC is configured properly
+          const rpcUrl = this.config.zeroDevRpc || process.env.ZERODEV_RPC;
+          if (!rpcUrl || rpcUrl.includes('your-project-id') || rpcUrl.includes('DEFAULT')) {
+               throw new Error("CRITICAL: ZERODEV_RPC is missing or invalid in .env. Please create a project at zerodev.app (Polygon) and add the Bundler URL.");
+          }
+          
+          const aaService = new ZeroDevService(rpcUrl);
           const { address, client: kernelClient } = await aaService.createBotClient(this.config.walletConfig.serializedSessionKey);
           
           walletAddress = address;
@@ -317,70 +324,73 @@ export class BotEngine {
                 if(this.executor) {
                     executedSize = await this.executor.copyTrade(signal);
                 }
-                await this.addLog('success', `Trade Executed Successfully!`);
                 
-                let realPnl = 0;
-                
-                if (signal.side === 'BUY') {
-                    const newPosition: ActivePosition = {
+                // If size is 0, it means trade failed gracefully (e.g. insufficient balance or market closed)
+                if (executedSize > 0) {
+                    await this.addLog('success', `Trade Executed Successfully!`);
+                    
+                    let realPnl = 0;
+                    
+                    if (signal.side === 'BUY') {
+                        const newPosition: ActivePosition = {
+                            marketId: signal.marketId,
+                            tokenId: signal.tokenId,
+                            outcome: signal.outcome,
+                            entryPrice: signal.price,
+                            sizeUsd: executedSize, // Track executed size for PnL
+                            timestamp: Date.now()
+                        };
+                        this.activePositions.push(newPosition);
+                    } else if (signal.side === 'SELL') {
+                        const posIndex = this.activePositions.findIndex(p => p.marketId === signal.marketId && p.outcome === signal.outcome);
+                        if (posIndex !== -1) {
+                            const entry = this.activePositions[posIndex];
+                            const yieldPercent = (signal.price - entry.entryPrice) / entry.entryPrice;
+                            realPnl = entry.sizeUsd * yieldPercent; // Calculate PnL on actual size
+                            await this.addLog('info', `Realized PnL: $${realPnl.toFixed(2)} (${(yieldPercent*100).toFixed(1)}%)`);
+                            this.activePositions.splice(posIndex, 1);
+                        } else {
+                            await this.addLog('warn', `Closing tracked position (Entry lost or manual). PnL set to 0.`);
+                            realPnl = 0; 
+                        }
+                    }
+
+                    if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
+
+                    // Log History (Database)
+                    await this.recordTrade({
                         marketId: signal.marketId,
-                        tokenId: signal.tokenId,
                         outcome: signal.outcome,
-                        entryPrice: signal.price,
-                        sizeUsd: executedSize, // Track executed size for PnL
-                        timestamp: Date.now()
-                    };
-                    this.activePositions.push(newPosition);
-                } else if (signal.side === 'SELL') {
-                    const posIndex = this.activePositions.findIndex(p => p.marketId === signal.marketId && p.outcome === signal.outcome);
-                    if (posIndex !== -1) {
-                        const entry = this.activePositions[posIndex];
-                        const yieldPercent = (signal.price - entry.entryPrice) / entry.entryPrice;
-                        realPnl = entry.sizeUsd * yieldPercent; // Calculate PnL on actual size
-                        await this.addLog('info', `Realized PnL: $${realPnl.toFixed(2)} (${(yieldPercent*100).toFixed(1)}%)`);
-                        this.activePositions.splice(posIndex, 1);
-                    } else {
-                         await this.addLog('warn', `Closing tracked position (Entry lost or manual). PnL set to 0.`);
-                         realPnl = 0; 
+                        side: signal.side,
+                        price: signal.price,
+                        size: signal.sizeUsd, // Whale Size
+                        executedSize: executedSize, // Bot Size
+                        aiReasoning: aiReasoning,
+                        riskScore: riskScore,
+                        pnl: realPnl,
+                        status: signal.side === 'SELL' ? 'CLOSED' : 'OPEN'
+                    });
+
+                    // Notify User
+                    await notifier.sendTradeAlert(signal);
+
+                    // Distribute Fees on PROFIT ONLY
+                    if (signal.side === 'SELL' && realPnl > 0) {
+                        const feeEvent = await feeDistributor.distributeFeesOnProfit(signal.marketId, realPnl, signal.trader);
+                        if (feeEvent) {
+                            this.stats.totalFeesPaid += (feeEvent.platformFee + feeEvent.listerFee);
+                            if (this.callbacks?.onFeePaid) await this.callbacks.onFeePaid(feeEvent);
+                        }
                     }
+                    
+                    if (this.callbacks?.onStatsUpdate) await this.callbacks.onStatsUpdate(this.stats);
+
+                    // Check for cashout after a profitable trade
+                    setTimeout(async () => {
+                    const cashout = await fundManager.checkAndSweepProfits();
+                    if (cashout && this.callbacks?.onCashout) await this.callbacks.onCashout(cashout);
+                    }, 15000);
                 }
-
-                if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
-
-                // Log History (Database)
-                await this.recordTrade({
-                    marketId: signal.marketId,
-                    outcome: signal.outcome,
-                    side: signal.side,
-                    price: signal.price,
-                    size: signal.sizeUsd, // Whale Size
-                    executedSize: executedSize, // Bot Size
-                    aiReasoning: aiReasoning,
-                    riskScore: riskScore,
-                    pnl: realPnl,
-                    status: signal.side === 'SELL' ? 'CLOSED' : 'OPEN'
-                });
-
-                // Notify User
-                await notifier.sendTradeAlert(signal);
-
-                // Distribute Fees on PROFIT ONLY
-                if (signal.side === 'SELL' && realPnl > 0) {
-                    const feeEvent = await feeDistributor.distributeFeesOnProfit(signal.marketId, realPnl, signal.trader);
-                    if (feeEvent) {
-                        this.stats.totalFeesPaid += (feeEvent.platformFee + feeEvent.listerFee);
-                        if (this.callbacks?.onFeePaid) await this.callbacks.onFeePaid(feeEvent);
-                    }
-                }
-                
-                if (this.callbacks?.onStatsUpdate) await this.callbacks.onStatsUpdate(this.stats);
-
-                // Check for cashout after a profitable trade
-                setTimeout(async () => {
-                   const cashout = await fundManager.checkAndSweepProfits();
-                   if (cashout && this.callbacks?.onCashout) await this.callbacks.onCashout(cashout);
-                }, 15000);
-
             } catch (err: any) {
                 await this.addLog('error', `Execution Failed: ${err.message}`);
             }
@@ -423,23 +433,22 @@ export class BotEngine {
       for (const pos of positionsToCheck) {
           try {
               // PRE-CHECK: Verify market is still active to avoid 404 Orderbook errors
-              // If market is closed, we can't trade, so remove from tracker.
               let isClosed = false;
               try {
-                  const market = await this.client.getMarket(pos.marketId);
-                  if ((market as any).closed || (market as any).active === false || (market as any).enable_order_book === false) {
+                  const market = await getMarket(pos.marketId);
+                  // Market can be closed OR resolved
+                  if (market.closed || market.active === false || market.enable_order_book === false) {
                       isClosed = true;
                   }
               } catch (e) {
-                  // If we can't fetch market, assume issue and skip this cycle to avoid spamming orderbook fetch
-                  continue;
+                   // API Error - fail safe skip
+                   continue; 
               }
 
               if (isClosed) {
+                  // Remove from tracking silently to stop errors
                   this.activePositions = this.activePositions.filter(p => p.tokenId !== pos.tokenId);
                   if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
-                  // Log once to inform user
-                  console.log(`[AutoTP] Market ${pos.marketId} closed/resolved. Removed from Auto-TP.`);
                   continue;
               }
 
@@ -474,8 +483,8 @@ export class BotEngine {
                   }
               }
           } catch (e: any) { 
-               // Double Safety: If 404 leaks through, remove the position
-               if (e.message?.includes('404') || e.response?.status === 404) {
+               // If 404 leaks through, ensure we remove the bad position
+               if (e.message?.includes('404') || e.response?.status === 404 || e.status === 404) {
                    this.activePositions = this.activePositions.filter(p => p.tokenId !== pos.tokenId);
                    if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
                }

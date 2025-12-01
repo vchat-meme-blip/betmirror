@@ -14,3 +14,7 @@ export async function httpPost<T = unknown>(
   return res.data;
 }
 
+export async function getMarket(marketId: string) {
+  const res = await axios.get(`https://clob.polymarket.com/markets/${marketId}`);
+  return res.data;
+}

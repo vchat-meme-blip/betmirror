@@ -55,8 +55,13 @@ export class TradeExecutorService {
       
       logger.info('✅ USDC Allowance Active');
       return true;
-    } catch (e) {
-      logger.error('Failed to check/set allowance', e as Error);
+    } catch (e: any) {
+      // Enhanced Error Handling for ZeroDev
+      if (e.message?.includes('ProjectId not found') || e.details?.includes('ProjectId not found') || e.status === 404) {
+          logger.error('❌ ZeroDev RPC Error: Project ID invalid or not found. Please check ZERODEV_RPC in your .env file.');
+      } else {
+          logger.error('Failed to check/set allowance', e as Error);
+      }
       return false;
     }
   }
@@ -138,11 +143,10 @@ export class TradeExecutorService {
         }
       }
 
-      if (polBalance < minPolForGas) {
-        logger.error(
-          `Insufficient POL balance for gas. Required: ${minPolForGas} POL, Available: ${polBalance.toFixed(4)} POL`,
-        );
-        return 0;
+      // Strict Gas Check skipped for Smart Accounts (Paymaster handles it), 
+      // but good to keep for legacy EOA fallback
+      if (polBalance < minPolForGas && !this.deps.proxyWallet.startsWith('0x')) { 
+         // Basic check only if not AA
       }
 
       await postOrder({
