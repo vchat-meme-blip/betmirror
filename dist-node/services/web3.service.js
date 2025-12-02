@@ -41,6 +41,7 @@ export class Web3Service {
         await this.ensureChain(provider, targetChainId);
         const [account] = await provider.request({ method: 'eth_requestAccounts' });
         // Always recreate the client to ensure it binds to the freshly switched provider context
+        // Cast to unknown then WalletClient to avoid "Type instantiation is excessively deep" error
         this.viemClient = createWalletClient({
             account,
             chain: polygon, // ZeroDev expects Polygon

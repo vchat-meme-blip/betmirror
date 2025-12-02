@@ -66,7 +66,7 @@ export function loadEnv() {
         builderApiKey: process.env.POLY_BUILDER_API_KEY,
         builderApiSecret: process.env.POLY_BUILDER_SECRET,
         builderApiPassphrase: process.env.POLY_BUILDER_PASSPHRASE,
-        builderId: process.env.POLY_BUILDER_ID || 'Bet Mirror',
+        builderId: process.env.POLY_BUILDER_ID || 'BetMirror',
         registryApiUrl: process.env.REGISTRY_API_URL || 'http://localhost:3000/api',
         adminRevenueWallet: process.env.ADMIN_REVENUE_WALLET || '0xAdminRevenueWalletHere',
         // Automation
@@ -82,6 +82,9 @@ export function loadEnv() {
         // AA
         zeroDevRpc: process.env.ZERODEV_RPC || 'https://rpc.zerodev.app/api/v2/bundler/your-project-id',
         zeroDevProjectId: process.env.ZERODEV_PROJECT_ID,
+        // Li.Fi
+        lifiIntegrator: process.env.LIFI_INTEGRATOR || 'Bet Mirror Pro',
+        lifiApiKey: process.env.LIFI_API_KEY,
         // Database
         mongoUri: process.env.MONGODB_URI || defaultMongoUri,
         mongoEncryptionKey: process.env.MONGO_ENCRYPTION_KEY || 'MmExQl8lTwgxA40wxbL5k5m+UCPb/0YvO5CDjypmiT0='

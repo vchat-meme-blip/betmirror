@@ -17,12 +17,32 @@ const USDC_ABI = parseAbi([
     "function transfer(address to, uint256 amount) returns (bool)"
 ]);
 export class ZeroDevService {
-    constructor(zeroDevRpcUrl) {
-        this.rpcUrl = zeroDevRpcUrl;
+    constructor(zeroDevRpcUrlOrId) {
+        // --- AUTO-CORRECT RPC URL ---
+        // SDK v5 requires v3 endpoints: https://rpc.zerodev.app/api/v3/<PROJECT_ID>/chain/<CHAIN_ID>
+        // We detect if the user passed a v2 URL or just an ID, and upgrade it to v3 for Polygon (137).
+        this.rpcUrl = this.normalizeRpcUrl(zeroDevRpcUrlOrId);
+        console.log(`[ZeroDev] Using RPC: ${this.rpcUrl}`);
         this.publicClient = createPublicClient({
             chain: CHAIN,
             transport: http(PUBLIC_RPC),
         });
+    }
+    normalizeRpcUrl(input) {
+        // 1. Extract UUID (Project ID)
+        const uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+        const match = input.match(uuidRegex);
+        if (!match) {
+            console.error("[ZeroDev] Invalid Project ID or URL format provided.");
+            return input; // Fallback to whatever was passed
+        }
+        const projectId = match[0];
+        // 2. Check if it's already a v3 URL for Polygon
+        if (input.includes("/api/v3") && input.includes("/chain/137")) {
+            return input;
+        }
+        // 3. Construct v3 URL
+        return `https://rpc.zerodev.app/api/v3/${projectId}/chain/137`;
     }
     /**
      * Predicts the deterministic address of the Smart Account for this user.
@@ -116,6 +136,7 @@ export class ZeroDevService {
         // 1. Deserialize the account
         const sessionKeyAccount = await deserializePermissionAccount(this.publicClient, ENTRY_POINT, KERNEL_VERSION, serializedSessionKey);
         // 2. Create Paymaster (Optional - for gas sponsorship)
+        // IMPORTANT: Must use the same v3 RPC for paymaster
         const paymasterClient = createZeroDevPaymasterClient({
             chain: CHAIN,
             transport: http(this.rpcUrl),

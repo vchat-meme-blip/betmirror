@@ -237,8 +237,10 @@ export class BotEngine {
           
           // --- AUTO-GENERATE L2 KEYS IF MISSING ---
           // Smart Accounts don't come with L2 keys. We must generate them via signature once and save them.
-          if (this.config.l2ApiCredentials) {
-              clobCreds = this.config.l2ApiCredentials;
+          // CRITICAL FIX: Strict checking for Key AND Secret. If secret is missing, we must regen.
+          const dbCreds = this.config.l2ApiCredentials;
+          if (dbCreds && dbCreds.key && dbCreds.secret && dbCreds.passphrase) {
+              clobCreds = dbCreds;
               await this.addLog('success', '[DIAGNOSTIC] L2 Trading Credentials Loaded successfully from DB.');
           } else {
               await this.addLog('info', '⚙️ Generating new L2 Trading Credentials for Smart Account...');

@@ -14,7 +14,13 @@ const ProxyWalletSchema = new Schema({
     serializedSessionKey: String,
     sessionPrivateKey: String,
     ownerAddress: String,
-    createdAt: String
+    createdAt: String,
+    // L2 CLOB Credentials (Not Private Keys, just API Access tokens)
+    l2ApiCredentials: {
+        key: String,
+        secret: String,
+        passphrase: String
+    }
 }, { _id: false });
 const UserSchema = new Schema({
     address: { type: String, required: true, unique: true, index: true },

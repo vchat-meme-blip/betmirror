@@ -238,7 +238,7 @@ app.get('/api/stats/global', async (req: any, res: any) => {
 
         try {
             // Fetch Global Leaderboard (Top 50)
-            // Reduced from 100 to 50 to avoid clutter
+            // Reduced limit to 50 for cleaner chart
             const lbUrl = `https://data-api.polymarket.com/v1/builders/leaderboard?timePeriod=ALL&limit=50`;
             const lbResponse = await axios.get<BuilderVolumeData[]>(lbUrl, { timeout: 4000 });
             

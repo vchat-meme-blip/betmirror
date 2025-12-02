@@ -1,5 +1,6 @@
+import { createConfig } from '@lifi/sdk';
 /**
- * LiFi Cross-Chain Bridging Service
+ * LiFi Cross-Chain Bridging Service (Server-Side)
  * Responsible for finding routes to fund the Polygon Proxy Wallet from other chains.
  */
 export class LiFiService {
@@ -10,19 +11,30 @@ export class LiFiService {
         this.initialize();
     }
     initialize() {
-        // TODO: Initialize LiFi SDK with Config
-        // import { createConfig } from '@lifi/sdk';
-        this.logger.info('🌉 LiFi Cross-Chain Service: Initialized (Stub)');
-        this.isInitialized = true;
+        try {
+            createConfig({
+                integrator: this.env.lifiIntegrator,
+                apiKey: this.env.lifiApiKey,
+                providers: [] // Server-side usually doesn't have window providers
+            });
+            this.logger.info(`🌉 LiFi Cross-Chain Service: Initialized (Integrator: ${this.env.lifiIntegrator})`);
+            if (this.env.lifiApiKey) {
+                this.logger.info('   🔑 LiFi API Key loaded for high-performance routing.');
+            }
+            this.isInitialized = true;
+        }
+        catch (e) {
+            this.logger.error('Failed to initialize LiFi SDK', e);
+        }
     }
     /**
      * Finds the best route to move funds from User's External Chain -> Proxy Wallet on Polygon
      */
     async getDepositRoute(userSourceChainId, userSourceToken, amount, proxyWalletAddress) {
         this.logger.info(`🔍 Searching route: Chain ${userSourceChainId} -> Polygon (${proxyWalletAddress})`);
-        // TODO: Real Implementation
+        // In a real server scenario, you would import getRoutes from @lifi/sdk and call it here.
         // const route = await getRoutes({ ... });
-        // Mock response for now
+        // Mock response for now as server-side routing isn't primary flow (Frontend does it)
         return {
             id: 'mock-route-123',
             fromAmountUSD: amount,

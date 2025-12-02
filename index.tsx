@@ -62,7 +62,7 @@ interface GlobalStatsResponse {
     };
     builder: {
         current: BuilderVolumeData | null;
-        history: BuilderVolumeData[]; // Now essentially 'leaderboard'
+        history: BuilderVolumeData[];
         builderId: string;
         ecosystemVolume: number;
     };
@@ -655,82 +655,6 @@ const ActivationView = ({
                     </div>
                 </div>
             )}
-        </div>
-    );
-};
-
-const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, theme: 'light' | 'dark', toggleTheme: () => void }) => {
-    return (
-        <div className="min-h-screen bg-white dark:bg-[#050505] text-gray-900 dark:text-white transition-colors duration-200 flex flex-col relative overflow-hidden font-sans">
-             {/* Background Decoration */}
-             <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                <div className="absolute -top-[20%] -left-[10%] w-[70%] h-[70%] rounded-full bg-blue-500/10 blur-[100px]"></div>
-                <div className="absolute top-[20%] -right-[10%] w-[50%] h-[50%] rounded-full bg-purple-500/10 blur-[100px]"></div>
-             </div>
-
-             <nav className="relative z-10 p-6 flex justify-between items-center max-w-7xl mx-auto w-full">
-                <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center shadow-lg shadow-blue-500/30">
-                        <Activity className="text-white" size={24} />
-                    </div>
-                    <div className="text-xl font-bold tracking-tight">
-                        BET<span className="text-blue-600">MIRROR</span>
-                    </div>
-                </div>
-                <div className="flex items-center gap-4">
-                    <button onClick={toggleTheme} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-white/10 transition-colors">
-                        {theme === 'light' ? <Moon size={20}/> : <Sun size={20}/>}
-                    </button>
-                    <button 
-                        onClick={onConnect}
-                        className="px-6 py-2.5 bg-gray-900 dark:bg-white hover:bg-gray-800 dark:hover:bg-gray-200 text-white dark:text-gray-900 rounded-lg font-bold text-sm transition-all shadow-lg"
-                    >
-                        Connect Wallet
-                    </button>
-                </div>
-             </nav>
-
-             <main className="flex-1 relative z-10 flex flex-col items-center justify-center px-4 text-center pb-20">
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-500/30 text-blue-600 dark:text-blue-400 text-xs font-bold mb-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
-                    <Sparkles size={12}/> INSTITUTIONAL COPY TRADING TERMINAL
-                </div>
-                
-                <h1 className="text-5xl md:text-7xl font-black tracking-tighter mb-6 max-w-4xl leading-[1.1] animate-in fade-in slide-in-from-bottom-8 duration-700 delay-100">
-                    Trade like a <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600">Whale.</span><br/>
-                    Without the work.
-                </h1>
-                
-                <p className="text-lg md:text-xl text-gray-600 dark:text-gray-400 max-w-2xl mb-10 leading-relaxed animate-in fade-in slide-in-from-bottom-8 duration-700 delay-200">
-                    The first non-custodial copy-trading terminal for <strong className="text-gray-900 dark:text-white">Polymarket</strong>. 
-                    Auto-mirror top performers with zero latency, gas abstraction, and AI risk analysis.
-                </p>
-                
-                <div className="flex flex-col sm:flex-row items-center gap-4 animate-in fade-in slide-in-from-bottom-8 duration-700 delay-300">
-                    <button 
-                        onClick={onConnect}
-                        className="h-14 px-8 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-lg transition-all shadow-xl shadow-blue-500/25 flex items-center gap-2 group"
-                    >
-                        <Wallet size={20}/> Connect Wallet <ArrowRightCircle size={20} className="group-hover:translate-x-1 transition-transform"/>
-                    </button>
-                </div>
-
-                {/* Feature Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mt-20 max-w-5xl w-full text-left animate-in fade-in slide-in-from-bottom-12 duration-1000 delay-500">
-                    {[
-                        { icon: Shield, title: "Non-Custodial", desc: "Your funds never leave your control. Powered by ERC-4337 Smart Accounts on Polygon." },
-                        { icon: Zap, title: "Zero Latency", desc: "Direct execution on the CLOB (Central Limit Order Book). No pooling, no slippage fees." },
-                        { icon: Brain, title: "AI Risk Agent", desc: "Optional Gemini integration analyzes every signal before you copy it." }
-                    ].map((f, i) => (
-                        <div key={i} className="p-6 rounded-2xl bg-white dark:bg-white/5 border border-gray-100 dark:border-white/5 hover:border-blue-500/30 transition-colors shadow-sm dark:shadow-none">
-                            <div className="w-12 h-12 bg-blue-50 dark:bg-blue-900/20 rounded-xl flex items-center justify-center text-blue-600 dark:text-blue-500 mb-4">
-                                <f.icon size={24}/>
-                            </div>
-                            <h3 className="font-bold text-lg mb-2">{f.title}</h3>
-                            <p className="text-sm text-gray-500 leading-relaxed">{f.desc}</p>
-                        </div>
-                    ))}
-                </div>
-             </main>
         </div>
     );
 };
@@ -1587,8 +1511,8 @@ const App = () => {
                             <Server size={14}/> Internal Platform Metrics
                         </h3>
                         <div className="grid grid-cols-2 gap-6">
-                             {/* Card 1: Signal Volume */}
-                             <div>
+                                {/* Card 1: Signal Volume */}
+                                <div>
                                 <div className="text-xs text-gray-500 mb-1 flex items-center gap-1">
                                     Signal Volume <Tooltip text="Total volume of whale/signal trades detected by the monitoring engine. (Source Volume)" />
                                 </div>
@@ -1596,10 +1520,10 @@ const App = () => {
                                     ${systemStats.internal.signalVolume.toLocaleString()}
                                 </div>
                                 <div className="text-[10px] text-gray-400">{systemStats.internal.totalTrades} signals tracked</div>
-                             </div>
+                                </div>
 
-                             {/* Card 2: Platform Execution Volume (NEW) */}
-                             <div>
+                                {/* Card 2: Platform Execution Volume (NEW) */}
+                                <div>
                                 <div className="text-xs text-gray-500 mb-1 flex items-center gap-1">
                                     Bot Execution Vol <Tooltip text="Real USDC volume executed by user bots on the platform." />
                                 </div>
@@ -1607,25 +1531,25 @@ const App = () => {
                                     ${systemStats.internal.executedVolume.toLocaleString()}
                                 </div>
                                 <div className="text-[10px] text-gray-400">On-Chain Volume</div>
-                             </div>
+                                </div>
 
-                             {/* Card 3: Revenue */}
-                             <div>
+                                {/* Card 3: Revenue */}
+                                <div>
                                 <div className="text-xs text-gray-500 mb-1">Protocol Revenue</div>
                                 <div className="text-2xl font-black text-green-600 dark:text-green-500 font-mono">
                                     ${systemStats.internal.totalRevenue.toFixed(2)}
                                 </div>
                                 <div className="text-[10px] text-gray-400">1% Fee Share</div>
-                             </div>
+                                </div>
 
-                             {/* Card 4: Active Bots */}
-                             <div>
+                                {/* Card 4: Active Bots */}
+                                <div>
                                 <div className="text-xs text-gray-500 mb-1">Active Runners</div>
                                 <div className="text-2xl font-black text-gray-900 dark:text-white font-mono">
                                     {systemStats.internal.activeBots} <span className="text-sm text-gray-400 font-normal">/ {systemStats.internal.totalUsers}</span>
                                 </div>
                                 <div className="text-[10px] text-gray-400">Online now</div>
-                             </div>
+                                </div>
                         </div>
                     </div>
 
@@ -1673,49 +1597,49 @@ const App = () => {
 
                                 {/* Leaderboard Chart Visualization */}
                                 <div className="flex-1 flex flex-col">
-                                     <div className="text-[10px] text-gray-500 mb-2 font-bold uppercase">Global Builder Leaderboard (Top 50)</div>
-                                     <div className="flex items-end gap-1 h-40 border-b border-gray-200 dark:border-gray-800 pb-1 overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-700">
-                                         {systemStats.builder.history.map((b, i) => {
-                                             const maxVol = systemStats.builder.history[0]?.volume || 1;
-                                             const height = (b.volume / maxVol) * 100;
-                                             const isMe = b.builder.toLowerCase() === systemStats.builder.builderId.toLowerCase();
+                                        <div className="text-[10px] text-gray-500 mb-2 font-bold uppercase">Global Builder Leaderboard (Top 50)</div>
+                                        <div className="flex items-end gap-1 h-40 border-b border-gray-200 dark:border-gray-800 pb-1 overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-700">
+                                            {systemStats.builder.history.map((b, i) => {
+                                                const maxVol = systemStats.builder.history[0]?.volume || 1;
+                                                const height = (b.volume / maxVol) * 100;
+                                                const isMe = b.builder.toLowerCase() === systemStats.builder.builderId.toLowerCase();
 
-                                             return (
-                                                 <div key={i} className="group relative flex flex-col items-center justify-end h-full min-w-[6px] flex-1 hover:min-w-[12px] transition-all duration-300">
-                                                     <div 
-                                                         className={`w-full rounded-t-sm transition-all ${isMe ? 'bg-yellow-500' : 'bg-blue-300/50 dark:bg-blue-600/50 group-hover:bg-blue-600 dark:group-hover:bg-blue-400'}`}
-                                                         style={{ height: `${Math.max(height, 2)}%` }}
-                                                     ></div>
-                                                     
-                                                     {/* Hover Tooltip */}
-                                                     <div className="opacity-0 group-hover:opacity-100 absolute bottom-full mb-2 bg-black dark:bg-white text-white dark:text-black text-[10px] p-2 rounded shadow-xl z-50 pointer-events-none whitespace-nowrap flex flex-col gap-1 items-center border border-gray-700">
-                                                         <div className="flex items-center gap-2 border-b border-gray-700 pb-1 mb-1 w-full justify-center">
-                                                             <span className="font-bold">#{b.rank || i+1}</span>
-                                                             {b.builderLogo && <img src={b.builderLogo} className="w-4 h-4 rounded-full"/>}
-                                                             <span className="font-bold">{b.builder}</span>
-                                                         </div>
-                                                         <div className="text-xs font-mono font-bold">${b.volume.toLocaleString()}</div>
-                                                         <div className="text-[8px] opacity-70">{b.activeUsers} Users</div>
-                                                     </div>
-                                                 </div>
-                                             )
-                                         })}
-                                     </div>
+                                                return (
+                                                    <div key={i} className="group relative flex flex-col items-center justify-end h-full min-w-[6px] flex-1 hover:min-w-[12px] transition-all duration-300">
+                                                        <div 
+                                                            className={`w-full rounded-t-sm transition-all ${isMe ? 'bg-yellow-500' : 'bg-blue-300/50 dark:bg-blue-600/50 group-hover:bg-blue-600 dark:group-hover:bg-blue-400'}`}
+                                                            style={{ height: `${Math.max(height, 2)}%` }}
+                                                        ></div>
+                                                        
+                                                        {/* Hover Tooltip */}
+                                                        <div className="opacity-0 group-hover:opacity-100 absolute bottom-full mb-2 bg-black dark:bg-white text-white dark:text-black text-[10px] p-2 rounded shadow-xl z-50 pointer-events-none whitespace-nowrap flex flex-col gap-1 items-center border border-gray-700">
+                                                            <div className="flex items-center gap-2 border-b border-gray-700 pb-1 mb-1 w-full justify-center">
+                                                                <span className="font-bold">#{b.rank || i+1}</span>
+                                                                {b.builderLogo && <img src={b.builderLogo} className="w-4 h-4 rounded-full"/>}
+                                                                <span className="font-bold">{b.builder}</span>
+                                                            </div>
+                                                            <div className="text-xs font-mono font-bold">${b.volume.toLocaleString()}</div>
+                                                            <div className="text-[8px] opacity-70">{b.activeUsers} Users</div>
+                                                        </div>
+                                                    </div>
+                                                )
+                                            })}
+                                        </div>
                                 </div>
                             </div>
                         ) : (
                             <div className="space-y-6 flex-1 flex flex-col justify-center animate-in fade-in">
                                 <div className="text-center space-y-2">
-                                     <div className="inline-block p-4 bg-blue-100 dark:bg-blue-900/30 rounded-full mb-2">
-                                         <Globe size={48} className="text-blue-600 dark:text-blue-400"/>
-                                     </div>
-                                     <div className="text-xs text-gray-500 uppercase tracking-widest">Polymarket Total Builder Volume</div>
-                                     <div className="text-4xl font-black text-gray-900 dark:text-white font-mono">
-                                         ${systemStats.builder.ecosystemVolume > 0 ? systemStats.builder.ecosystemVolume.toLocaleString() : 'Loading...'}
-                                     </div>
-                                     <p className="text-xs text-gray-400 max-w-xs mx-auto pt-4">
-                                         This metric tracks the aggregated volume of the top 100 builders in the Polymarket ecosystem.
-                                     </p>
+                                        <div className="inline-block p-4 bg-blue-100 dark:bg-blue-900/30 rounded-full mb-2">
+                                            <Globe size={48} className="text-blue-600 dark:text-blue-400"/>
+                                        </div>
+                                        <div className="text-xs text-gray-500 uppercase tracking-widest">Polymarket Total Builder Volume</div>
+                                        <div className="text-4xl font-black text-gray-900 dark:text-white font-mono">
+                                            ${systemStats.builder.ecosystemVolume > 0 ? systemStats.builder.ecosystemVolume.toLocaleString() : 'Loading...'}
+                                        </div>
+                                        <p className="text-xs text-gray-400 max-w-xs mx-auto pt-4">
+                                            This metric tracks the aggregated volume of the top 100 builders in the Polymarket ecosystem.
+                                        </p>
                                 </div>
                             </div>
                         )}
@@ -1946,17 +1870,18 @@ const App = () => {
                          </div>
                          {/* API Keys */}
                          <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-xl p-5 space-y-3 shadow-sm dark:shadow-none">
-                             <label className="text-xs text-gray-500 font-bold uppercase flex justify-between">
-                                 Gemini API Key <span className="text-blue-500 cursor-pointer" onClick={() => setShowSecrets(!showSecrets)}>{showSecrets ? <EyeOff size={12}/> : <Eye size={12}/>}</span>
-                             </label>
-                             <input 
-                                 type={showSecrets ? "text" : "password"} 
-                                 className="w-full bg-gray-50 dark:bg-black/40 border border-gray-200 dark:border-terminal-border rounded px-3 py-2 text-xs text-gray-900 dark:text-white font-mono"
-                                 placeholder="AI Studio API Key..."
-                                 value={config.geminiApiKey}
-                                 onChange={e => updateConfig({...config, geminiApiKey: e.target.value})}
-                             />
-                             <p className="text-[10px] text-gray-400">Required for AI Risk Analysis. Get one free from Google AI Studio.</p>
+                             <label className="text-xs text-gray-500 font-bold uppercase">Gemini API Key</label>
+                             <div className="relative">
+                                 <input 
+                                     type={showSecrets ? "text" : "password"}
+                                     className="w-full bg-gray-50 dark:bg-black/40 border border-gray-200 dark:border-terminal-border rounded px-3 py-2 text-sm font-mono text-gray-900 dark:text-white outline-none focus:border-blue-500 dark:focus:border-terminal-accent"
+                                     value={config.geminiApiKey}
+                                     onChange={e => updateConfig({...config, geminiApiKey: e.target.value})}
+                                 />
+                                 <button onClick={() => setShowSecrets(!showSecrets)} className="absolute right-3 top-2 text-gray-500 hover:text-gray-900 dark:hover:text-white">
+                                     {showSecrets ? <EyeOff size={14}/> : <Eye size={14}/>}
+                                 </button>
+                             </div>
                          </div>
                     </div>
 
@@ -2506,12 +2431,234 @@ const App = () => {
   );
 };
 
-const container = document.getElementById('root');
-if (container) {
-    const root = createRoot(container);
-    root.render(
-        <React.StrictMode>
-            <App />
-        </React.StrictMode>
-    );
+// --- HERO BACKGROUND (CLEAN GRID) ---
+const HeroBackground = () => {
+  return (
+    <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none">
+       {/* Very subtle clean grid, no glows */}
+       <div className="absolute inset-0 bg-grid-slate-200/[0.04] bg-[bottom_1px_center] dark:bg-grid-slate-800/[0.05]" style={{ backgroundSize: '40px 40px', maskImage: 'linear-gradient(to bottom, transparent 5%, black 40%, black 70%, transparent 95%)' }}></div>
+    </div>
+  )
 }
+
+const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, theme: string, toggleTheme: () => void }) => (
+    <div className="min-h-screen bg-gray-50 dark:bg-[#050505] font-sans transition-colors duration-300 flex flex-col relative overflow-x-hidden">
+        
+        <HeroBackground />
+
+        {/* Floating Header */}
+        <div className="absolute top-0 left-0 w-full p-6 flex justify-between items-center z-50 max-w-7xl mx-auto left-0 right-0">
+             <div className="opacity-0"></div> {/* Spacer */}
+             <button 
+                onClick={toggleTheme} 
+                className="p-3 bg-white/80 dark:bg-white/5 rounded-full hover:scale-110 transition-all shadow-sm backdrop-blur-md text-gray-600 dark:text-white border border-gray-200 dark:border-white/10"
+             >
+                {theme === 'light' ? <Moon size={18}/> : <Sun size={18}/>}
+             </button>
+        </div>
+
+        {/* Main Hero Section - Centered Vertically */}
+        <div className="flex-1 flex flex-col items-center justify-center px-6 z-10 w-full max-w-7xl mx-auto relative min-h-[100vh]">
+            
+            <div className="text-center flex flex-col items-center">
+                
+                {/* Logo Icon with Shadow Glow */}
+                <div className="mb-8 relative mt-7">
+                    <div className="absolute inset-0 bg-blue-500 blur-2xl opacity-20 rounded-full"></div>
+                    <div className="relative w-20 h-20 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl flex items-center justify-center shadow-xl shadow-blue-500/20">
+                        <Activity size={40} className="text-white" />
+                    </div>
+                </div>
+
+                {/* V2 Pill */}
+                <div className="mb-6 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-100">
+                    <span className="px-4 py-1.5 rounded-full bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/50 text-blue-600 dark:text-blue-400 text-[10px] font-bold uppercase tracking-widest">
+                        Account Abstraction V2 Live
+                    </span>
+                </div>
+
+                {/* Main Title */}
+                <h1 className="text-5xl md:text-7xl font-black tracking-tight text-gray-900 dark:text-white mb-6 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-200">
+                    BET <span className="text-blue-600">MIRROR</span>
+                </h1>
+
+                {/* Motto */}
+                <p className="text-lg text-gray-500 dark:text-gray-400 font-medium max-w-lg mx-auto leading-relaxed animate-in fade-in slide-in-from-bottom-4 duration-700 delay-300">
+                    The institutional-grade prediction market terminal.<br/>
+                    Non-Custodial. AI-Powered. 24/7 Cloud Execution.
+                </p>
+
+                {/* CTA Button */}
+                <div className="mt-12 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-400 w-full max-w-xs">
+                    <button 
+                        onClick={onConnect} 
+                        className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-black font-bold text-sm uppercase tracking-wider rounded-lg shadow-2xl hover:shadow-blue-500/10 hover:-translate-y-0.5 transition-all duration-300 flex items-center justify-center gap-3"
+                    >
+                        <Wallet size={18} /> Connect Terminal
+                    </button>
+                </div>
+
+                {/* Trust Badges */}
+                <div className="mt-12 flex gap-8 opacity-40 animate-in fade-in duration-1000 delay-500">
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                        <Shield size={12}/> Secure
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                        <ZapIcon size={12}/> Fast
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                        <Globe size={12}/> Global
+                    </div>
+                </div>
+
+                {/* Footer Logos - Subtle */}
+                <div className="mt-32 flex flex-col items-center gap-6 animate-in fade-in duration-1000 delay-700">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.3em] opacity-50">
+                        SUPPORTED CHAINS
+                    </p>
+                    <div className="flex gap-12 opacity-30 grayscale hover:grayscale-0 hover:opacity-100 transition-all duration-500">
+                        <img src="https://cryptologos.cc/logos/polygon-matic-logo.svg?v=026" alt="Polygon" className="h-5 w-auto" />
+                        <img src="https://cryptologos.cc/logos/ethereum-eth-logo.svg?v=026" alt="Ethereum" className="h-5 w-auto" />
+                        <img src="https://cdn.brandfetch.io/id6XsSOVVS/theme/dark/logo.svg?c=1bxid64Mup7aczewSAYMX&t=1757929765938" alt="Base" className="h-5 w-auto" />
+                        <img src="https://cryptologos.cc/logos/arbitrum-arb-logo.svg?v=026" alt="Arbitrum" className="h-5 w-auto" />
+                        <img src="https://cryptologos.cc/logos/solana-sol-logo.svg?v=026" alt="Solana" className="h-4 w-auto mt-0.5" />
+                    </div>
+                </div>
+
+            </div>
+            
+            {/* Scroll Indicator */}
+            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 animate-bounce opacity-20">
+                <ChevronDown className="text-gray-400 w-6 h-6"/>
+            </div>
+
+        </div>
+
+        {/* --- "SECOND PAGE" CONTENT --- */}
+        <div className="w-full bg-gray-100 dark:bg-[#030303] border-t border-gray-200 dark:border-white/5 relative z-20">
+            
+            {/* Markets Status Grid */}
+            <div className="max-w-5xl mx-auto py-32 px-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
+                    
+                    {/* Active Market Card - Rebranded */}
+                    <div className="p-10 rounded-3xl bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 shadow-lg hover:shadow-xl transition-all duration-300 group hover:-translate-y-1">
+                        <div className="flex items-center gap-3 mb-8">
+                            <span className="relative flex h-2.5 w-2.5">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+                            </span>
+                            <span className="text-[10px] font-bold text-green-600 dark:text-green-400 uppercase tracking-wider">Live Integration</span>
+                        </div>
+                        <div className="flex items-center gap-5 mb-6">
+                            <img src="https://assets.polymarket.com/static/logo-round.svg" alt="Polymarket" className="w-14 h-14 rounded-full" referrerPolicy="no-referrer" onError={(e) => e.currentTarget.src = 'https://cryptologos.cc/logos/polygon-matic-logo.svg?v=026'}/>
+                            <h3 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">Polymarket</h3>
+                        </div>
+                        <p className="text-base text-gray-500 dark:text-gray-400 font-medium leading-relaxed mb-6">
+                            The most active market for blockchain wallets trading. Copy any top trader instantly.
+                        </p>
+                        <div className="inline-flex items-center gap-2 text-xs font-bold text-blue-600 dark:text-blue-500 uppercase tracking-wider group-hover:translate-x-1 transition-transform">
+                            Start Copying <ArrowRightLeft size={12}/>
+                        </div>
+                    </div>
+
+                    {/* Coming Soon Card */}
+                    <div className="p-10 rounded-3xl bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/5 opacity-60 hover:opacity-100 transition-all duration-300 group">
+                        <div className="flex items-center gap-3 mb-8">
+                            <span className="w-2.5 h-2.5 rounded-full bg-yellow-500"></span>
+                            <span className="text-[10px] font-bold text-yellow-600 dark:text-yellow-500 uppercase tracking-wider">Coming Soon</span>
+                        </div>
+                        <div className="flex items-center gap-5 mb-6">
+                             <div className="w-14 h-14 rounded-full bg-gray-200 dark:bg-gray-800 flex items-center justify-center font-bold text-gray-500 text-2xl">pb</div>
+                            <h3 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">PredictBase</h3>
+                        </div>
+                        <p className="text-base text-gray-500 dark:text-gray-400 font-medium leading-relaxed">
+                            Next-generation sports & crypto markets with high-frequency liquidity.
+                        </p>
+                    </div>
+
+                </div>
+
+                {/* Suggestion Input */}
+                <div className="pt-24 flex justify-center">
+                    <div className="inline-flex flex-col items-center gap-4 group cursor-pointer opacity-60 hover:opacity-100 transition-opacity">
+                        <div className="p-4 rounded-full bg-white dark:bg-white/10 border border-gray-200 dark:border-white/10 text-gray-400 group-hover:text-blue-500 group-hover:border-blue-200 transition-all">
+                            <MousePointerClick size={24} />
+                        </div>
+                        <p className="text-xs font-bold text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300 transition-colors uppercase tracking-widest">
+                            Suggest a market integration
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {/* --- HOW IT WORKS SECTION --- */}
+            <div className="w-full max-w-7xl mx-auto pb-32 px-6 border-t border-gray-200 dark:border-white/5 pt-32">
+                <div className="text-center mb-24">
+                    <span className="text-blue-600 dark:text-blue-500 text-xs font-bold uppercase tracking-widest">Architecture</span>
+                    <h2 className="text-4xl md:text-5xl font-black text-gray-900 dark:text-white mt-4 tracking-tight">How It Works</h2>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-12">
+                    {/* Step 1 */}
+                    <div className="p-10 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-[2rem] hover:border-blue-500/30 transition-all shadow-sm group">
+                        <div className="w-16 h-16 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
+                            <Wallet size={32}/>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">1. Connect & Deploy</h3>
+                        <p className="text-gray-500 text-sm leading-relaxed">
+                            Link your wallet. We instantly deploy a non-custodial <strong>Smart Account</strong> (ZeroDev Kernel) on Polygon. This is your dedicated trading vault.
+                        </p>
+                    </div>
+
+                    {/* Step 2 */}
+                    <div className="p-10 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-[2rem] hover:border-purple-500/30 transition-all shadow-sm group">
+                        <div className="w-16 h-16 bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
+                            <Key size={32}/>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">2. Total Control</h3>
+                        <p className="text-gray-500 text-sm leading-relaxed">
+                            You hold the "Owner Key". You can revoke our trading permissions or trigger a <strong>trustless withdrawal</strong> directly on the blockchain at any time.
+                        </p>
+                    </div>
+
+                    {/* Step 3 */}
+                    <div className="p-10 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-[2rem] hover:border-green-500/30 transition-all shadow-sm group">
+                        <div className="w-16 h-16 bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
+                            <Server size={32}/>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">3. Passive Alpha</h3>
+                        <p className="text-gray-500 text-sm leading-relaxed">
+                            Find the best trader in the Registry and hit Copy. Our Node.js engine monitors signals 24/7 so you can <strong>earn while you sleep</strong>.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {/* --- FOOTER --- */}
+            <footer className="border-t border-gray-200 dark:border-white/5 bg-white dark:bg-[#020202]">
+                <div className="max-w-7xl mx-auto px-6 py-12 flex flex-col md:flex-row justify-between items-center gap-6">
+                    <div className="flex items-center gap-2 opacity-50 hover:opacity-100 transition-opacity">
+                        <Activity size={16} className="text-blue-600 dark:text-white"/>
+                        <span className="text-xs font-bold text-gray-900 dark:text-white tracking-widest">BET MIRROR PRO</span>
+                    </div>
+                    
+                    <div className="flex gap-8">
+                        <a href="https://github.com/vchat-meme-blip/betmirror" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors"><FileText size={16}/></a>
+                        <a href="https://x.com/bet_mirror" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors"><Twitter size={16}/></a>
+                        <a href="https://docs.betmirror.bet" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors"><Github size={16}/></a>
+                    </div>
+
+                    <div className="text-[10px] text-gray-400 font-medium">
+                        © 2025 PolyCafe Labs. All rights reserved.
+                    </div>
+                </div>
+            </footer>
+
+        </div>
+
+    </div>
+);
+
+const root = createRoot(document.getElementById('root')!);
+root.render(<App />);
