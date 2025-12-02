@@ -171,12 +171,13 @@ export class ZeroDevService {
                  to: masterAccount.address,
                  value: BigInt(0),
                  data: "0x",
-             });
+             } as any);
              
              console.log(`🚀 Deployment UserOp Sent: ${deployHash}`);
              console.log("   Waiting for block inclusion...");
              
-             await kernelClient.waitForTransactionReceipt({ hash: deployHash });
+             // FIX: Use publicClient to wait for receipt as kernelClient might not expose it
+             await this.publicClient.waitForTransactionReceipt({ hash: deployHash });
              console.log("✅ Account Successfully Deployed!");
              
          } catch (deployError: any) {

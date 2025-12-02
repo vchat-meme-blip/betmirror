@@ -75,8 +75,11 @@ class KernelEthersSigner extends AbstractSigner {
         return {
             hash,
             wait: async () => {
-                const receipt = await this.kernelClient.waitForTransactionReceipt({ hash });
-                return receipt;
+                // Use ethers provider to wait for receipt, safer than relying on kernelClient
+                if(this.provider) {
+                    return await this.provider.waitForTransaction(hash);
+                }
+                throw new Error("Provider missing in KernelEthersSigner");
             }
         };
     }
