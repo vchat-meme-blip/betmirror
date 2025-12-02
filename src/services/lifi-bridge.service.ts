@@ -4,7 +4,7 @@ import axios from 'axios';
 
 // Initialize LiFi Config
 const lifiConfig = createConfig({
-  integrator: 'bet-mirror-pro', // Registered DApp Name for Monetization (Must be alphanumeric/dashes only)
+  integrator: 'BetMirror', // Registered DApp Name for Monetization (Must be alphanumeric/dashes only)
   providers: [], // Auto-detect window.ethereum / window.solana
   routeOptions: {
     fee: 0.005, // 0.5% Protocol Fee (Global Setting)
