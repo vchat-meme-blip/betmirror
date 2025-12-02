@@ -107,11 +107,9 @@ export class ZeroDevService {
   /**
    * CLIENT SIDE: User calls this to authorize the bot.
    * Creates a Smart Account (if needed) and generates a Session Key for the server.
-   * Includes FORCE ACTIVATION logic (0 ETH Self-Tx) to ensure key is on-chain.
-   * @param ownerSigner - The User's Wallet Client (from Viem/Wagmi/Ethers adapter)
    */
   async createSessionKeyForServer(ownerWalletClient: WalletClient, ownerAddress: string) {
-    console.log("🔐 Generating Session Key & Ensuring On-Chain Activation...");
+    console.log("🔐 Generating Session Key...");
 
     // 1. Generate a temporary private key for the session (The "Server Key")
     const sessionPrivateKey = generatePrivateKey();
@@ -152,53 +150,12 @@ export class ZeroDevService {
     const accountAddress = sessionKeyAccountObj.address;
     console.log("   Account Address:", accountAddress);
 
-    // --- ACTIVATION TRANSACTION ---
-    // We MUST send a transaction using this new session key configuration to "install"
-    // the permission validator on-chain. Without this, Polymarket EIP-1271 checks will fail (401).
-    try {
-        console.log("🚀 Sending Activation Transaction (0 ETH Self-Transfer)...");
-        
-        // Create Paymaster Client to sponsor this setup
-        const paymasterClient = createZeroDevPaymasterClient({
-           chain: CHAIN,
-           transport: http(this.rpcUrl),
-        });
-
-        // Create Client for the Session Key Account
-        const activationClient = createKernelAccountClient({
-           account: sessionKeyAccountObj,
-           chain: CHAIN,
-           bundlerTransport: http(this.rpcUrl),
-           client: this.publicClient as any,
-           paymaster: {
-             getPaymasterData(userOperation) {
-               return paymasterClient.sponsorUserOperation({ userOperation });
-             },
-           },
-        });
-
-        // Send 0 ETH/POL to self. This forces deployment (if needed) AND installs the plugin.
-        const deployHash = await activationClient.sendTransaction({
-            to: accountAddress,
-            value: BigInt(0),
-            data: "0x",
-        } as any);
-        
-        console.log(`   Activation Tx Sent: ${deployHash}`);
-        console.log("   Waiting for confirmation...");
-        
-        // Wait for receipt using public client
-        await this.publicClient.waitForTransactionReceipt({ hash: deployHash });
-        console.log("✅ Session Key Activated On-Chain!");
-        
-    } catch (deployError: any) {
-        console.error("Activation Failed:", deployError);
-        // We throw here because if activation fails, the bot WILL fail to start.
-        throw new Error("Failed to activate Smart Account on-chain. Please check console/gas and try again.");
-    }
-
     // 6. Serialize it to send to the server
     const serializedSessionKey = await serializePermissionAccount(sessionKeyAccountObj, sessionPrivateKey);
+
+    // NOTE: We intentionally DO NOT send a transaction here. 
+    // The Account and Session Key validator will be lazy-initialized on the server side 
+    // once the user deposits funds and the bot sends its first "Wake Up" transaction.
 
     return {
       smartAccountAddress: accountAddress,
@@ -298,6 +255,7 @@ export class ZeroDevService {
 
       console.log("UserOp Hash:", userOpHash);
       
+      // Safe wait for receipt
       const receipt = await this.publicClient.waitForTransactionReceipt({
         hash: userOpHash,
       });
