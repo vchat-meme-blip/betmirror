@@ -150,7 +150,7 @@ export function loadEnv(): RuntimeEnv {
     zeroDevProjectId: process.env.ZERODEV_PROJECT_ID,
     
     // Li.Fi
-    lifiIntegrator: process.env.LIFI_INTEGRATOR || 'Bet Mirror Pro',
+    lifiIntegrator: process.env.LIFI_INTEGRATOR || 'bet-mirror-pro',
     lifiApiKey: process.env.LIFI_API_KEY,
 
     // Database
