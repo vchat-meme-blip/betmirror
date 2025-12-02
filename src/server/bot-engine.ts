@@ -72,9 +72,13 @@ class KernelEthersSigner extends AbstractSigner {
             data: tx.data,
             value: tx.value ? BigInt(tx.value.toString()) : BigInt(0)
         });
+        // Return an object compatible with Ethers TransactionResponse.wait()
         return {
             hash,
-            wait: async () => this.provider?.getTransactionReceipt(hash)
+            wait: async () => {
+                const receipt = await this.kernelClient.waitForTransactionReceipt({ hash });
+                return receipt;
+            }
         };
     }
 
@@ -155,8 +159,6 @@ export class BotEngine {
       if (config.stats) {
           this.stats = config.stats;
       }
-      // Log initial wakeup
-      this.addLog('info', 'Bot Engine Initialized');
   }
 
   public getStats() { return this.stats; }
@@ -180,6 +182,34 @@ export class BotEngine {
           await this.executor.revokeAllowance();
           this.stats.allowanceApproved = false;
           this.addLog('warn', 'Permissions Revoked by User.');
+      }
+  }
+
+  // --- JUST-IN-TIME DEPLOYMENT ---
+  // Checks if the account exists on-chain. If not, sends a self-transaction to deploy it.
+  private async deployAccount(signer: any, address: string, provider: Provider) {
+      try {
+          const code = await provider.getCode(address);
+          // If code is '0x', the contract is not deployed.
+          if (code !== '0x') return; 
+
+          await this.addLog('warn', '⚠️ Smart Account not deployed. Initiating JIT Deployment...');
+          
+          // Send 0 ETH/POL to self. 
+          // This triggers the ZeroDev Bundler to deploy the factory code for this address.
+          const tx = await signer.sendTransaction({
+              to: address,
+              value: 0,
+              data: "0x" 
+          });
+          
+          await this.addLog('info', `🚀 Deployment UserOp Sent. Hash: ${tx.hash}`);
+          await tx.wait(); // Critical: Must wait for block inclusion
+          await this.addLog('success', '✅ Smart Account successfully deployed on-chain.');
+          
+      } catch (e: any) {
+          await this.addLog('error', `Deployment Check Failed: ${e.message}`);
+          // We don't throw here, we try to proceed. If deployment failed, handshake will fail next.
       }
   }
 
@@ -226,7 +256,6 @@ export class BotEngine {
           const { address, client: kernelClient } = await aaService.createBotClient(this.config.walletConfig.serializedSessionKey);
           
           walletAddress = address;
-          await this.addLog('success', `Smart Account Active: ${walletAddress.slice(0,6)}... (Session Key)`);
           
           const provider = new JsonRpcProvider(this.config.rpcUrl);
           signerImpl = new KernelEthersSigner(kernelClient, address, provider);
@@ -235,6 +264,10 @@ export class BotEngine {
           // Since we are ZeroDev Kernel (ERC-4337), we treat it as a proxy.
           signatureType = SignatureType.POLY_PROXY; 
           
+          // --- [FIX] JUST-IN-TIME DEPLOYMENT ---
+          // Ensure contract is deployed before attempting signature verification
+          await this.deployAccount(signerImpl, walletAddress, provider);
+
           // --- AUTO-GENERATE / VALIDATE L2 KEYS ---
           // We must ensure we have valid CLOB API credentials before proceeding.
           // Without them, the bot cannot sign trades and will crash.
@@ -317,7 +350,7 @@ export class BotEngine {
               passphrase: process.env.POLY_BUILDER_PASSPHRASE
           };
           builderConfig = new BuilderConfig({ localBuilderCreds: builderCreds });
-          await this.addLog('info', '👷 Builder Program Attribution Active');
+          // await this.addLog('info', '👷 Builder Program Attribution Active');
       }
 
       // Initialize Polymarket Client with Credentials AND Builder Attribution
@@ -334,11 +367,6 @@ export class BotEngine {
       );
 
       this.client = Object.assign(clobClient, { wallet: signerImpl });
-      
-      // Log successful usage if we have credentials
-      if (clobCreds) {
-           await this.addLog('success', '[DIAGNOSTIC] CLOB Client authenticated with L2 Credentials.');
-      }
 
       await this.addLog('success', `Bot Online: ${walletAddress.slice(0,6)}...`);
 
@@ -361,7 +389,7 @@ export class BotEngine {
         logger
       });
 
-      await this.addLog('info', 'Checking Token Allowances...');
+      // await this.addLog('info', 'Checking Token Allowances...');
       const approved = await this.executor.ensureAllowance();
       this.stats.allowanceApproved = approved;
 
@@ -403,7 +431,6 @@ export class BotEngine {
           }
 
           if (shouldExecute) {
-            await this.addLog('info', `Executing Copy: ${signal.side} ${signal.outcome}`);
             
             try {
                 let executedSize = 0;
@@ -412,7 +439,6 @@ export class BotEngine {
                 }
                 
                 if (executedSize > 0) {
-                    await this.addLog('success', `Trade Executed Successfully!`);
                     
                     let realPnl = 0;
                     
