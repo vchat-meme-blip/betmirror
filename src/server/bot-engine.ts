@@ -1,3 +1,4 @@
+
 import { createPolymarketClient } from '../infrastructure/clob-client.factory.js';
 import { TradeMonitorService } from '../services/trade-monitor.service.js';
 import { TradeExecutorService } from '../services/trade-executor.service.js';
@@ -11,7 +12,7 @@ import { CashoutRecord, FeeDistributionEvent, IRegistryService } from '../domain
 import { UserStats } from '../domain/user.types.js';
 import { ProxyWalletConfig } from '../domain/wallet.types.js'; 
 import { ClobClient, Chain, ApiKeyCreds } from '@polymarket/clob-client';
-import { Wallet, AbstractSigner, Provider, JsonRpcProvider, TransactionRequest } from 'ethers';
+import { Wallet, AbstractSigner, Provider, JsonRpcProvider, TransactionRequest, Contract } from 'ethers';
 import { BotLog, User } from '../database/index.js';
 import { BuilderConfig, BuilderApiKeyCreds } from '@polymarket/builder-signing-sdk';
 import { getMarket } from '../utils/fetch-data.util.js';
@@ -66,16 +67,19 @@ class KernelEthersSigner extends AbstractSigner {
     }
 
     async sendTransaction(tx: TransactionRequest): Promise<any> {
+        // IMPORTANT: We cast to 'any' to avoid strict Viem type checks on the tx object
+        // The kernel client handles the UserOp construction internally.
         const hash = await this.kernelClient.sendTransaction({
             to: tx.to,
             data: tx.data,
             value: tx.value ? BigInt(tx.value.toString()) : BigInt(0)
         });
+        
         // Return an object compatible with Ethers TransactionResponse.wait()
         return {
             hash,
             wait: async () => {
-                // Use ethers provider to wait for receipt, safer than relying on kernelClient properties
+                // Use ethers provider to wait for receipt, safer than relying on kernelClient
                 if(this.provider) {
                     return await this.provider.waitForTransaction(hash);
                 }
@@ -130,6 +134,10 @@ export interface BotCallbacks {
   onStatsUpdate?: (stats: UserStats) => Promise<void>;
   onPositionsUpdate?: (positions: ActivePosition[]) => Promise<void>;
 }
+
+const USDC_ABI_MINIMAL = [
+    'function approve(address spender, uint256 amount) returns (bool)'
+];
 
 export class BotEngine {
   public isRunning = false;
@@ -188,30 +196,28 @@ export class BotEngine {
   }
 
   // --- [CRITICAL FIX] FORCE SESSION KEY INSTALLATION ---
-  // Checks if the account is active and forces a self-transaction to ensure
-  // the Session Key Validator is installed on-chain.
-  // Without this, Polymarket EIP-1271 validation fails with 401.
-  private async ensureSessionActive(signer: any, address: string, provider: Provider) {
+  // Checks if the account is active and forces a transaction (USDC Approve 0)
+  // to ensure the Session Key Validator is installed on-chain.
+  // Using 'approve' instead of raw '0x' transfer prevents AA23 bundler errors.
+  private async ensureSessionActive(signer: any, walletAddress: string, usdcAddress: string) {
       try {
-          // We always run this for Smart Accounts to ensure "Liveness" before trading.
-          // It costs nothing (sponsored gas) and guarantees the key is synced.
-          await this.addLog('info', '🔄 Syncing Session Key with Blockchain...');
+          await this.addLog('info', '🔄 Syncing Session Key (USDC Handshake)...');
           
-          // Send 0 ETH/POL to self. 
-          // Triggers deployment if needed.
-          // Triggers validator installation if needed.
-          const tx = await signer.sendTransaction({
-              to: address,
-              value: 0,
-              data: "0x" 
-          });
+          // Create a contract instance connected to the signer (Session Key)
+          const usdc = new Contract(usdcAddress, USDC_ABI_MINIMAL, signer);
+          
+          // Approve 0 USDC to self. 
+          // This is a valid ERC-20 op that costs nothing but proves ownership 
+          // and forces the Kernel to deploy/install the validator.
+          const tx = await usdc.approve(walletAddress, 0);
           
           await this.addLog('info', `🚀 Session Sync Tx Sent: ${tx.hash?.slice(0,10)}... Waiting for block...`);
-          await tx.wait(); // Critical: Must wait for block inclusion
+          await tx.wait(); 
           await this.addLog('success', '✅ Session Key Active & On-Chain.');
           
       } catch (e: any) {
-          await this.addLog('warn', `Session Sync Warning: ${e.message} (Bot will try to proceed)`);
+          // If this fails, the CLOB Handshake will likely fail too, but we log and try to proceed.
+          await this.addLog('error', `Session Sync Failed (AA23/Gas?): ${e.message}. Attempting to proceed...`);
       }
   }
 
@@ -268,7 +274,7 @@ export class BotEngine {
           
           // --- [FIX] FORCE DEPLOYMENT / KEY INSTALLATION ---
           // Before we attempt handshake (which requires valid signature), we must ensure key is active on-chain.
-          await this.ensureSessionActive(signerImpl, walletAddress, provider);
+          await this.ensureSessionActive(signerImpl, walletAddress, env.usdcContractAddress);
 
           // --- AUTO-GENERATE / VALIDATE L2 KEYS ---
           // We must ensure we have valid CLOB API credentials before proceeding.
