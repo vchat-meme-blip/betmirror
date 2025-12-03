@@ -1026,7 +1026,9 @@ const App = () => {
       try {
           let senderAddress = userAddress;
           
-          // SPECIAL HANDLING FOR SOLANA
+          // FIX: Special Handling for Solana
+          // If bridging FROM Solana (Chain ID 1151111081099710), we must use the Phantom/Sol address
+          // instead of the 0x EVM address.
           if (bridgeFromChain === 1151111081099710) {
               try {
                   const solAddress = await web3Service.getSolanaAddress();
@@ -1038,25 +1040,25 @@ const App = () => {
                   return;
               }
           } else {
-              // For EVM chains, we use the connected address
-              // It is good practice to verify if the user is on the correct chain later, but for quoting, address is enough.
+              // For EVM chains, we use the connected 0x address
               setSenderAddressDisplay(userAddress);
           }
 
           const fromToken = lifiService.getTokenAddress(bridgeFromChain, bridgeToken);
           
-          // Simple conversion
           let decimals = 18;
           if (bridgeToken === 'USDC') decimals = 6;
-          if (bridgeToken === 'NATIVE' && bridgeFromChain === 1151111081099710) decimals = 9; // Solana
+          // Solana Native is 9 decimals
+          if (bridgeToken === 'NATIVE' && bridgeFromChain === 1151111081099710) decimals = 9; 
 
           const rawAmount = (Number(bridgeAmount) * Math.pow(10, decimals)).toString();
 
+          // Pass the correct fromAddress to LiFi
           const routes = await lifiService.getDepositRoute({
               fromChainId: bridgeFromChain,
               fromTokenAddress: fromToken, 
               fromAmount: rawAmount, 
-              fromAddress: senderAddress,
+              fromAddress: senderAddress, // <--- CRITICAL FIX
               toChainId: 137, // Polygon
               toTokenAddress: USDC_POLYGON, // USDC
               toAddress: proxyAddress
@@ -1084,10 +1086,15 @@ const App = () => {
           
           alert("✅ Bridging Complete! Funds are arriving in your Smart Account.");
           setBridgeQuote(null);
-          // Refetch from server
           lifiService.fetchHistory().then(setBridgeHistory);
       } catch (e: any) {
-          alert("Bridge Failed: " + e.message);
+          console.error(e);
+          // Enhanced Error Message
+          let msg = e.message || "Unknown Error";
+          if (msg.includes("403") || msg.includes("simulation") || msg.includes("Simulation")) {
+              msg = "Transaction failed simulation. \n\nPOSSIBLE CAUSES:\n1. Insufficient SOL for 'Rent Exemption' (approx $0.30) + Gas fees.\n2. Slippage too low (try refreshing quote).\n3. Network congestion.";
+          }
+          alert("Bridge Failed: " + msg);
       } finally {
           setIsBridging(false);
           setBridgeStatus('');

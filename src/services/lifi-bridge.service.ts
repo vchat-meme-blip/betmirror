@@ -1,25 +1,35 @@
-import { createConfig, getRoutes, executeRoute, Solana } from '@lifi/sdk';
+import { createConfig, getRoutes, executeRoute, Solana, EVM } from '@lifi/sdk';
 import axios from 'axios';
 
-// --- HELPER: Minimal Solana Adapter for LiFi ---
-// LiFi needs an adapter to sign transactions. We wrap window.solana (Phantom).
-const getPhantomAdapter = async () => {
+// --- HELPER: Solana Adapter for LiFi ---
+// Wraps window.solana (Phantom/Backpack) to satisfy the WalletAdapter interface
+const getSolanaAdapter = async () => {
     const provider = (window as any).solana;
-    if (!provider || !provider.isPhantom) return null;
+    if (!provider) return null;
     
     if (!provider.isConnected) {
-        await provider.connect();
+        try {
+            await provider.connect();
+        } catch (e) {
+            return null; // User rejected
+        }
     }
 
+    // Map Phantom's API to the standard WalletAdapter interface expected by LiFi
     return {
         publicKey: provider.publicKey,
         signTransaction: provider.signTransaction.bind(provider),
         signAllTransactions: provider.signAllTransactions.bind(provider),
-        sendTransaction: async (transaction: any, connection: any, options: any) => {
-             const { signature } = await provider.signAndSendTransaction(transaction, options);
+        signMessage: provider.signMessage?.bind(provider),
+        
+        // Critical: Map sendTransaction to Phantom's signAndSendTransaction
+        sendTransaction: async (transaction: any, connection: any, options: any = {}) => {
+             const { signature } = await provider.signAndSendTransaction(transaction, {
+                 skipPreflight: options.skipPreflight || false,
+             });
              return signature;
         },
-        // Minimal Interface satisfaction
+        
         connect: provider.connect.bind(provider),
         disconnect: provider.disconnect.bind(provider),
         on: provider.on.bind(provider),
@@ -27,32 +37,35 @@ const getPhantomAdapter = async () => {
     };
 };
 
-// Initialize LiFi Config with Solana Support
-const lifiConfig = createConfig({
-  integrator: 'BetMirror', 
+// --- GLOBAL CONFIGURATION ---
+// We explicitly register both EVM (MetaMask) and Solana (Phantom) providers.
+createConfig({
+  integrator: 'bet-mirror-pro', 
   providers: [
-      // Configure Solana Provider dynamically
+      EVM(), // Automatically detects window.ethereum
       Solana({
           async getWalletAdapter() {
-              const adapter = await getPhantomAdapter();
-              if (!adapter) throw new Error("Solana Wallet not found or not connected.");
+              const adapter = await getSolanaAdapter();
+              if (!adapter) {
+                  throw new Error("Solana wallet not found. Please install Phantom.");
+              }
               return adapter as any; 
           }
       })
-  ], 
+  ],
   routeOptions: {
-    fee: 0.005, // 0.5% Protocol Fee (Global Setting)
+    fee: 0.005, // 0.5% Platform Fee
   }
 });
 
 export interface BridgeQuoteParams {
   fromChainId: number;
   fromTokenAddress: string;
-  fromAmount: string; // Atomic units
-  fromAddress?: string; // Address sending the funds
+  fromAmount: string; 
+  fromAddress?: string; // Sender Address
   toChainId: number;
   toTokenAddress: string;
-  toAddress: string; // The Proxy/Smart Account Address
+  toAddress: string; // Destination (Smart Account)
 }
 
 export interface BridgeTransactionRecord {
@@ -76,24 +89,19 @@ export class LiFiBridgeService {
       this.userId = userId;
   }
   
-  /**
-   * Get a quote to bridge funds from User's Chain -> Polygon Proxy
-   * Fees are now applied globally via createConfig
-   */
   async getDepositRoute(params: BridgeQuoteParams) {
     try {
       const result = await getRoutes({
         fromChainId: params.fromChainId,
         fromTokenAddress: params.fromTokenAddress,
         fromAmount: params.fromAmount,
-        fromAddress: params.fromAddress,
-        toChainId: params.toChainId, // Target: Polygon
-        toTokenAddress: params.toTokenAddress, // Target: USDC
+        fromAddress: params.fromAddress, // Critical for LiFi to know WHO is sending
+        toChainId: params.toChainId,
+        toTokenAddress: params.toTokenAddress, 
         toAddress: params.toAddress,
         options: {
             slippage: 0.005, // 0.5% Slippage
             order: 'CHEAPEST'
-            // Integrator and Fee are now handled globally
         }
       });
       
@@ -104,14 +112,9 @@ export class LiFiBridgeService {
     }
   }
 
-  /**
-   * Execute the bridge transaction
-   * Returns the full route object for tracking
-   */
   async executeBridge(route: any, onUpdate: (status: string, step?: any) => void) {
      const recordId = Math.random().toString(36).substring(7);
      
-     // 1. Log Start
      const record: BridgeTransactionRecord = {
          id: recordId,
          timestamp: new Date().toISOString(),
@@ -127,12 +130,10 @@ export class LiFiBridgeService {
      await this.saveRecord(record);
 
      try {
-         // 2. Execute
          const result = await executeRoute(route, {
              updateRouteHook: (updatedRoute) => {
                  const step = updatedRoute.steps[0];
                  const process = step.execution?.process;
-                 // Find the active process
                  const activeProcess = process?.find((p: any) => p.status === 'STARTED' || p.status === 'PENDING') || process?.[process.length - 1];
                  
                  let statusMsg = "Processing...";
@@ -146,9 +147,8 @@ export class LiFiBridgeService {
              }
          });
          
-         // 3. Success
          const lastStep = result.steps[result.steps.length - 1];
-         // Safe access to txHash via casting or process inspection
+         // Attempt to extract TxHash from various locations in the response
          const txHash = (lastStep.execution as any)?.toTx || 
                         lastStep.execution?.process?.find((p: any) => p.txHash)?.txHash ||
                         lastStep.execution?.process?.slice(-1)[0]?.txHash;
@@ -156,7 +156,6 @@ export class LiFiBridgeService {
          await this.saveRecord({ ...record, status: 'COMPLETED', txHash });
          return result;
      } catch (e) {
-         // 4. Fail
          await this.saveRecord({ ...record, status: 'FAILED' });
          throw e;
      }
@@ -169,7 +168,6 @@ export class LiFiBridgeService {
           this.history = res.data;
           return this.history;
       } catch (e) {
-          console.error("Failed to fetch bridge history", e);
           return [];
       }
   }
@@ -179,7 +177,6 @@ export class LiFiBridgeService {
   }
 
   private async saveRecord(record: BridgeTransactionRecord) {
-      // Update Local State
       const index = this.history.findIndex(r => r.id === record.id);
       if (index >= 0) {
           this.history[index] = record;
@@ -187,7 +184,6 @@ export class LiFiBridgeService {
           this.history.unshift(record);
       }
 
-      // Persist to DB
       if (this.userId) {
           try {
               await axios.post('/api/bridge/record', {
@@ -212,36 +208,27 @@ export class LiFiBridgeService {
       }
   }
 
-  /**
-   * Returns the correct token address for LiFi based on Chain and Type.
-   * FIX: Solana Native must use specific mint address, not 0x00.
-   */
   getTokenAddress(chainId: number, type: 'NATIVE' | 'USDC'): string {
-      // Solana Special Case
+      // Solana
       if (chainId === 1151111081099710) {
-          if (type === 'NATIVE') return '11111111111111111111111111111111'; // SOL Mint
-          if (type === 'USDC') return 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // USDC (Solana)
+          if (type === 'NATIVE') return '11111111111111111111111111111111'; 
+          if (type === 'USDC') return 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; 
       }
 
-      // EVM Native (ETH/MATIC/BNB)
+      // EVM Native
       if (type === 'NATIVE') {
           return '0x0000000000000000000000000000000000000000';
       }
 
-      // EVM USDC Addresses
+      // EVM USDC
       switch(chainId) {
-          case 1: return '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'; // Ethereum
-          case 137: return '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // Polygon (Bridged)
-          case 8453: return '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'; // Base
-          case 42161: return '0xaf88d065e77c8cc2239327c5edb3a432268e5831'; // Arbitrum
-          case 56: return '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d'; // BNB
-          default: return '0x0000000000000000000000000000000000000000'; // Fallback
+          case 1: return '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+          case 137: return '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+          case 8453: return '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+          case 42161: return '0xaf88d065e77c8cc2239327c5edb3a432268e5831';
+          case 56: return '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d';
+          default: return '0x0000000000000000000000000000000000000000';
       }
-  }
-
-  // Deprecated: Use getTokenAddress instead
-  getNativeToken(chainId: number): string {
-      return this.getTokenAddress(chainId, 'NATIVE');
   }
 }
 
