@@ -40,7 +40,7 @@ const getSolanaAdapter = async () => {
 // --- GLOBAL CONFIGURATION ---
 // We explicitly register both EVM (MetaMask) and Solana (Phantom) providers.
 createConfig({
-  integrator: 'bet-mirror-pro', 
+  integrator: 'BetMirror', 
   providers: [
       EVM(), // Automatically detects window.ethereum
       Solana({
