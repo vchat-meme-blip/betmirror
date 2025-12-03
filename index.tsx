@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import axios from 'axios';
@@ -2651,10 +2650,19 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                         <span className="text-xs font-bold text-gray-900 dark:text-white tracking-widest">BET MIRROR PRO</span>
                     </div>
                     
-                    <div className="flex gap-8">
-                        <a href="https://github.com/vchat-meme-blip/betmirror" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors"><FileText size={16}/></a>
-                        <a href="https://x.com/bet_mirror" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors"><Twitter size={16}/></a>
-                        <a href="https://docs.betmirror.bet" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors"><Github size={16}/></a>
+                    <div className="flex gap-6">
+                        <a href="/pitchdeck.pdf" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors flex items-center gap-2 text-xs font-medium">
+                            <FileText size={16}/> Pitch Deck
+                        </a>
+                        <a href="https://docs.betmirror.bet" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
+                            <BookOpen size={16}/>
+                        </a>
+                        <a href="https://github.com/vchat-meme-blip/betmirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
+                            <Github size={16}/>
+                        </a>
+                        <a href="https://x.com/bet_mirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
+                            <Twitter size={16}/>
+                        </a>
                     </div>
 
                     <div className="text-[10px] text-gray-400 font-medium">

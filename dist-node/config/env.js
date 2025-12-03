@@ -83,7 +83,7 @@ export function loadEnv() {
         zeroDevRpc: process.env.ZERODEV_RPC || 'https://rpc.zerodev.app/api/v2/bundler/your-project-id',
         zeroDevProjectId: process.env.ZERODEV_PROJECT_ID,
         // Li.Fi
-        lifiIntegrator: process.env.LIFI_INTEGRATOR || 'Bet Mirror Pro',
+        lifiIntegrator: process.env.LIFI_INTEGRATOR || 'BetMirror',
         lifiApiKey: process.env.LIFI_API_KEY,
         // Database
         mongoUri: process.env.MONGODB_URI || defaultMongoUri,
