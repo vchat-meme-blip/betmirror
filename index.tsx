@@ -10,7 +10,8 @@ import {
   CheckCircle2, ArrowDownCircle, ArrowUpCircle, Brain, AlertCircle, Trophy, Globe, Zap, LogOut,
   Info, HelpCircle, ChevronRight, Rocket, Gauge, MessageSquare, Star, ArrowRightLeft, LifeBuoy,
   Sun, Moon, Loader2, Timer, Fuel, Check, BarChart3, ChevronDown, MousePointerClick,
-  Zap as ZapIcon, FileText, Twitter, Github, LockKeyhole, BadgeCheck, Search, BookOpen, ArrowRightCircle, AreaChart
+  Zap as ZapIcon, FileText, Twitter, Github, LockKeyhole, BadgeCheck, Search, BookOpen, ArrowRightCircle, AreaChart,
+  Volume2, VolumeX
 } from 'lucide-react';
 import { web3Service, USDC_POLYGON, USDC_ABI } from './src/services/web3.service';
 import { lifiService, BridgeTransactionRecord } from './src/services/lifi-bridge.service';
@@ -22,6 +23,25 @@ import { parseUnits, formatUnits, Contract, BrowserProvider, JsonRpcProvider } f
 
 // Initialize Services
 const zeroDevService = new ZeroDevService(process.env.ZERODEV_RPC || 'https://rpc.zerodev.app/api/v2/bundler/PROJECT_ID');
+
+// --- Constants & Assets ---
+const CHAIN_ICONS: Record<number, string> = {
+    1: "https://cryptologos.cc/logos/ethereum-eth-logo.svg?v=026",
+    137: "https://cryptologos.cc/logos/polygon-matic-logo.svg?v=026",
+    8453: "https://cdn.brandfetch.io/id6XsSOVVS/theme/dark/logo.svg?c=1bxid64Mup7aczewSAYMX&t=1757929765938",
+    42161: "https://cryptologos.cc/logos/arbitrum-arb-logo.svg?v=026",
+    56: "https://cryptologos.cc/logos/bnb-bnb-logo.svg?v=026",
+    1151111081099710: "https://cryptologos.cc/logos/solana-sol-logo.svg?v=026"
+};
+
+const CHAIN_NAMES: Record<number, string> = {
+    1: "Ethereum Mainnet",
+    137: "Polygon",
+    8453: "Base",
+    42161: "Arbitrum One",
+    56: "BNB Chain",
+    1151111081099710: "Solana"
+};
 
 // --- Types ---
 interface Log {
@@ -43,6 +63,7 @@ interface AppConfig {
   enableAutoCashout: boolean;
   maxRetentionAmount: number;
   coldWalletAddress: string;
+  enableSounds: boolean; // New Setting
 }
 
 interface WalletBalances {
@@ -80,6 +101,18 @@ interface PolyTrade {
 }
 
 const STORAGE_KEY = 'bet_mirror_v3_config';
+
+// --- Sound Manager ---
+const playSound = (type: 'start' | 'stop' | 'trade' | 'cashout' | 'error') => {
+    try {
+        // Check if user has enabled sounds in local storage or state (handled in call site)
+        const audio = new Audio(`/sounds/${type}.mp3`);
+        audio.volume = 0.5;
+        audio.play().catch(e => console.warn("Audio play failed (interaction needed):", e));
+    } catch (e) {
+        console.warn("Audio error", e);
+    }
+};
 
 // --- Components ---
 const Tooltip = ({ text }: { text: string }) => (
@@ -704,8 +737,12 @@ const App = () => {
   const [bridgeQuote, setBridgeQuote] = useState<any>(null);
   const [isBridging, setIsBridging] = useState(false);
   const [bridgeStatus, setBridgeStatus] = useState<string>('');
-  // Add display state for sender address
   const [senderAddressDisplay, setSenderAddressDisplay] = useState<string>('');
+  const [isChainSelectOpen, setIsChainSelectOpen] = useState(false); // Custom Select State
+  // New State for Dest Token Toggle (USDC vs POL)
+  const [destToken, setDestToken] = useState<'USDC' | 'POL'>('USDC');
+  // Bridge Guide Modal
+  const [showBridgeGuide, setShowBridgeGuide] = useState(false);
 
   const [config, setConfig] = useState<AppConfig>({
     targets: [],
@@ -718,7 +755,8 @@ const App = () => {
     userPhoneNumber: '',
     enableAutoCashout: false,
     maxRetentionAmount: 50,
-    coldWalletAddress: ''
+    coldWalletAddress: '',
+    enableSounds: true
   });
 
   // Helper to update state AND local storage simultaneously
@@ -754,6 +792,16 @@ const App = () => {
       }
   }, [userAddress]);
 
+  // Show Bridge Guide on first visit if balances are low
+  useEffect(() => {
+     if (activeTab === 'bridge' && parseFloat(proxyWalletBal.native) < 0.01 && parseFloat(proxyWalletBal.usdc) < 5) {
+         // Check if user has dismissed it before
+         if (!localStorage.getItem('bridge_guide_dismissed')) {
+             setShowBridgeGuide(true);
+         }
+     }
+  }, [activeTab, proxyWalletBal]);
+
   // Apply Theme Class
   useEffect(() => {
       const root = document.documentElement;
@@ -784,32 +832,34 @@ const App = () => {
         try {
             const res = await axios.get(`/api/bot/status/${userAddress}`);
             setIsRunning(res.data.isRunning);
+            
+            // Check for new logs/trades to play sound
+            if (res.data.history && res.data.history.length > history.length && config.enableSounds) {
+                playSound('trade');
+            }
+
             if (res.data.logs) setLogs(res.data.logs); // Now fetches from DB
             if (res.data.history) setHistory(res.data.history);
             if (res.data.stats) setStats(res.data.stats);
 
-            // Sync Config from Server if available
-            if (res.data.config) {
+            // Sync Config from Server ONLY IF RUNNING (Source of Truth)
+            // If stopped, local state is king (allows editing without overwrite)
+            if (res.data.isRunning && res.data.config) {
                  const serverConfig = res.data.config;
-                 // Only auto-sync if we are running (server is truth) OR if local is empty/default
-                 // This prevents overwriting user input while typing, but ensures consistency.
-                 if (res.data.isRunning || config.targets.length === 0) {
-                     setConfig(prev => ({
-                         ...prev,
-                         targets: serverConfig.userAddresses || [],
-                         rpcUrl: serverConfig.rpcUrl,
-                         // Don't overwrite keys if server masks them, but generally good to sync
-                         geminiApiKey: serverConfig.geminiApiKey || prev.geminiApiKey,
-                         multiplier: serverConfig.multiplier,
-                         riskProfile: serverConfig.riskProfile,
-                         autoTp: serverConfig.autoTp,
-                         enableNotifications: serverConfig.enableNotifications,
-                         userPhoneNumber: serverConfig.userPhoneNumber,
-                         enableAutoCashout: serverConfig.autoCashout?.enabled,
-                         maxRetentionAmount: serverConfig.autoCashout?.maxAmount,
-                         coldWalletAddress: serverConfig.autoCashout?.destinationAddress
-                     }));
-                 }
+                 setConfig(prev => ({
+                     ...prev,
+                     targets: serverConfig.userAddresses || [],
+                     rpcUrl: serverConfig.rpcUrl,
+                     geminiApiKey: serverConfig.geminiApiKey || prev.geminiApiKey,
+                     multiplier: serverConfig.multiplier,
+                     riskProfile: serverConfig.riskProfile,
+                     autoTp: serverConfig.autoTp,
+                     enableNotifications: serverConfig.enableNotifications,
+                     userPhoneNumber: serverConfig.userPhoneNumber,
+                     enableAutoCashout: serverConfig.autoCashout?.enabled,
+                     maxRetentionAmount: serverConfig.autoCashout?.maxAmount,
+                     coldWalletAddress: serverConfig.autoCashout?.destinationAddress
+                 }));
             }
 
             if (activeTab === 'system') {
@@ -829,7 +879,7 @@ const App = () => {
         clearInterval(interval);
         clearInterval(balanceInterval);
     };
-  }, [isConnected, userAddress, proxyAddress, needsActivation, activeTab]);
+  }, [isConnected, userAddress, proxyAddress, needsActivation, activeTab, history.length, config.enableSounds]);
 
   useEffect(() => {
       if(isConnected && !needsActivation) fetchRegistry();
@@ -1027,8 +1077,6 @@ const App = () => {
           let senderAddress = userAddress;
           
           // FIX: Special Handling for Solana
-          // If bridging FROM Solana (Chain ID 1151111081099710), we must use the Phantom/Sol address
-          // instead of the 0x EVM address.
           if (bridgeFromChain === 1151111081099710) {
               try {
                   const solAddress = await web3Service.getSolanaAddress();
@@ -1048,19 +1096,24 @@ const App = () => {
           
           let decimals = 18;
           if (bridgeToken === 'USDC') decimals = 6;
-          // Solana Native is 9 decimals
           if (bridgeToken === 'NATIVE' && bridgeFromChain === 1151111081099710) decimals = 9; 
 
           const rawAmount = (Number(bridgeAmount) * Math.pow(10, decimals)).toString();
+
+          // DESTINATION: Toggle between USDC and POL
+          let toTokenAddress = USDC_POLYGON; // Default USDC
+          if (destToken === 'POL') {
+              toTokenAddress = '0x0000000000000000000000000000000000000000'; // Native POL
+          }
 
           // Pass the correct fromAddress to LiFi
           const routes = await lifiService.getDepositRoute({
               fromChainId: bridgeFromChain,
               fromTokenAddress: fromToken, 
               fromAmount: rawAmount, 
-              fromAddress: senderAddress, // <--- CRITICAL FIX
+              fromAddress: senderAddress, 
               toChainId: 137, // Polygon
-              toTokenAddress: USDC_POLYGON, // USDC
+              toTokenAddress: toTokenAddress,
               toAddress: proxyAddress
           });
           
@@ -1083,6 +1136,8 @@ const App = () => {
               console.log(status, step);
               setBridgeStatus(status);
           });
+          
+          if (config.enableSounds) playSound('cashout'); // Sound on bridge success
           
           alert("✅ Bridging Complete! Funds are arriving in your Smart Account.");
           setBridgeQuote(null);
@@ -1122,6 +1177,7 @@ const App = () => {
              USDC_POLYGON
          );
          
+         if (config.enableSounds) playSound('cashout');
          alert(`✅ Withdrawal Successful!\nTx Hash: ${txHash}`);
       } catch (e: any) {
          console.error(e);
@@ -1137,6 +1193,8 @@ const App = () => {
           setActiveTab('vault');
           return;
       }
+      
+      if (config.enableSounds) playSound('start');
 
       const payload = {
           userId: userAddress,
@@ -1167,6 +1225,7 @@ const App = () => {
   };
 
   const handleStop = async () => {
+      if (config.enableSounds) playSound('stop');
       try {
           await axios.post('/api/bot/stop', { userId: userAddress });
           setIsRunning(false);
@@ -1293,15 +1352,19 @@ const App = () => {
             </nav>
 
             <div className="flex items-center gap-4">
-                 {/* Chain Indicator */}
-                 {chainId !== 137 && (
-                     <button 
-                        onClick={() => web3Service.switchToChain(137)}
-                        className="hidden md:flex items-center gap-2 px-3 py-1 bg-yellow-100 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-500 rounded text-xs font-bold border border-yellow-200 dark:border-yellow-700/30"
-                     >
-                         <AlertTriangle size={12}/> WRONG NETWORK (SWITCH)
-                     </button>
-                 )}
+                 {/* Chain Indicator - Updated with Icon */}
+                 <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-white/5 rounded-lg border border-gray-200 dark:border-white/10 text-xs font-medium">
+                    {chainId === 137 ? (
+                        <>
+                            <img src={CHAIN_ICONS[137]} className="w-4 h-4 rounded-full" alt="Polygon"/>
+                            <span className="hidden sm:inline text-gray-700 dark:text-gray-300">Polygon</span>
+                        </>
+                    ) : (
+                        <button onClick={() => web3Service.switchToChain(137)} className="flex items-center gap-2 text-yellow-600 dark:text-yellow-500 font-bold animate-pulse">
+                            <AlertTriangle size={12}/> Wrong Network
+                        </button>
+                    )}
+                 </div>
 
                  {/* Theme Toggle */}
                  <button onClick={toggleTheme} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-white/10 text-gray-600 dark:text-gray-400 transition-colors">
@@ -1373,7 +1436,7 @@ const App = () => {
                              <div className="space-y-3">
                                 <div className="flex items-center gap-2 mb-2">
                                     <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] text-white bg-green-600">P</div>
-                                    <span className="text-sm font-bold text-gray-900 dark:text-white">Smart Bot</span>
+                                    <span className="text-sm font-bold text-gray-900 dark:text-white">Smart Trading Vault</span>
                                     {/* Proxy Copy */}
                                     <button 
                                         onClick={() => copyToClipboard(proxyAddress)} 
@@ -1381,10 +1444,11 @@ const App = () => {
                                     >
                                         <Copy size={12}/>
                                     </button>
+                                    <Tooltip text="This is your automated trading vault on Polygon. It holds the funds used by the bot to execute trades." />
                                     <span className="text-[10px] text-gray-500 bg-gray-200 dark:bg-gray-900 px-1.5 rounded">Polygon</span>
                                 </div>
                                 <div className="p-3 bg-white dark:bg-black/40 rounded border border-gray-200 dark:border-gray-800 flex justify-between shadow-sm dark:shadow-none">
-                                    <span className="text-xs text-gray-500 dark:text-gray-400">POL</span>
+                                    <span className="text-xs text-gray-500 dark:text-gray-400">POL (Gas)</span>
                                     <span className="text-sm font-mono text-gray-900 dark:text-white">{proxyWalletBal.native}</span>
                                 </div>
                                 <div className="p-3 bg-white dark:bg-black/40 rounded border border-gray-200 dark:border-gray-800 flex justify-between shadow-sm dark:shadow-none">
@@ -1686,6 +1750,42 @@ const App = () => {
         {/* BRIDGE */}
         {activeTab === 'bridge' && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                {/* Bridge Guide Modal */}
+                {showBridgeGuide && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in">
+                        <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-xl max-w-md w-full p-6 relative shadow-2xl">
+                            <button onClick={() => { setShowBridgeGuide(false); localStorage.setItem('bridge_guide_dismissed', 'true'); }} className="absolute top-4 right-4 text-gray-500 hover:text-black dark:hover:text-white"><X/></button>
+                            
+                            <div className="flex flex-col items-center text-center gap-4 mb-4">
+                                <div className="w-16 h-16 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center text-blue-600 dark:text-blue-400">
+                                    <Fuel size={32}/>
+                                </div>
+                                <h3 className="text-xl font-bold text-gray-900 dark:text-white">First Time Setup</h3>
+                            </div>
+
+                            <div className="space-y-4 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                                <p>
+                                    To start your bot, you need two things on the Polygon network:
+                                </p>
+                                <ul className="list-disc pl-5 space-y-2">
+                                    <li><strong>USDC:</strong> To place trades (Collateral).</li>
+                                    <li><strong>POL (Matic):</strong> To pay for gas fees (even with account abstraction, some base gas is needed for activation).</li>
+                                </ul>
+                                <div className="bg-yellow-50 dark:bg-yellow-900/20 p-3 rounded-lg border border-yellow-200 dark:border-yellow-800 text-yellow-800 dark:text-yellow-200 text-xs font-bold">
+                                    💡 Tip: Bridge at least $2 of POL first, then bridge your USDC.
+                                </div>
+                            </div>
+
+                            <button 
+                                onClick={() => { setShowBridgeGuide(false); localStorage.setItem('bridge_guide_dismissed', 'true'); }}
+                                className="mt-6 w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-all"
+                            >
+                                Got it
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 {/* Bridge Form */}
                 <div className="md:col-span-2 glass-panel p-8 rounded-xl border border-gray-200 dark:border-terminal-border">
                     <div className="flex items-center justify-between mb-8">
@@ -1703,20 +1803,37 @@ const App = () => {
                     
                     <div className="space-y-6 max-w-lg mx-auto">
                         <div className="p-4 bg-white dark:bg-black/40 rounded-lg border border-gray-200 dark:border-terminal-border shadow-sm dark:shadow-none">
-                            <label className="text-xs text-gray-500 uppercase font-bold mb-2 block">From</label>
-                            <div className="flex gap-2 mb-4">
-                                <select 
-                                    className="bg-gray-50 dark:bg-terminal-card border border-gray-200 dark:border-terminal-border text-gray-900 dark:text-white text-sm rounded px-3 py-2 flex-1 outline-none"
-                                    value={bridgeFromChain}
-                                    onChange={(e) => setBridgeFromChain(Number(e.target.value))}
+                            <label className="text-xs text-gray-500 uppercase font-bold mb-2 block">From Network</label>
+                            
+                            {/* Custom Chain Dropdown */}
+                            <div className="relative mb-4">
+                                <button 
+                                    onClick={() => setIsChainSelectOpen(!isChainSelectOpen)}
+                                    className="w-full flex items-center justify-between bg-gray-50 dark:bg-terminal-card border border-gray-200 dark:border-terminal-border text-gray-900 dark:text-white text-sm rounded-lg px-3 py-3 outline-none focus:border-blue-500 transition-colors"
                                 >
-                                    <option value={8453}>Base (ETH/USDC)</option>
-                                    <option value={56}>BNB Chain (BNB/USDC)</option>
-                                    <option value={42161}>Arbitrum (ETH/USDC)</option>
-                                    <option value={1}>Ethereum (ETH/USDC)</option>
-                                    <option value={1151111081099710}>Solana (SOL/USDC)</option>
-                                </select>
+                                    <div className="flex items-center gap-3">
+                                        <img src={CHAIN_ICONS[bridgeFromChain]} alt="chain" className="w-6 h-6 rounded-full"/>
+                                        <span className="font-bold">{CHAIN_NAMES[bridgeFromChain]}</span>
+                                    </div>
+                                    <ChevronDown size={16} className={`transition-transform ${isChainSelectOpen ? 'rotate-180' : ''}`}/>
+                                </button>
+                                
+                                {isChainSelectOpen && (
+                                    <div className="absolute top-full left-0 w-full mt-1 bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-lg shadow-xl z-20 overflow-hidden animate-in fade-in slide-in-from-top-2">
+                                        {[8453, 56, 42161, 1, 1151111081099710].map(cId => (
+                                            <button 
+                                                key={cId}
+                                                onClick={() => { setBridgeFromChain(cId); setIsChainSelectOpen(false); }}
+                                                className="w-fullflex items-center gap-3 px-4 py-3 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors text-sm text-gray-900 dark:text-white w-full text-left"
+                                            >
+                                                <img src={CHAIN_ICONS[cId]} alt="" className="w-5 h-5 rounded-full"/>
+                                                <span>{CHAIN_NAMES[cId]}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
+
                             <div className="flex gap-2 items-center">
                                 <input 
                                     type="number" 
@@ -1725,26 +1842,26 @@ const App = () => {
                                     value={bridgeAmount}
                                     onChange={(e) => setBridgeAmount(e.target.value)}
                                 />
-                                {/* --- FIX: Token Selector --- */}
-                                <div className="flex bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
+                                {/* Source Token Selector */}
+                                <div className="flex bg-gray-100 dark:bg-gray-800 p-1 rounded-lg shrink-0">
                                     <button 
                                         onClick={() => setBridgeToken('NATIVE')}
-                                        className={`px-3 py-1 text-xs font-bold rounded ${bridgeToken === 'NATIVE' ? 'bg-white dark:bg-gray-700 shadow-sm text-gray-900 dark:text-white' : 'text-gray-500'}`}
+                                        className={`px-3 py-1 text-xs font-bold rounded transition-all ${bridgeToken === 'NATIVE' ? 'bg-white dark:bg-gray-700 shadow-sm text-gray-900 dark:text-white' : 'text-gray-500'}`}
                                     >
-                                        NATIVE
+                                        {bridgeFromChain === 1151111081099710 ? 'SOL' : 'ETH/BNB'}
                                     </button>
                                     <button 
                                         onClick={() => setBridgeToken('USDC')}
-                                        className={`px-3 py-1 text-xs font-bold rounded ${bridgeToken === 'USDC' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-500'}`}
+                                        className={`px-3 py-1 text-xs font-bold rounded transition-all ${bridgeToken === 'USDC' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-500'}`}
                                     >
                                         USDC
                                     </button>
                                 </div>
                             </div>
                             
-                            {/* --- NEW: Address Feedback --- */}
+                            {/* --- Address Feedback --- */}
                             <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700 text-[10px] text-gray-500 flex justify-between items-center">
-                                <span>Using Wallet Address:</span>
+                                <span>Wallet:</span>
                                 <span className="font-mono bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded text-gray-700 dark:text-gray-300 truncate max-w-[180px]" title={senderAddressDisplay}>
                                     {senderAddressDisplay || 'Not Connected'}
                                 </span>
@@ -1754,13 +1871,28 @@ const App = () => {
                         <div className="flex justify-center"><ArrowDownCircle className="text-gray-400 dark:text-gray-600" /></div>
 
                         <div className="p-4 bg-gray-50 dark:bg-black/40 rounded-lg border border-gray-200 dark:border-terminal-border opacity-80 dark:opacity-70">
-                            <label className="text-xs text-gray-500 uppercase font-bold mb-2 block">To (Smart Account)</label>
+                            <label className="text-xs text-gray-500 uppercase font-bold mb-2 block">To (Smart Vault)</label>
                             <div className="flex justify-between items-center">
-                                <div className="flex items-center gap-2">
-                                    <div className="w-6 h-6 rounded-full bg-purple-600 flex items-center justify-center text-[10px] text-white">P</div>
+                                <div className="flex items-center gap-3">
+                                    <img src={CHAIN_ICONS[137]} className="w-6 h-6 rounded-full" alt="Polygon"/>
                                     <span className="text-gray-900 dark:text-white font-bold">Polygon</span>
                                 </div>
-                                <span className="text-gray-900 dark:text-white font-mono">USDC</span>
+                                
+                                {/* Destination Token Toggle (USDC/POL) */}
+                                <div className="flex bg-gray-200 dark:bg-gray-800 p-1 rounded-lg">
+                                    <button 
+                                        onClick={() => setDestToken('USDC')}
+                                        className={`px-3 py-1 text-xs font-bold rounded transition-all ${destToken === 'USDC' ? 'bg-white dark:bg-gray-600 shadow text-black dark:text-white' : 'text-gray-500'}`}
+                                    >
+                                        USDC
+                                    </button>
+                                    <button 
+                                        onClick={() => setDestToken('POL')}
+                                        className={`px-3 py-1 text-xs font-bold rounded transition-all ${destToken === 'POL' ? 'bg-white dark:bg-gray-600 shadow text-black dark:text-white' : 'text-gray-500'}`}
+                                    >
+                                        POL (Gas)
+                                    </button>
+                                </div>
                             </div>
                         </div>
 
@@ -1781,7 +1913,7 @@ const App = () => {
                                     <div className="grid grid-cols-2 gap-4 pt-2">
                                         <div>
                                             <span className="text-[10px] text-gray-500 uppercase block">Receive</span>
-                                            <span className="font-mono font-bold text-gray-900 dark:text-white text-lg">~{parseFloat(bridgeQuote.toAmountUSD).toFixed(2)} USDC</span>
+                                            <span className="font-mono font-bold text-gray-900 dark:text-white text-lg">~{parseFloat(bridgeQuote.toAmountUSD).toFixed(2)} {destToken}</span>
                                         </div>
                                         <div>
                                             <span className="text-[10px] text-gray-500 uppercase block">Est. Time</span>
@@ -2050,6 +2182,22 @@ const App = () => {
                                             />
                                         </div>
                                     )}
+                                </div>
+                             </div>
+
+                             {/* Sound Settings */}
+                             <div className="flex items-start gap-4 pt-4 border-t border-gray-200 dark:border-gray-800">
+                                <div className="mt-1">
+                                    <button onClick={() => updateConfig({...config, enableSounds: !config.enableSounds})} className={`p-1 rounded-full transition-colors ${config.enableSounds ? 'bg-purple-100 dark:bg-purple-900/20 text-purple-600' : 'text-gray-400'}`}>
+                                        {config.enableSounds ? <Volume2 size={16}/> : <VolumeX size={16}/>}
+                                    </button>
+                                </div>
+                                <div className="flex-1">
+                                    <div className="flex justify-between">
+                                        <span className="text-sm font-bold text-gray-900 dark:text-white">Sound Effects</span>
+                                        <span className="text-[10px] text-gray-500">{config.enableSounds ? 'ON' : 'OFF'}</span>
+                                    </div>
+                                    <p className="text-[10px] text-gray-500 mt-1">Play sounds on start, stop, and trade execution.</p>
                                 </div>
                              </div>
                         </div>
