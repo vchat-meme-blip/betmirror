@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import axios from 'axios';
@@ -286,7 +285,6 @@ const DepositModal = ({
     );
 };
 
-
 const WithdrawalModal = ({ 
     isOpen, 
     onClose, 
@@ -361,10 +359,10 @@ const WithdrawalModal = ({
                                     <div className="text-xs text-gray-500">Polymarket Trading Funds</div>
                                 </div>
                                 <div className="text-right">
-                                     <div className="font-mono font-bold text-gray-900 dark:text-white">${balances.usdcBridged || '0.00'}</div>
+                                     <div className="font-mono font-bold text-gray-900 dark:text-white">${balances.usdc || '0.00'}</div>
                                      <button 
                                         onClick={() => onWithdraw('USDC.e')}
-                                        disabled={isWithdrawing || parseFloat(balances.usdcBridged || '0') <= 0}
+                                        disabled={isWithdrawing || parseFloat(balances.usdc) <= 0}
                                         className="text-[10px] text-green-600 hover:underline disabled:opacity-50 disabled:no-underline font-bold mt-1"
                                      >
                                         WITHDRAW ALL
