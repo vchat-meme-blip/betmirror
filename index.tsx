@@ -361,10 +361,10 @@ const WithdrawalModal = ({
                                     <div className="text-xs text-gray-500">Polymarket Trading Funds</div>
                                 </div>
                                 <div className="text-right">
-                                     <div className="font-mono font-bold text-gray-900 dark:text-white">${balances.usdc || '0.00'}</div>
+                                     <div className="font-mono font-bold text-gray-900 dark:text-white">${balances.usdcBridged || '0.00'}</div>
                                      <button 
                                         onClick={() => onWithdraw('USDC.e')}
-                                        disabled={isWithdrawing || parseFloat(balances.usdc) <= 0}
+                                        disabled={isWithdrawing || parseFloat(balances.usdcBridged || '0') <= 0}
                                         className="text-[10px] text-green-600 hover:underline disabled:opacity-50 disabled:no-underline font-bold mt-1"
                                      >
                                         WITHDRAW ALL
@@ -1307,6 +1307,21 @@ const App = () => {
       };
   }, [bridgeAmount, selectedSourceChain, selectedDestChain, bridgeToken, destToken, recipientAddress, activeTab]);
 
+    // --- SMART NETWORK SWITCHING ---
+  // 1. Auto-switch to Polygon when leaving Bridge Page or accessing critical features
+  useEffect(() => {
+    if (isConnected && activeTab !== 'bridge' && chainId !== 137) {
+         // Silent switch attempt for better UX
+         web3Service.switchToChain(137).catch(console.error);
+    }
+  }, [activeTab, isConnected, chainId]);
+
+  // 2. Auto-switch to Polygon when Bridge Mode is OUT (Source is Polygon)
+  useEffect(() => {
+    if (isConnected && activeTab === 'bridge' && bridgeMode === 'OUT' && chainId !== 137) {
+         web3Service.switchToChain(137).catch(console.error);
+    }
+  }, [bridgeMode, activeTab, isConnected, chainId]);
 
   // Apply Theme Class
   useEffect(() => {
@@ -1756,10 +1771,26 @@ const App = () => {
       }
   };
 
-  // --- UPDATED: Withdrawal Modal Handler ---
-  const openWithdrawModal = () => {
+    // --- UPDATED: Withdrawal Modal Handler ---
+  const openWithdrawModal = async () => {
       setWithdrawalTxHash(null); // Reset state
+      
+      // FORCE NETWORK CHECK: Must be on Polygon to withdraw from Smart Account
+      if (chainId !== 137) {
+          try {
+              await web3Service.switchToChain(137);
+          } catch (e) {
+              alert("Please switch to Polygon Mainnet to withdraw funds.");
+              return; 
+          }
+      }
+      
       setIsWithdrawModalOpen(true);
+      
+      // FORCE REFRESH: Update balances immediately with new provider context
+      setTimeout(() => {
+          fetchBalances();
+      }, 500);
   };
 
   const handleWithdraw = async (tokenType: 'USDC' | 'USDC.e' | 'POL') => {
