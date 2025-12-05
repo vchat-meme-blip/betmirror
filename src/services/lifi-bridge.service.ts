@@ -1,3 +1,4 @@
+
 import { createConfig, getRoutes, executeRoute, Solana, EVM, Route } from '@lifi/sdk';
 import { createWalletClient, custom } from 'viem';
 import axios from 'axios';
@@ -150,7 +151,8 @@ export class LiFiBridgeService {
       this.userId = userId;
   }
   
-  async getDepositRoute(params: BridgeQuoteParams) {
+  // Renamed for generic usage, maintains backward compat structure
+  async getRoute(params: BridgeQuoteParams) {
     try {
       // Ensure amount is string
       const amountStr = typeof params.fromAmount === 'number' ? String(params.fromAmount) : params.fromAmount;
@@ -206,7 +208,7 @@ export class LiFiBridgeService {
                  if (activeProcess) {
                      if (activeProcess.type === 'TOKEN_ALLOWANCE') statusMsg = "Approving Token Spend...";
                      if (activeProcess.type === 'SWAP') statusMsg = "Swapping Assets...";
-                     if (activeProcess.type === 'CROSS_CHAIN') statusMsg = "Bridging to Polygon...";
+                     if (activeProcess.type === 'CROSS_CHAIN') statusMsg = "Bridging to Destination...";
                      if (activeProcess.status === 'FAILED') statusMsg = `Failed: ${activeProcess.errorMessage || 'Unknown error'}`;
                  }
                  
@@ -283,18 +285,23 @@ export class LiFiBridgeService {
       }
   }
 
-  getTokenAddress(chainId: number, type: 'NATIVE' | 'USDC'): string {
+  // Enhanced to support native/bridged toggling
+  getTokenAddress(chainId: number, type: 'NATIVE' | 'USDC' | 'USDC.e'): string {
       if (chainId === 1151111081099710) { // Solana
           if (type === 'NATIVE') return '11111111111111111111111111111111'; 
-          if (type === 'USDC') return 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; 
+          if (type === 'USDC' || type === 'USDC.e') return 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; 
       }
       if (type === 'NATIVE') {
           return '0x0000000000000000000000000000000000000000';
       }
+      
       // EVM USDC Addresses
       switch(chainId) {
           case 1: return '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
-          case 137: return '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'; // Native USDC on Polygon (important update)
+          case 137: 
+              // Explicit handling for Polygon Bridged vs Native
+              if (type === 'USDC.e') return '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // Bridged USDC.e
+              return '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'; // Native USDC
           case 8453: return '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
           case 42161: return '0xaf88d065e77c8cc2239327c5edb3a432268e5831';
           case 56: return '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d';

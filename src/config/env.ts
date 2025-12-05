@@ -116,6 +116,9 @@ export function loadEnv(): RuntimeEnv {
     retryLimit: Number(process.env.RETRY_LIMIT ?? 3),
     aggregationEnabled: String(process.env.TRADE_AGGREGATION_ENABLED ?? 'false') === 'true',
     aggregationWindowSeconds: Number(process.env.TRADE_AGGREGATION_WINDOW_SECONDS ?? 300),
+    
+    // FIX: Updated to Polygon Bridged USDC (USDC.e) for Polymarket compatibility
+    // This is the critical "Legacy" USDC used by the CLOB
     usdcContractAddress: process.env.USDC_CONTRACT_ADDRESS || '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
     
     // Trade API Keys
@@ -146,7 +149,7 @@ export function loadEnv(): RuntimeEnv {
     userPhoneNumber: process.env.USER_PHONE_NUMBER,
 
     // AA
-    zeroDevRpc: process.env.ZERODEV_RPC || 'https://rpc.zerodev.app/api/v2/bundler/your-project-id',
+    zeroDevRpc: process.env.ZERODEV_RPC || 'https://rpc.zerodev.app/api/v2/bundler/b9f9b537-8525-4b18-9cfe-9a7a6992b6df',
     zeroDevProjectId: process.env.ZERODEV_PROJECT_ID,
     
     // Li.Fi

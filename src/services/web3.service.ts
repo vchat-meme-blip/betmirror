@@ -3,7 +3,12 @@ import { BrowserProvider, Contract, parseUnits, Eip1193Provider } from 'ethers';
 import { createWalletClient, custom, WalletClient } from 'viem';
 import { polygon } from 'viem/chains';
 
-export const USDC_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+// NATIVE USDC (Circle Standard) - Used for Main Wallet, Deposits from Exchanges
+export const USDC_POLYGON = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'; 
+
+// BRIDGED USDC (USDC.e) - Used for Polymarket Trading
+export const USDC_BRIDGED_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+
 export const USDC_ABI = [
   'function balanceOf(address owner) view returns (uint256)',
   'function transfer(address to, uint256 amount) returns (bool)',
@@ -171,7 +176,7 @@ export class Web3Service {
           chainId: "0x89",
           chainName: "Polygon Mainnet",
           nativeCurrency: { name: "POL", symbol: "POL", decimals: 18 },
-          rpcUrls: ["https://little-thrilling-layer.matic.quiknode.pro/378fe82ae3cb5d38e4ac79c202990ad508e1c4c6/"],
+          rpcUrls: ["https://polygon-rpc.com/"],
           blockExplorerUrls: ["https://polygonscan.com/"]
       };
       if (chainId === 56) return {

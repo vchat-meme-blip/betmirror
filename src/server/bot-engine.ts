@@ -1,4 +1,3 @@
-
 import { createPolymarketClient } from '../infrastructure/clob-client.factory.js';
 import { TradeMonitorService } from '../services/trade-monitor.service.js';
 import { TradeExecutorService } from '../services/trade-executor.service.js';
@@ -273,6 +272,9 @@ export class BotEngine {
         aggregationWindowSeconds: 300,
         enableNotifications: this.config.enableNotifications,
         adminRevenueWallet: process.env.ADMIN_REVENUE_WALLET || '0x0000000000000000000000000000000000000000',
+        // FIX: Forced Update to Bridged USDC (USDC.e) address for Polygon.
+        // Polymarket CLOB only accepts this specific token (0x2791...).
+        // Native USDC (0x3c49...) cannot be used for trading.
         usdcContractAddress: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
       };
 

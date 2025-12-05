@@ -125,6 +125,30 @@ export class Web3Service {
             throw e;
         }
     }
+    /**
+     * Special handling for Solana wallets (Phantom/Backpack)
+     * Returns the Base58 address
+     */
+    async getSolanaAddress() {
+        try {
+            // Check for Phantom/Solana injection
+            const solana = window.solana;
+            if (solana) {
+                if (!solana.isConnected) {
+                    // Trigger popup if not connected
+                    await solana.connect();
+                }
+                if (solana.publicKey) {
+                    return solana.publicKey.toString();
+                }
+            }
+            return null;
+        }
+        catch (e) {
+            console.error("Solana connection failed:", e);
+            return null;
+        }
+    }
     getChainConfig(chainId) {
         // Basic configs for popular chains
         if (chainId === 137)

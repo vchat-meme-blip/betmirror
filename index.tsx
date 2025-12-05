@@ -11,9 +11,9 @@ import {
   Info, HelpCircle, ChevronRight, Rocket, Gauge, MessageSquare, Star, ArrowRightLeft, LifeBuoy,
   Sun, Moon, Loader2, Timer, Fuel, Check, BarChart3, ChevronDown, MousePointerClick,
   Zap as ZapIcon, FileText, Twitter, Github, LockKeyhole, BadgeCheck, Search, BookOpen, ArrowRightCircle, AreaChart,
-  Volume2, VolumeX
+  Volume2, VolumeX, Menu, ArrowUpDown, Clipboard, Wallet2
 } from 'lucide-react';
-import { web3Service, USDC_POLYGON, USDC_ABI } from './src/services/web3.service';
+import { web3Service, USDC_POLYGON, USDC_BRIDGED_POLYGON, USDC_ABI } from './src/services/web3.service';
 import { lifiService, BridgeTransactionRecord } from './src/services/lifi-bridge.service';
 import { ZeroDevService } from './src/services/zerodev.service';
 import { TradeHistoryEntry } from './src/domain/trade.types';
@@ -21,10 +21,7 @@ import { TraderProfile, CashoutRecord, BuilderVolumeData } from './src/domain/al
 import { UserStats } from './src/domain/user.types';
 import { parseUnits, formatUnits, Contract, BrowserProvider, JsonRpcProvider } from 'ethers';
 
-// Initialize Services
-const zeroDevService = new ZeroDevService(process.env.ZERODEV_RPC || 'https://rpc.zerodev.app/api/v2/bundler/PROJECT_ID');
-
-// --- Constants & Assets ---
+// Constants & Assets
 const CHAIN_ICONS: Record<number, string> = {
     1: "https://cryptologos.cc/logos/ethereum-eth-logo.svg?v=026",
     137: "https://cryptologos.cc/logos/polygon-matic-logo.svg?v=026",
@@ -63,12 +60,14 @@ interface AppConfig {
   enableAutoCashout: boolean;
   maxRetentionAmount: number;
   coldWalletAddress: string;
-  enableSounds: boolean; // New Setting
+  enableSounds: boolean; 
 }
 
 interface WalletBalances {
     native: string;
     usdc: string;
+    usdcBridged?: string; // Added support for legacy bridged USDC
+    usdcNative?: string;
 }
 
 interface GlobalStatsResponse {
@@ -105,7 +104,6 @@ const STORAGE_KEY = 'bet_mirror_v3_config';
 // --- Sound Manager ---
 const playSound = (type: 'start' | 'stop' | 'trade' | 'cashout' | 'error') => {
     try {
-        // Check if user has enabled sounds in local storage or state (handled in call site)
         const audio = new Audio(`/sounds/${type}.mp3`);
         audio.volume = 0.5;
         audio.play().catch(e => console.warn("Audio play failed (interaction needed):", e));
@@ -125,13 +123,147 @@ const Tooltip = ({ text }: { text: string }) => (
     </div>
 );
 
-// --- New Component: Trader Details Modal ---
+// --- New Component: Withdrawal Modal ---
+const WithdrawalModal = ({ 
+    isOpen, 
+    onClose, 
+    balances, 
+    onWithdraw, 
+    isWithdrawing,
+    successTx 
+}: { 
+    isOpen: boolean; 
+    onClose: () => void; 
+    balances: WalletBalances; 
+    onWithdraw: (tokenType: 'USDC' | 'USDC.e' | 'POL') => void;
+    isWithdrawing: boolean;
+    successTx?: string | null;
+}) => {
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-2xl w-full max-w-md p-6 shadow-2xl relative">
+                <button onClick={onClose} className="absolute top-4 right-4 text-gray-500 hover:text-gray-900 dark:hover:text-white"><X/></button>
+                
+                {successTx ? (
+                    <div className="text-center py-6 space-y-4 animate-in zoom-in-95 duration-300">
+                        <div className="w-20 h-20 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto text-green-600 dark:text-green-500 mb-4">
+                            <CheckCircle2 size={40}/>
+                        </div>
+                        <h3 className="text-2xl font-bold text-gray-900 dark:text-white">Withdrawal Sent!</h3>
+                        <p className="text-sm text-gray-500 px-4">
+                            Your funds are on the way. The Smart Account has executed the transfer.
+                        </p>
+                        
+                        <div className="p-3 bg-gray-50 dark:bg-black/40 rounded-xl border border-gray-200 dark:border-gray-800 text-[10px] font-mono text-gray-600 dark:text-gray-400 break-all mx-2">
+                            <div className="flex items-center justify-center gap-2 mb-1 opacity-70 uppercase font-bold tracking-widest">Transaction Hash</div>
+                            {successTx}
+                        </div>
+                        
+                        <div className="pt-4 flex flex-col gap-3">
+                            <a 
+                                href={`https://jiffyscan.xyz/userOpHash/${successTx}`} 
+                                target="_blank" 
+                                rel="noreferrer" 
+                                className="w-full py-3 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/40 text-blue-600 dark:text-blue-400 font-bold rounded-xl transition-all flex items-center justify-center gap-2 text-sm"
+                            >
+                                View on Jiffyscan <ExternalLink size={16}/>
+                            </a>
+                            <button 
+                                onClick={onClose}
+                                className="w-full py-3 bg-gray-900 dark:bg-white hover:opacity-90 text-white dark:text-black font-bold rounded-xl transition-all text-sm"
+                            >
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                ) : (
+                    <>
+                        <div className="text-center mb-6">
+                            <div className="w-12 h-12 bg-red-100 dark:bg-red-900/20 rounded-full flex items-center justify-center mx-auto mb-3 text-red-600 dark:text-red-500">
+                                <LogOut size={24}/>
+                            </div>
+                            <h3 className="text-xl font-bold text-gray-900 dark:text-white">Trustless Withdrawal</h3>
+                            <p className="text-xs text-gray-500 mt-1">Move funds from Smart Account to Main Wallet.</p>
+                        </div>
+
+                        <div className="space-y-3">
+                            {/* Bridged USDC Option (USDC.e) - Primary for Polymarket */}
+                            <div className="p-4 bg-green-50 dark:bg-green-900/10 rounded-xl border border-green-200 dark:border-green-900/30 flex justify-between items-center">
+                                <div>
+                                    <div className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                                        USDC.e (Bridged) <span className="bg-green-200 dark:bg-green-900 text-green-800 dark:text-green-300 text-[8px] px-1.5 py-0.5 rounded">ACTIVE</span>
+                                    </div>
+                                    <div className="text-xs text-gray-500">Polymarket Trading Funds</div>
+                                </div>
+                                <div className="text-right">
+                                     <div className="font-mono font-bold text-gray-900 dark:text-white">${balances.usdc || '0.00'}</div>
+                                     <button 
+                                        onClick={() => onWithdraw('USDC.e')}
+                                        disabled={isWithdrawing || parseFloat(balances.usdc) <= 0}
+                                        className="text-[10px] text-green-600 hover:underline disabled:opacity-50 disabled:no-underline font-bold mt-1"
+                                     >
+                                        WITHDRAW ALL
+                                     </button>
+                                </div>
+                            </div>
+
+                            {/* Native USDC Option - Secondary */}
+                            <div className="p-4 bg-gray-50 dark:bg-black/40 rounded-xl border border-gray-200 dark:border-white/10 flex justify-between items-center">
+                                <div>
+                                    <div className="font-bold text-gray-900 dark:text-white">USDC (Native)</div>
+                                    <div className="text-xs text-gray-500">Circle Standard (0x3c49...)</div>
+                                </div>
+                                <div className="text-right">
+                                     <div className="font-mono font-bold text-gray-900 dark:text-white">${balances.usdcNative || '0.00'}</div>
+                                     <button 
+                                        onClick={() => onWithdraw('USDC')}
+                                        disabled={isWithdrawing || parseFloat(balances.usdcNative || '0') <= 0}
+                                        className="text-[10px] text-blue-600 hover:underline disabled:opacity-50 disabled:no-underline font-bold mt-1"
+                                     >
+                                        WITHDRAW ALL
+                                     </button>
+                                </div>
+                            </div>
+                            
+                             {/* POL Option */}
+                             <div className="p-4 bg-gray-50 dark:bg-black/40 rounded-xl border border-gray-200 dark:border-white/10 flex justify-between items-center">
+                                <div>
+                                    <div className="font-bold text-gray-900 dark:text-white">POL (Gas)</div>
+                                    <div className="text-xs text-gray-500">Network Token</div>
+                                </div>
+                                <div className="text-right">
+                                     <div className="font-mono font-bold text-gray-900 dark:text-white">{balances.native}</div>
+                                     <button 
+                                        onClick={() => onWithdraw('POL')}
+                                        disabled={isWithdrawing || parseFloat(balances.native) <= 0}
+                                        className="text-[10px] text-blue-600 hover:underline disabled:opacity-50 disabled:no-underline font-bold mt-1"
+                                     >
+                                        WITHDRAW ALL
+                                     </button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        {isWithdrawing && (
+                            <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 flex items-center gap-3">
+                                <Loader2 className="animate-spin text-blue-600" size={20}/>
+                                <span className="text-xs text-blue-800 dark:text-blue-200 font-bold">Processing Withdrawal... (This takes ~15s)</span>
+                            </div>
+                        )}
+                    </>
+                )}
+            </div>
+        </div>
+    );
+};
+
 const TraderDetailsModal = ({ trader, onClose }: { trader: TraderProfile, onClose: () => void }) => {
     const [trades, setTrades] = useState<PolyTrade[]>([]);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        // Fetch raw trade history from our proxy endpoint
         const fetchHistory = async () => {
             try {
                 const res = await axios.get(`/api/proxy/trades/${trader.address}`);
@@ -148,8 +280,6 @@ const TraderDetailsModal = ({ trader, onClose }: { trader: TraderProfile, onClos
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
             <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-2xl w-full max-w-4xl h-[80vh] flex flex-col relative shadow-2xl overflow-hidden">
-                
-                {/* Header */}
                 <div className="p-6 border-b border-gray-200 dark:border-gray-800 flex justify-between items-start bg-gray-50 dark:bg-black/20">
                     <div className="flex gap-4">
                         <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-2xl font-bold text-white shadow-lg">
@@ -174,8 +304,6 @@ const TraderDetailsModal = ({ trader, onClose }: { trader: TraderProfile, onClos
                         <X size={20} className="text-gray-500"/>
                     </button>
                 </div>
-
-                {/* Stats Grid */}
                 <div className="grid grid-cols-4 border-b border-gray-200 dark:border-gray-800 divide-x divide-gray-200 dark:divide-gray-800 bg-white dark:bg-transparent">
                     <div className="p-4 text-center">
                         <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Win Rate</div>
@@ -196,8 +324,6 @@ const TraderDetailsModal = ({ trader, onClose }: { trader: TraderProfile, onClos
                         <div className="text-2xl font-bold text-gray-900 dark:text-white">{trader.copyCount}</div>
                     </div>
                 </div>
-
-                {/* Live Trade History */}
                 <div className="flex-1 overflow-hidden flex flex-col bg-gray-50 dark:bg-black/40">
                     <div className="px-6 py-3 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center">
                         <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm flex items-center gap-2">
@@ -205,7 +331,6 @@ const TraderDetailsModal = ({ trader, onClose }: { trader: TraderProfile, onClos
                         </h3>
                         <span className="text-[10px] text-gray-500">Live Data from Chain</span>
                     </div>
-                    
                     <div className="flex-1 overflow-y-auto p-4 space-y-2">
                         {loading && (
                             <div className="flex flex-col items-center justify-center h-full gap-2 text-gray-400">
@@ -213,11 +338,9 @@ const TraderDetailsModal = ({ trader, onClose }: { trader: TraderProfile, onClos
                                 <span className="text-xs">Fetching live trades...</span>
                             </div>
                         )}
-                        
                         {!loading && trades.length === 0 && (
                             <div className="text-center text-gray-500 py-10 text-sm italic">No recent public trades found.</div>
                         )}
-
                         {trades.map((trade, idx) => (
                             <div key={idx} className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-white/5 rounded-lg p-3 flex justify-between items-center text-xs hover:border-blue-500/30 transition-colors">
                                 <div className="flex flex-col gap-1">
@@ -237,8 +360,6 @@ const TraderDetailsModal = ({ trader, onClose }: { trader: TraderProfile, onClos
                         ))}
                     </div>
                 </div>
-                
-                {/* Footer Action */}
                 <div className="p-4 border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-terminal-card flex justify-end">
                     <button onClick={onClose} className="px-6 py-2 bg-gray-100 dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/20 rounded-lg text-sm font-bold text-gray-900 dark:text-white transition-colors">
                         Close Insights
@@ -265,7 +386,6 @@ const FeedbackWidget = ({ userId }: { userId: string }) => {
 
     return (
         <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-4">
-            {/* Chat Bubble / Toggle */}
             {!isOpen && (
                 <button 
                     onClick={() => setIsOpen(true)} 
@@ -275,8 +395,6 @@ const FeedbackWidget = ({ userId }: { userId: string }) => {
                     <span className="absolute top-0 right-0 w-3 h-3 bg-red-500 rounded-full border-2 border-white dark:border-black"></span>
                 </button>
             )}
-
-            {/* Modal */}
             {isOpen && (
                 <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-2xl p-6 shadow-2xl w-80 animate-in slide-in-from-bottom-10 zoom-in-95 duration-300 relative overflow-hidden">
                     <div className="flex justify-between items-start mb-4">
@@ -332,9 +450,7 @@ const FeedbackWidget = ({ userId }: { userId: string }) => {
     );
 };
 
-// --- New Component: Bridge Stepper ---
 const BridgeStepper = ({ status }: { status: string }) => {
-    // Determine step based on status string
     let step = 1;
     if (status.includes("Approving") || status.includes("Swapping")) step = 2;
     if (status.includes("Bridging")) step = 3;
@@ -360,7 +476,6 @@ const BridgeStepper = ({ status }: { status: string }) => {
                         </div>
                     )
                 })}
-                {/* Progress Bar Background */}
                 <div className="absolute top-7 left-0 w-full h-0.5 bg-gray-200 dark:bg-gray-800 -z-0 hidden"></div> 
             </div>
             <div className="text-center mt-4 p-2 bg-blue-50 dark:bg-blue-900/10 rounded-lg border border-blue-100 dark:border-blue-500/20">
@@ -373,7 +488,6 @@ const BridgeStepper = ({ status }: { status: string }) => {
     );
 };
 
-// --- Component: Activation View ---
 const ActivationView = ({ 
     needsActivation, 
     handleActivate, 
@@ -390,17 +504,14 @@ const ActivationView = ({
     const [scanError, setScanError] = useState<string>('');
     const [showSafetyGuide, setShowSafetyGuide] = useState(false);
     const [manualToggle, setManualToggle] = useState(false);
+    const [zeroDevService] = useState(() => new ZeroDevService(process.env.ZERODEV_RPC || 'https://rpc.zerodev.app/api/v2/bundler/PROJECT_ID'));
 
-    // Function to perform the scan
     const scanBlockchain = async () => {
         setChecking(true);
         setScanError('');
         setComputedAddress('');
-        // Do NOT auto-set recovery mode to false here to avoid flicker if manual toggle was used.
-        // setRecoveryMode(false); 
 
         try {
-            // 1. Force Check Chain
             if (chainId !== 137) {
                 try {
                     await web3Service.getViemWalletClient(137);
@@ -410,22 +521,24 @@ const ActivationView = ({
                     return;
                 }
             }
-
-            // 2. Compute Deterministic Address
             const walletClient = await web3Service.getViemWalletClient(137);
             const address = await zeroDevService.computeMasterAccountAddress(walletClient);
             
             if (address) {
                 setComputedAddress(address);
-                
-                // 3. LIVENESS CHECK (Robust)
                 const polyProvider = new JsonRpcProvider('https://little-thrilling-layer.matic.quiknode.pro/378fe82ae3cb5d38e4ac79c202990ad508e1c4c6');
+                
+                // BRIDGED USDC ADDRESS (Polymarket Standard)
+                // Native USDC is handled separately via USDC_POLYGON in Web3Service
+                const USDC_BRIDGED_ADDR = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+
                 const [code, nativeBal, usdcBal] = await Promise.all([
                     polyProvider.getCode(address),
                     polyProvider.getBalance(address),
                     (async () => {
                         try {
-                            const usdcContract = new Contract(USDC_POLYGON, USDC_ABI, polyProvider);
+                            // Check balance of Bridged USDC since that's likely what user has if coming from Polymarket
+                            const usdcContract = new Contract(USDC_BRIDGED_ADDR, USDC_ABI, polyProvider);
                             return await usdcContract.balanceOf(address);
                         } catch { return BigInt(0); }
                     })()
@@ -436,9 +549,8 @@ const ActivationView = ({
 
                 const isDeployed = code !== '0x';
                 const hasUsdc = usdcBal > BigInt(0);
-                const hasPol = nativeBal > BigInt(10000000000000000); // 0.01 POL (adjusted threshold)
+                const hasPol = nativeBal > BigInt(10000000000000000); 
 
-                // Strict Detection: Must be Deployed OR have significant balance
                 if (isDeployed || hasUsdc || hasPol) {
                     setRecoveryMode(true); 
                 } else {
@@ -456,14 +568,12 @@ const ActivationView = ({
         }
     };
 
-    // Auto-scan on mount if on Polygon
     useEffect(() => {
         if (userAddress && chainId === 137) {
             scanBlockchain();
         }
     }, [userAddress, chainId]);
 
-    // Handle Manual Toggle
     const effectiveRecoveryMode = manualToggle ? !recoveryMode : recoveryMode;
 
     return (
@@ -492,8 +602,6 @@ const ActivationView = ({
                         </p>
                     </div>
                 </div>
-
-                {/* --- Status / Error / Info Area --- */}
                 {checking && (
                     <div className="flex items-center gap-2 text-xs text-blue-500 animate-pulse bg-blue-50 dark:bg-blue-900/10 p-3 rounded">
                         <Loader2 size={12} className="animate-spin"/> Scanning Polygon Blockchain for your account...
@@ -508,8 +616,6 @@ const ActivationView = ({
                         <button onClick={scanBlockchain} className="text-xs font-bold underline hover:text-red-800 dark:hover:text-red-300">Retry</button>
                     </div>
                 )}
-
-                {/* --- Found Account Display --- */}
                 {computedAddress && (
                     <div className={`p-4 rounded-lg border animate-in fade-in zoom-in duration-300 ${effectiveRecoveryMode ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-500/20' : 'bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/10'}`}>
                         <div className="flex justify-between items-center mb-2">
@@ -527,7 +633,6 @@ const ActivationView = ({
                         </div>
                     </div>
                 )}
-
                 <div className="space-y-4">
                     <div className="flex items-start gap-3 p-3 bg-gray-50 dark:bg-white/5 rounded-lg border border-gray-200 dark:border-white/5">
                         <CheckCircle2 size={16} className="text-green-500 mt-1" />
@@ -544,8 +649,6 @@ const ActivationView = ({
                         </div>
                     </div>
                 </div>
-
-                {/* --- Network Warning --- */}
                 {chainId !== 137 && !checking && (
                     <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg border border-yellow-200 dark:border-yellow-700/50 flex flex-col gap-2">
                         <div className="flex items-center gap-2">
@@ -563,8 +666,6 @@ const ActivationView = ({
                         </button>
                     </div>
                 )}
-
-                {/* --- Manual Scan Button (If nothing found yet and no error) --- */}
                 {!computedAddress && !checking && !scanError && (
                     <div className="flex justify-center">
                         <button onClick={scanBlockchain} className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1">
@@ -572,8 +673,6 @@ const ActivationView = ({
                         </button>
                     </div>
                 )}
-
-                {/* --- Main Action Button --- */}
                 <button 
                     onClick={handleActivate}
                     disabled={isActivating || checking || (chainId !== 137 && computedAddress === '')}
@@ -605,8 +704,6 @@ const ActivationView = ({
                     >
                         <LockKeyhole size={12}/> Is my money safe? Read the Recovery Guide.
                     </button>
-                    
-                    {/* Manual Mode Toggle */}
                     {computedAddress && (
                         <button 
                             onClick={() => setManualToggle(!manualToggle)} 
@@ -618,12 +715,10 @@ const ActivationView = ({
                 </div>
             </div>
 
-            {/* Safety & Recovery Modal */}
-            {showSafetyGuide && (
+             {showSafetyGuide && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
                     <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-xl max-w-2xl w-full p-6 relative shadow-2xl overflow-y-auto max-h-[90vh]">
                         <button onClick={() => setShowSafetyGuide(false)} className="absolute top-4 right-4 text-gray-500 hover:text-black dark:hover:text-white transition-colors"><X size={20}/></button>
-                        
                         <div className="flex items-center gap-3 mb-6 pb-4 border-b border-gray-200 dark:border-gray-800">
                             <div className="p-3 bg-green-100 dark:bg-green-900/20 rounded-full text-green-600 dark:text-green-500">
                                 <Shield size={24}/>
@@ -633,9 +728,7 @@ const ActivationView = ({
                                 <p className="text-xs text-gray-500">How Account Abstraction protects your assets.</p>
                             </div>
                         </div>
-
                         <div className="space-y-6">
-                            {/* Scenario 1: New Device / Clear Cache */}
                             <div className="flex gap-4">
                                 <div className="mt-1"><RefreshCw className="text-blue-500" size={20}/></div>
                                 <div>
@@ -648,8 +741,6 @@ const ActivationView = ({
                                     </p>
                                 </div>
                             </div>
-
-                            {/* Scenario 2: Server Wipe */}
                             <div className="flex gap-4">
                                 <div className="mt-1"><Server className="text-orange-500" size={20}/></div>
                                 <div>
@@ -662,8 +753,6 @@ const ActivationView = ({
                                     </p>
                                 </div>
                             </div>
-
-                            {/* Scenario 3: Trustless */}
                             <div className="flex gap-4">
                                 <div className="mt-1"><Lock className="text-purple-500" size={20}/></div>
                                 <div>
@@ -676,7 +765,6 @@ const ActivationView = ({
                                 </div>
                             </div>
                         </div>
-
                         <div className="mt-8 pt-4 border-t border-gray-200 dark:border-gray-800 text-center">
                             <button 
                                 onClick={() => setShowSafetyGuide(false)}
@@ -692,6 +780,221 @@ const ActivationView = ({
     );
 };
 
+const HeroBackground = () => {
+  return (
+    <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none">
+       <div className="absolute inset-0 bg-grid-slate-200/[0.04] bg-[bottom_1px_center] dark:bg-grid-slate-800/[0.05]" style={{ backgroundSize: '40px 40px', maskImage: 'linear-gradient(to bottom, transparent 5%, black 40%, black 70%, transparent 95%)' }}></div>
+    </div>
+  )
+}
+
+const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, theme: string, toggleTheme: () => void }) => (
+    <div className="min-h-screen bg-gray-50 dark:bg-[#050505] font-sans transition-colors duration-300 flex flex-col relative overflow-x-hidden">
+        
+        <HeroBackground />
+
+        <div className="absolute top-0 left-0 w-full p-6 flex justify-between items-center z-50 max-w-7xl mx-auto left-0 right-0">
+             <div className="opacity-0"></div> 
+             <button 
+                onClick={toggleTheme} 
+                className="p-3 bg-white/80 dark:bg-white/5 rounded-full hover:scale-110 transition-all shadow-sm backdrop-blur-md text-gray-600 dark:text-white border border-gray-200 dark:border-white/10"
+             >
+                {theme === 'light' ? <Moon size={18}/> : <Sun size={18}/>}
+             </button>
+         </div>
+
+        <div className="flex-1 flex flex-col items-center justify-center px-6 z-10 w-full max-w-7xl mx-auto relative min-h-[100vh]">
+            
+            <div className="text-center flex flex-col items-center">
+                <div className="mb-8 relative mt-7">
+                    <div className="absolute inset-0 bg-blue-500 blur-2xl opacity-20 rounded-full"></div>
+                    <div className="relative w-20 h-20 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl flex items-center justify-center shadow-xl shadow-blue-500/20">
+                        <Activity size={40} className="text-white" />
+                    </div>
+                </div>
+
+                <div className="mb-6 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-100">
+                    <span className="px-4 py-1.5 rounded-full bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/50 text-blue-600 dark:text-blue-400 text-[10px] font-bold uppercase tracking-widest">
+                        Account Abstraction V2 Live
+                    </span>
+                </div>
+
+                <h1 className="text-5xl md:text-7xl font-black tracking-tight text-gray-900 dark:text-white mb-6 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-200">
+                    BET <span className="text-blue-600">MIRROR</span>
+                </h1>
+
+                <p className="text-lg text-gray-500 dark:text-gray-400 font-medium max-w-lg mx-auto leading-relaxed animate-in fade-in slide-in-from-bottom-4 duration-700 delay-300">
+                    The institutional-grade prediction market terminal.<br/>
+                    Non-Custodial. AI-Powered. 24/7 Cloud Execution.
+                </p>
+
+                <div className="mt-12 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-400 w-full max-w-xs">
+                    <button 
+                        onClick={onConnect} 
+                        className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-black font-bold text-sm uppercase tracking-wider rounded-lg shadow-2xl hover:shadow-blue-500/10 hover:-translate-y-0.5 transition-all duration-300 flex items-center justify-center gap-3"
+                    >
+                        <Wallet size={18} /> Connect Terminal
+                    </button>
+                </div>
+
+                <div className="mt-12 flex gap-8 opacity-40 animate-in fade-in duration-1000 delay-500">
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                        <Shield size={12}/> Secure
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                        <ZapIcon size={12}/> Fast
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                        <Globe size={12}/> Global
+                    </div>
+                </div>
+
+                <div className="mt-32 flex flex-col items-center gap-6 animate-in fade-in duration-1000 delay-700">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.3em] opacity-50">
+                        SUPPORTED CHAINS
+                    </p>
+                    <div className="flex gap-12 opacity-30 grayscale hover:grayscale-0 hover:opacity-100 transition-all duration-500">
+                        <img src="https://cryptologos.cc/logos/polygon-matic-logo.svg?v=026" alt="Polygon" className="h-5 w-auto" />
+                        <img src="https://cryptologos.cc/logos/ethereum-eth-logo.svg?v=026" alt="Ethereum" className="h-5 w-auto" />
+                        <img src="https://cdn.brandfetch.io/id6XsSOVVS/theme/dark/logo.svg?c=1bxid64Mup7aczewSAYMX&t=1757929765938" alt="Base" className="h-5 w-auto" />
+                        <img src="https://cryptologos.cc/logos/arbitrum-arb-logo.svg?v=026" alt="Arbitrum" className="h-5 w-auto" />
+                        <img src="https://cryptologos.cc/logos/solana-sol-logo.svg?v=026" alt="Solana" className="h-4 w-auto mt-0.5" />
+                    </div>
+                </div>
+             </div>
+            
+            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 animate-bounce opacity-20">
+                <ChevronDown className="text-gray-400 w-6 h-6"/>
+            </div>
+
+        </div>
+
+        <div className="w-full bg-gray-100 dark:bg-[#030303] border-t border-gray-200 dark:border-white/5 relative z-20">
+            
+            <div className="max-w-5xl mx-auto py-32 px-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
+                    
+                    <div className="p-10 rounded-3xl bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 shadow-lg hover:shadow-xl transition-all duration-300 group hover:-translate-y-1">
+                        <div className="flex items-center gap-3 mb-8">
+                            <span className="relative flex h-2.5 w-2.5">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+                            </span>
+                            <span className="text-[10px] font-bold text-green-600 dark:text-green-400 uppercase tracking-wider">Live Integration</span>
+                        </div>
+                        <div className="flex items-center gap-5 mb-6">
+                            {/* REPLACED BROKEN POLYMARKET LOGO WITH LOCAL POLYGON LOGO */}
+                            <img src="https://cryptologos.cc/logos/polygon-matic-logo.svg?v=026" alt="Polymarket" className="w-14 h-14 rounded-full" referrerPolicy="no-referrer" />
+                            <h3 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">Polymarket</h3>
+                        </div>
+                        <p className="text-base text-gray-500 dark:text-gray-400 font-medium leading-relaxed mb-6">
+                            The most active market for blockchain wallets trading. Copy any top trader instantly.
+                        </p>
+                        <div className="inline-flex items-center gap-2 text-xs font-bold text-blue-600 dark:text-blue-500 uppercase tracking-wider group-hover:translate-x-1 transition-transform">
+                            Start Copying <ArrowRightLeft size={12}/>
+                        </div>
+                    </div>
+
+                    <div className="p-10 rounded-3xl bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/5 opacity-60 hover:opacity-100 transition-all duration-300 group">
+                        <div className="flex items-center gap-3 mb-8">
+                            <span className="w-2.5 h-2.5 rounded-full bg-yellow-500"></span>
+                            <span className="text-[10px] font-bold text-yellow-600 dark:text-yellow-500 uppercase tracking-wider">Coming Soon</span>
+                        </div>
+                        <div className="flex items-center gap-5 mb-6">
+                             <div className="w-14 h-14 rounded-full bg-gray-200 dark:bg-gray-800 flex items-center justify-center font-bold text-gray-500 text-2xl">pb</div>
+                            <h3 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">PredictBase</h3>
+                        </div>
+                        <p className="text-base text-gray-500 dark:text-gray-400 font-medium leading-relaxed">
+                            Next-generation sports & crypto markets with high-frequency liquidity.
+                        </p>
+                    </div>
+
+                </div>
+
+                <div className="pt-24 flex justify-center">
+                    <div className="inline-flex flex-col items-center gap-4 group cursor-pointer opacity-60 hover:opacity-100 transition-opacity">
+                        <div className="p-4 rounded-full bg-white dark:bg-white/10 border border-gray-200 dark:border-white/10 text-gray-400 group-hover:text-blue-500 group-hover:border-blue-200 transition-all">
+                            <MousePointerClick size={24} />
+                        </div>
+                        <p className="text-xs font-bold text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300 transition-colors uppercase tracking-widest">
+                            Suggest a market integration
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <div className="w-full max-w-7xl mx-auto pb-32 px-6 border-t border-gray-200 dark:border-white/5 pt-32">
+                <div className="text-center mb-24">
+                    <span className="text-blue-600 dark:text-blue-500 text-xs font-bold uppercase tracking-widest">Architecture</span>
+                    <h2 className="text-4xl md:text-5xl font-black text-gray-900 dark:text-white mt-4 tracking-tight">How It Works</h2>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-12">
+                    <div className="p-10 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-[2rem] hover:border-blue-500/30 transition-all shadow-sm group">
+                        <div className="w-16 h-16 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
+                            <Wallet size={32}/>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">1. Connect & Deploy</h3>
+                        <p className="text-gray-500 text-sm leading-relaxed">
+                            Link your wallet. We instantly deploy a non-custodial <strong>Smart Account</strong> (ZeroDev Kernel) on Polygon. This is your dedicated trading vault.
+                        </p>
+                    </div>
+
+                    <div className="p-10 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-[2rem] hover:border-purple-500/30 transition-all shadow-sm group">
+                        <div className="w-16 h-16 bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
+                            <Key size={32}/>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">2. Total Control</h3>
+                        <p className="text-gray-500 text-sm leading-relaxed">
+                            You hold the "Owner Key". You can revoke our trading permissions or trigger a <strong>trustless withdrawal</strong> directly on the blockchain at any time.
+                        </p>
+                    </div>
+
+                    <div className="p-10 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-[2rem] hover:border-green-500/30 transition-all shadow-sm group">
+                        <div className="w-16 h-16 bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
+                            <Server size={32}/>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">3. Passive Alpha</h3>
+                        <p className="text-gray-500 text-sm leading-relaxed">
+                            Find the best trader in the Registry and hit Copy. Our Node.js engine monitors signals 24/7 so you can <strong>earn while you sleep</strong>.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <footer className="border-t border-gray-200 dark:border-white/5 bg-white dark:bg-[#020202]">
+                <div className="max-w-7xl mx-auto px-6 py-12 flex flex-col md:flex-row justify-between items-center gap-6">
+                    <div className="flex items-center gap-2 opacity-50 hover:opacity-100 transition-opacity">
+                        <Activity size={16} className="text-blue-600 dark:text-white"/>
+                        <span className="text-xs font-bold text-gray-900 dark:text-white tracking-widest">BET MIRROR PRO</span>
+                    </div>
+                    
+                    <div className="flex gap-6">
+                        <a href="/pitchdeck.pdf" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors flex items-center gap-2 text-xs font-medium">
+                            <FileText size={16}/> Pitch Deck
+                        </a>
+                        <a href="https://docs.betmirror.bet" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
+                            <BookOpen size={16}/>
+                        </a>
+                        <a href="https://github.com/vchat-meme-blip/betmirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
+                            <Github size={16}/>
+                        </a>
+                        <a href="https://x.com/bet_mirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
+                            <Twitter size={16}/>
+                        </a>
+                    </div>
+
+                    <div className="text-[10px] text-gray-400 font-medium">
+                        © 2025 PolyCafe Labs. All rights reserved.
+                    </div>
+                </div>
+            </footer>
+
+        </div>
+
+    </div>
+);
+
 const App = () => {
   // --- STATE: Web3 & Session ---
   const [isConnected, setIsConnected] = useState(false);
@@ -703,8 +1006,8 @@ const App = () => {
   const [proxyType, setProxyType] = useState<'SMART_ACCOUNT'>('SMART_ACCOUNT'); // Strictly Smart Account
   
   // --- STATE: Balances ---
-  const [mainWalletBal, setMainWalletBal] = useState<WalletBalances>({ native: '0.00', usdc: '0.00' });
-  const [proxyWalletBal, setProxyWalletBal] = useState<WalletBalances>({ native: '0.00', usdc: '0.00' });
+  const [mainWalletBal, setMainWalletBal] = useState<WalletBalances>({ native: '0.00', usdc: '0.00', usdcNative: '0.00', usdcBridged: '0.00' });
+  const [proxyWalletBal, setProxyWalletBal] = useState<WalletBalances>({ native: '0.00', usdc: '0.00', usdcNative: '0.00', usdcBridged: '0.00' });
 
   // --- STATE: UI & Data ---
   const [activeTab, setActiveTab] = useState<'dashboard' | 'marketplace' | 'history' | 'vault' | 'bridge' | 'system' | 'help'>('dashboard');
@@ -716,12 +1019,17 @@ const App = () => {
   const [systemStats, setSystemStats] = useState<GlobalStatsResponse | null>(null);
   const [bridgeHistory, setBridgeHistory] = useState<BridgeTransactionRecord[]>([]);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
-  const [systemView, setSystemView] = useState<'attribution' | 'global'>('attribution'); // System Page Toggle
+  const [systemView, setSystemView] = useState<'attribution' | 'global'>('attribution');
+  // -- MOBILE MENU STATE --
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   
   // --- STATE: Forms & Actions ---
   const [isDepositing, setIsDepositing] = useState(false);
   const [depositAmount, setDepositAmount] = useState('50');
   const [isWithdrawing, setIsWithdrawing] = useState(false);
+  const [isWithdrawModalOpen, setIsWithdrawModalOpen] = useState(false);
+  const [withdrawalTxHash, setWithdrawalTxHash] = useState<string | null>(null); // New State for Success UI
+
   const [isActivating, setIsActivating] = useState(false);
   const [targetInput, setTargetInput] = useState('');
   const [newWalletInput, setNewWalletInput] = useState('');
@@ -730,18 +1038,20 @@ const App = () => {
   const [showArchitecture, setShowArchitecture] = useState(false);
   const [selectedTrader, setSelectedTrader] = useState<TraderProfile | null>(null);
   
-  // --- STATE: Bridging ---
-  const [bridgeFromChain, setBridgeFromChain] = useState(8453); // Default to Base
-  const [bridgeToken, setBridgeToken] = useState<'NATIVE' | 'USDC'>('NATIVE'); // Native or USDC
+  // --- STATE: Bridging (Updated for Bidirectional Flow) ---
+  const [bridgeMode, setBridgeMode] = useState<'IN' | 'OUT'>('IN');
+  const [selectedSourceChain, setSelectedSourceChain] = useState<number>(8453); // Default Base for IN
+  const [selectedDestChain, setSelectedDestChain] = useState<number>(137); // Default Polygon for IN
+  const [bridgeToken, setBridgeToken] = useState<'NATIVE' | 'USDC' | 'USDC.e'>('NATIVE'); // Native, USDC, or Bridged USDC
+  const [destToken, setDestToken] = useState<'USDC' | 'NATIVE'>('USDC'); // New state for destination preference
   const [bridgeAmount, setBridgeAmount] = useState('0.1');
   const [bridgeQuote, setBridgeQuote] = useState<any>(null);
   const [isBridging, setIsBridging] = useState(false);
   const [bridgeStatus, setBridgeStatus] = useState<string>('');
   const [senderAddressDisplay, setSenderAddressDisplay] = useState<string>('');
-  const [isChainSelectOpen, setIsChainSelectOpen] = useState(false); // Custom Select State
-  // New State for Dest Token Toggle (USDC vs POL)
-  const [destToken, setDestToken] = useState<'USDC' | 'POL'>('USDC');
-  // Bridge Guide Modal
+  const [recipientAddress, setRecipientAddress] = useState<string>(''); // Editable recipient
+  const [isSourceChainSelectOpen, setIsSourceChainSelectOpen] = useState(false);
+  const [isDestChainSelectOpen, setIsDestChainSelectOpen] = useState(false);
   const [showBridgeGuide, setShowBridgeGuide] = useState(false);
 
   const [config, setConfig] = useState<AppConfig>({
@@ -758,6 +1068,9 @@ const App = () => {
     coldWalletAddress: '',
     enableSounds: true
   });
+
+  // --- REFS for Debouncing ---
+  const quoteDebounceTimer = useRef<any>(null);
 
   // Helper to update state AND local storage simultaneously
   const updateConfig = (newConfig: AppConfig) => {
@@ -789,8 +1102,14 @@ const App = () => {
           lifiService.setUserId(userAddress);
           lifiService.fetchHistory().then(setBridgeHistory);
           setSenderAddressDisplay(userAddress); // Default to connected address
+          
+          // Initialize recipient based on mode if empty
+          if (!recipientAddress) {
+             if (bridgeMode === 'IN') setRecipientAddress(proxyAddress || userAddress); // Prefer proxy for deposit
+             else setRecipientAddress(userAddress); // Withdraw to main
+          }
       }
-  }, [userAddress]);
+  }, [userAddress, proxyAddress, bridgeMode]);
 
   // Show Bridge Guide on first visit if balances are low
   useEffect(() => {
@@ -801,6 +1120,30 @@ const App = () => {
          }
      }
   }, [activeTab, proxyWalletBal]);
+
+  // --- AUTO-UPDATE BRIDGE QUOTE LOGIC ---
+  // Trigger quote update when these dependencies change, with debounce
+  useEffect(() => {
+      if (activeTab === 'bridge' && recipientAddress && bridgeAmount && parseFloat(bridgeAmount) > 0) {
+          // Clear existing timer
+          if (quoteDebounceTimer.current) clearTimeout(quoteDebounceTimer.current);
+          
+          // Clear previous quote immediately to indicate loading/stale
+          setBridgeQuote(null);
+
+          // Set new timer (800ms debounce)
+          quoteDebounceTimer.current = setTimeout(() => {
+              handleGetBridgeQuote();
+          }, 800);
+      } else {
+          setBridgeQuote(null);
+      }
+      
+      return () => {
+          if(quoteDebounceTimer.current) clearTimeout(quoteDebounceTimer.current);
+      };
+  }, [bridgeAmount, selectedSourceChain, selectedDestChain, bridgeToken, destToken, recipientAddress, activeTab]);
+
 
   // Apply Theme Class
   useEffect(() => {
@@ -891,37 +1234,83 @@ const App = () => {
       try {
           const provider = new BrowserProvider((window as any).ethereum);
           const network = await provider.getNetwork();
-          setChainId(Number(network.chainId));
+          const currentChain = Number(network.chainId);
+          setChainId(currentChain);
 
           // 1. Main Wallet (Native)
           const balMain = await provider.getBalance(userAddress);
-          let mainUsdc = '0.00';
+          let mainUsdcNative = '0.00';
+          let mainUsdcBridged = '0.00';
           
-          // 2. Main Wallet (USDC - if on Polygon)
-          if (Number(network.chainId) === 137) {
-              const usdcContract = new Contract(USDC_POLYGON, USDC_ABI, provider);
-              const balUsdc = await usdcContract.balanceOf(userAddress);
-              mainUsdc = formatUnits(balUsdc, 6);
+          // 2. Main Wallet (USDC)
+          if (currentChain === 137) {
+              // Polygon: Check both Native and Bridged
+              try {
+                const usdcNativeContract = new Contract(USDC_POLYGON, USDC_ABI, provider);
+                mainUsdcNative = formatUnits(await usdcNativeContract.balanceOf(userAddress), 6);
+              } catch(e) {}
+              
+              try {
+                const usdcBridgedContract = new Contract(USDC_BRIDGED_POLYGON, USDC_ABI, provider);
+                mainUsdcBridged = formatUnits(await usdcBridgedContract.balanceOf(userAddress), 6);
+              } catch(e) {}
+          } else {
+              // Other EVM Chains: Try to fetch Native USDC if address known
+              // Simple mapping for major chains
+              const USDC_ADDRS: Record<number, string> = {
+                  8453: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // Base
+                  42161: '0xaf88d065e77c8cc2239327c5edb3a432268e5831', // Arbitrum
+                  1: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', // Ethereum
+                  56: '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d' // BSC
+              };
+              
+              if (USDC_ADDRS[currentChain]) {
+                  try {
+                      const c = new Contract(USDC_ADDRS[currentChain], USDC_ABI, provider);
+                      mainUsdcNative = formatUnits(await c.balanceOf(userAddress), 6);
+                  } catch (e) {}
+              }
           }
 
           setMainWalletBal({ 
-              native: formatUnits(balMain, 18).slice(0,6), 
-              usdc: parseFloat(mainUsdc).toFixed(2) 
+              native: parseFloat(formatUnits(balMain, 18)).toFixed(4), 
+              usdc: mainUsdcNative,
+              usdcNative: mainUsdcNative,
+              usdcBridged: mainUsdcBridged
           });
           
           // 3. Proxy Wallet Balances (Read-only from Polygon RPC)
           if (proxyAddress) {
-              const polyProvider = new JsonRpcProvider('https://little-thrilling-layer.matic.quiknode.pro/378fe82ae3cb5d38e4ac79c202990ad508e1c4c6');
-              const polyBal = await polyProvider.getBalance(proxyAddress);
-              const usdcContract = new Contract(USDC_POLYGON, USDC_ABI, polyProvider);
-              const usdcBal = await usdcContract.balanceOf(proxyAddress);
+              const polyProvider = new JsonRpcProvider(config.rpcUrl || 'https://little-thrilling-layer.matic.quiknode.pro/378fe82ae3cb5d38e4ac79c202990ad508e1c4c6');
+              
+              // Native POL
+              const polyBalPromise = polyProvider.getBalance(proxyAddress);
+
+              // BRIDGED USDC (0x2791...) - The only one that matters for Polymarket Trading
+              // This goes into the main 'usdc' slot for the UI since it's the primary currency.
+              const usdcBridgedContract = new Contract(USDC_BRIDGED_POLYGON, USDC_ABI, polyProvider);
+              const usdcBridgedBalPromise = usdcBridgedContract.balanceOf(proxyAddress);
+
+              // NATIVE USDC (0x3c49...) - Kept as secondary check for deposits
+              const usdcNativeContract = new Contract(USDC_POLYGON, USDC_ABI, polyProvider);
+              const usdcNativeBalPromise = usdcNativeContract.balanceOf(proxyAddress);
+
+              const [polyBal, usdcBridgedBal, usdcNativeBal] = await Promise.all([
+                  polyBalPromise,
+                  usdcBridgedBalPromise,
+                  usdcNativeBalPromise
+              ]);
               
               setProxyWalletBal({
                   native: formatUnits(polyBal, 18).slice(0,6),
-                  usdc: parseFloat(formatUnits(usdcBal, 6)).toFixed(2)
+                  usdc: parseFloat(formatUnits(usdcBridgedBal, 6)).toFixed(2), // Main Display = Bridged
+                  usdcNative: parseFloat(formatUnits(usdcNativeBal, 6)).toFixed(2), // Secondary Display = Native
+                  usdcBridged: parseFloat(formatUnits(usdcBridgedBal, 6)).toFixed(2) // Explicit bridged field
               });
           }
-      } catch (e) {}
+      } catch (e) {
+          console.warn("Balance fetch error:", e);
+      }
   };
 
   const fetchRegistry = async () => {
@@ -973,6 +1362,9 @@ const App = () => {
          // CRITICAL FIX: Ensure chain is Polygon before interaction
          const walletClient = await web3Service.getViemWalletClient(137);
          
+         // Instantiate ZeroDev service locally
+         const zeroDevService = new ZeroDevService(process.env.ZERODEV_RPC || 'https://rpc.zerodev.app/api/v2/bundler/PROJECT_ID');
+
          // 1. Create Session Key Client Side
          const session = await zeroDevService.createSessionKeyForServer(walletClient, userAddress);
          
@@ -1015,7 +1407,10 @@ const App = () => {
           // If not on Polygon, suggest Bridging
           const confirmBridge = confirm(`You are connected to Chain ID ${currentChain} (Not Polygon).\n\nDo you want to BRIDGE funds to your bot?`);
           if (confirmBridge) {
-              setBridgeFromChain(currentChain); // Auto set source
+              setBridgeMode('IN');
+              setSelectedSourceChain(currentChain); // Auto set source
+              setSelectedDestChain(137); // Auto set dest
+              setRecipientAddress(proxyAddress); // Auto set recipient to proxy
               setActiveTab('bridge');
               return;
           }
@@ -1033,6 +1428,7 @@ const App = () => {
       if (availableUsdc < requestedAmount) {
           const goToBridge = confirm(`Insufficient USDC on Polygon.\nAvailable: $${availableUsdc}\nRequested: $${requestedAmount}\n\nDo you want to BRIDGE funds from another chain (Solana, Base, Eth)?`);
           if (goToBridge) {
+              setBridgeMode('IN');
               setActiveTab('bridge');
               setIsDepositing(false);
           }
@@ -1070,14 +1466,65 @@ const App = () => {
       }
   };
 
+  // --- UPDATED: Bridge Handlers ---
+
+  // Helper to get display balance for Source Card
+  const getSourceBalance = () => {
+      // Solana Special Case
+      if (selectedSourceChain === 1151111081099710) {
+          return "Check Phantom"; 
+      }
+
+      // If Chain Mismatch (e.g. selected Base but connected to Polygon)
+      if (chainId !== selectedSourceChain) {
+          return "Switch Chain";
+      }
+
+      // Mapping
+      if (bridgeToken === 'NATIVE') return mainWalletBal.native;
+      if (bridgeToken === 'USDC') return mainWalletBal.usdcNative;
+      if (bridgeToken === 'USDC.e') return mainWalletBal.usdcBridged;
+      
+      return '0.00';
+  };
+
+  const handleSwapDirection = () => {
+      if (bridgeMode === 'IN') {
+          setBridgeMode('OUT');
+          // Swap chains
+          const oldSource = selectedSourceChain;
+          setSelectedSourceChain(137); // Source is now Polygon
+          setSelectedDestChain(oldSource === 137 ? 8453 : oldSource); // Dest is old source (or Base default)
+          
+          // Swap Tokens logic
+          // If user selected NATIVE (POL) out, we keep it native. 
+          // If they wanted USDC in, we likely want USDC out.
+          setBridgeToken(destToken === 'NATIVE' ? 'NATIVE' : 'USDC.e');
+
+          // Update Recipient
+          setRecipientAddress(userAddress); // Default to main wallet on other chain
+      } else {
+          setBridgeMode('IN');
+          const oldDest = selectedDestChain;
+          setSelectedSourceChain(oldDest === 137 ? 8453 : oldDest); // Source is old dest
+          setSelectedDestChain(137); // Dest is now Polygon
+          
+          // If sending Native (POL) out, they likely want Native (ETH) back on source
+          // If sending USDC.e out, they likely want USDC in.
+          setDestToken(bridgeToken === 'NATIVE' ? 'NATIVE' : 'USDC');
+          
+          setRecipientAddress(proxyAddress || userAddress);
+      }
+  };
+
   const handleGetBridgeQuote = async () => {
-      if (!bridgeAmount || !proxyAddress) return;
+      if (!bridgeAmount || !recipientAddress) return;
       setBridgeQuote(null);
       try {
           let senderAddress = userAddress;
           
           // FIX: Special Handling for Solana
-          if (bridgeFromChain === 1151111081099710) {
+          if (selectedSourceChain === 1151111081099710) {
               try {
                   const solAddress = await web3Service.getSolanaAddress();
                   if(!solAddress) throw new Error("Could not retrieve Solana address. Please unlock your Phantom/Backpack wallet.");
@@ -1092,35 +1539,42 @@ const App = () => {
               setSenderAddressDisplay(userAddress);
           }
 
-          const fromToken = lifiService.getTokenAddress(bridgeFromChain, bridgeToken);
+          const fromToken = lifiService.getTokenAddress(selectedSourceChain, bridgeToken as any);
           
           let decimals = 18;
-          if (bridgeToken === 'USDC') decimals = 6;
-          if (bridgeToken === 'NATIVE' && bridgeFromChain === 1151111081099710) decimals = 9; 
+          if (bridgeToken.includes('USDC')) decimals = 6;
+          if (bridgeToken === 'NATIVE' && selectedSourceChain === 1151111081099710) decimals = 9; 
 
           const rawAmount = (Number(bridgeAmount) * Math.pow(10, decimals)).toString();
 
-          // DESTINATION: Toggle between USDC and POL
-          let toTokenAddress = USDC_POLYGON; // Default USDC
-          if (destToken === 'POL') {
-              toTokenAddress = '0x0000000000000000000000000000000000000000'; // Native POL
+          // Determine Dest Token Address based on Dest Chain
+          // If going to Polygon (IN), check user preference for Native POL or Bridged USDC.e
+          let toTokenAddress;
+          if (selectedDestChain === 137) {
+              if (destToken === 'NATIVE') {
+                  toTokenAddress = '0x0000000000000000000000000000000000000000'; // POL
+              } else {
+                  toTokenAddress = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // USDC.e on Polygon
+              }
+          } else {
+              // If going OUT, we want USDC on target chain unless specified otherwise (future enhancement)
+              toTokenAddress = lifiService.getTokenAddress(selectedDestChain, 'USDC'); 
           }
-
-          // Pass the correct fromAddress to LiFi
-          const routes = await lifiService.getDepositRoute({
-              fromChainId: bridgeFromChain,
+          
+          const routes = await lifiService.getRoute({
+              fromChainId: selectedSourceChain,
               fromTokenAddress: fromToken, 
               fromAmount: rawAmount, 
               fromAddress: senderAddress, 
-              toChainId: 137, // Polygon
+              toChainId: selectedDestChain,
               toTokenAddress: toTokenAddress,
-              toAddress: proxyAddress
+              toAddress: recipientAddress
           });
           
           if(routes && routes.length > 0) {
               setBridgeQuote(routes[0]);
           } else {
-              alert("No route found for this pair. Try a different amount or chain.");
+              // Silent error or UI feedback?
           }
       } catch (e: any) {
           alert("Failed to get quote: " + e.message);
@@ -1139,15 +1593,14 @@ const App = () => {
           
           if (config.enableSounds) playSound('cashout'); // Sound on bridge success
           
-          alert("✅ Bridging Complete! Funds are arriving in your Smart Account.");
+          alert("✅ Bridging Complete! Funds are on the way.");
           setBridgeQuote(null);
           lifiService.fetchHistory().then(setBridgeHistory);
       } catch (e: any) {
           console.error(e);
-          // Enhanced Error Message
           let msg = e.message || "Unknown Error";
-          if (msg.includes("403") || msg.includes("simulation") || msg.includes("Simulation")) {
-              msg = "Transaction failed simulation. \n\nPOSSIBLE CAUSES:\n1. Insufficient SOL for 'Rent Exemption' (approx $0.30) + Gas fees.\n2. Slippage too low (try refreshing quote).\n3. Network congestion.";
+          if (msg.includes("403") || msg.includes("simulation")) {
+              msg = "Transaction failed simulation. \n\nPOSSIBLE CAUSES:\n1. Insufficient Gas/Rent.\n2. Slippage too low.\n3. Network congestion.";
           }
           alert("Bridge Failed: " + msg);
       } finally {
@@ -1156,29 +1609,62 @@ const App = () => {
       }
   };
 
-  const handleWithdraw = async () => {
-      if(!confirm("Are you sure you want to withdraw ALL funds?")) return;
+  // --- UPDATED: Withdrawal Modal Handler ---
+  const openWithdrawModal = () => {
+      setWithdrawalTxHash(null); // Reset state
+      setIsWithdrawModalOpen(true);
+  };
+
+  const handleWithdraw = async (tokenType: 'USDC' | 'USDC.e' | 'POL') => {
+      if(!confirm(`Are you sure you want to withdraw ALL ${tokenType}?`)) return;
       setIsWithdrawing(true);
 
       try {
          // Auto-switch to Polygon required for managing the Kernel account
          const walletClient = await web3Service.getViemWalletClient(137);
          
-         // In a real scenario, fetch exact balance first
-         const withdrawAmount = parseUnits("1000", 6); 
+         // Create Dynamic ZeroDev Service (using config/env if available)
+         const zeroDev = new ZeroDevService(process.env.ZERODEV_RPC || 'https://rpc.zerodev.app/api/v2/bundler/PROJECT_ID');
          
-         alert("🔒 SECURE WITHDRAWAL\n\nPlease sign the UserOperation in your wallet.\nThis sends a direct command to your Smart Account to release funds.");
+         // --- CRITICAL FIX: Fetch LIVE BALANCE to ensure 100% accuracy ---
+         const provider = new BrowserProvider((window as any).ethereum);
+         let withdrawAmount = BigInt(0);
+         let tokenAddress = USDC_POLYGON; // Default to something valid
+
+         if (tokenType === 'USDC.e') {
+             tokenAddress = USDC_BRIDGED_POLYGON;
+             const contract = new Contract(tokenAddress, USDC_ABI, provider);
+             withdrawAmount = await contract.balanceOf(proxyAddress); 
+         } else if (tokenType === 'USDC') {
+             tokenAddress = USDC_POLYGON; 
+             const contract = new Contract(tokenAddress, USDC_ABI, provider);
+             withdrawAmount = await contract.balanceOf(proxyAddress);
+         } else if (tokenType === 'POL') {
+             tokenAddress = '0x0000000000000000000000000000000000000000'; 
+             withdrawAmount = await provider.getBalance(proxyAddress); 
+         }
          
-         const txHash = await zeroDevService.withdrawFunds(
+         if (withdrawAmount <= BigInt(0)) {
+             alert("Balance is 0. Nothing to withdraw.");
+             setIsWithdrawing(false);
+             return;
+         }
+
+         // No alert needed, the wallet popup is self-explanatory
+         
+         const txHash = await zeroDev.withdrawFunds(
              walletClient,
              proxyAddress,
              userAddress,
              withdrawAmount,
-             USDC_POLYGON
+             tokenAddress
          );
          
          if (config.enableSounds) playSound('cashout');
-         alert(`✅ Withdrawal Successful!\nTx Hash: ${txHash}`);
+         
+         // SHOW SUCCESS STATE IN MODAL instead of closing
+         setWithdrawalTxHash(txHash);
+
       } catch (e: any) {
          console.error(e);
          alert("Withdrawal Failed: " + e.message);
@@ -1305,6 +1791,7 @@ const App = () => {
       {/* --- HEADER --- */}
       <header className="h-16 border-b border-gray-200 dark:border-terminal-border bg-white/80 dark:bg-terminal-card/50 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 h-full flex items-center justify-between">
+            {/* Logo & Branding */}
             <div className="flex items-center gap-3">
                 <button 
                     onClick={() => setActiveTab('dashboard')}
@@ -1326,6 +1813,7 @@ const App = () => {
                 </div>
             </div>
 
+            {/* Desktop Navigation */}
             <nav className="hidden md:flex items-center gap-1 bg-gray-100 dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-lg p-1">
                 {[
                   { id: 'dashboard', icon: Activity },
@@ -1351,9 +1839,10 @@ const App = () => {
                 ))}
             </nav>
 
-            <div className="flex items-center gap-4">
+            {/* Right Actions */}
+            <div className="flex items-center gap-2 sm:gap-4">
                  {/* Chain Indicator - Updated with Icon */}
-                 <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-white/5 rounded-lg border border-gray-200 dark:border-white/10 text-xs font-medium">
+                 <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-white/5 rounded-lg border border-gray-200 dark:border-white/10 text-xs font-medium">
                     {chainId === 137 ? (
                         <>
                             <img src={CHAIN_ICONS[137]} className="w-4 h-4 rounded-full" alt="Polygon"/>
@@ -1367,10 +1856,11 @@ const App = () => {
                  </div>
 
                  {/* Theme Toggle */}
-                 <button onClick={toggleTheme} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-white/10 text-gray-600 dark:text-gray-400 transition-colors">
+                 <button onClick={toggleTheme} className="hidden sm:block p-2 rounded-full hover:bg-gray-200 dark:hover:bg-white/10 text-gray-600 dark:text-gray-400 transition-colors">
                      {theme === 'light' ? <Moon size={16}/> : <Sun size={16}/>}
                  </button>
 
+                 {/* Status Indicator */}
                  <div className="hidden md:flex flex-col items-end mr-2">
                     <div className="flex items-center gap-1.5">
                         <div className={`w-1.5 h-1.5 rounded-full status-dot ${isRunning ? 'bg-green-500 text-green-500' : 'bg-gray-400 text-gray-400'}`}></div>
@@ -1378,17 +1868,64 @@ const App = () => {
                     </div>
                  </div>
 
+                 {/* Start/Stop Button */}
                  {isRunning ? (
                     <button onClick={handleStop} className="h-9 px-4 bg-red-50 dark:bg-terminal-danger/10 hover:bg-red-100 dark:hover:bg-terminal-danger/20 text-red-600 dark:text-terminal-danger border border-red-200 dark:border-terminal-danger/50 rounded flex items-center gap-2 text-xs font-bold transition-all">
-                        <Square size={14} fill="currentColor" /> STOP
+                        <Square size={14} fill="currentColor" /> <span className="hidden sm:inline">STOP</span>
                     </button>
                 ) : (
                     <button onClick={handleStart} className="h-9 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded flex items-center gap-2 text-xs font-bold transition-all shadow-lg shadow-blue-500/30">
-                        <Play size={14} fill="currentColor" /> START ENGINE
+                        <Play size={14} fill="currentColor" /> <span className="hidden sm:inline">START</span>
                     </button>
                 )}
+
+                {/* Mobile Menu Toggle */}
+                <div className="md:hidden">
+                    <button 
+                        onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+                        className="p-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10 rounded-lg transition-colors"
+                    >
+                        {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+                    </button>
+                </div>
             </div>
         </div>
+
+        {/* Mobile Navigation Dropdown */}
+        {isMobileMenuOpen && (
+            <div className="absolute top-16 left-0 w-full bg-white dark:bg-terminal-card border-b border-gray-200 dark:border-terminal-border z-40 md:hidden animate-in slide-in-from-top-5 shadow-xl">
+                <div className="p-4 grid grid-cols-2 gap-2">
+                    {[
+                      { id: 'dashboard', icon: Activity },
+                      { id: 'system', icon: Gauge },
+                      { id: 'bridge', icon: Globe },
+                      { id: 'marketplace', icon: Users },
+                      { id: 'history', icon: History },
+                      { id: 'vault', icon: Lock },
+                      { id: 'help', icon: LifeBuoy }
+                    ].map((tab) => (
+                        <button 
+                            key={tab.id}
+                            onClick={() => { setActiveTab(tab.id as any); setIsMobileMenuOpen(false); }}
+                            className={`p-3 rounded-lg text-sm font-bold flex flex-col items-center gap-2 transition-all ${
+                                activeTab === tab.id 
+                                ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800' 
+                                : 'bg-gray-50 dark:bg-white/5 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/10'
+                            }`}
+                        >
+                            <tab.icon size={20} />
+                            <span className="capitalize">{tab.id}</span>
+                        </button>
+                    ))}
+                </div>
+                <div className="p-4 border-t border-gray-200 dark:border-gray-800 flex justify-between items-center">
+                    <span className="text-xs font-mono text-gray-500">v2.4.1-mobile</span>
+                    <button onClick={toggleTheme} className="flex items-center gap-2 text-xs font-bold text-gray-600 dark:text-gray-400">
+                        {theme === 'light' ? <><Moon size={14}/> Dark Mode</> : <><Sun size={14}/> Light Mode</>}
+                    </button>
+                </div>
+            </div>
+        )}
       </header>
 
       {/* --- MAIN CONTENT --- */}
@@ -1406,13 +1943,12 @@ const App = () => {
                              <Coins size={14}/> Asset Overview
                         </h3>
                         
-                        <div className="grid grid-cols-2 gap-8 relative z-10">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 relative z-10">
                              {/* Connected Wallet */}
                              <div className="space-y-3">
                                 <div className="flex items-center gap-2 mb-2">
                                     <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-[10px] text-white">W</div>
                                     <span className="text-sm font-bold text-gray-900 dark:text-white">Main Wallet</span>
-                                    {/* --- FIX: ADDED COPY BUTTON & TOOLTIP --- */}
                                     <button 
                                         onClick={() => copyToClipboard(userAddress)} 
                                         className="p-1 hover:bg-gray-200 dark:hover:bg-white/10 rounded transition-colors text-gray-500"
@@ -1437,7 +1973,6 @@ const App = () => {
                                 <div className="flex items-center gap-2 mb-2">
                                     <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] text-white bg-green-600">P</div>
                                     <span className="text-sm font-bold text-gray-900 dark:text-white">Smart Trading Vault</span>
-                                    {/* Proxy Copy */}
                                     <button 
                                         onClick={() => copyToClipboard(proxyAddress)} 
                                         className="p-1 hover:bg-gray-200 dark:hover:bg-white/10 rounded transition-colors text-gray-500"
@@ -1452,25 +1987,28 @@ const App = () => {
                                     <span className="text-sm font-mono text-gray-900 dark:text-white">{proxyWalletBal.native}</span>
                                 </div>
                                 <div className="p-3 bg-white dark:bg-black/40 rounded border border-gray-200 dark:border-gray-800 flex justify-between shadow-sm dark:shadow-none">
-                                    <span className="text-xs text-gray-500 dark:text-gray-400">USDC</span>
-                                    <span className="text-sm font-mono text-gray-900 dark:text-white">{proxyWalletBal.usdc}</span>
+                                    <div className="flex flex-col">
+                                        <span className="text-xs text-gray-500 dark:text-gray-400">USDC.e (Active)</span>
+                                        <span className="text-[8px] text-green-600 dark:text-green-400 font-bold">TRADING FUNDS</span>
+                                    </div>
+                                    <span className="text-sm font-mono text-gray-900 dark:text-white font-bold">{proxyWalletBal.usdc}</span>
                                 </div>
                              </div>
                         </div>
 
                         {/* Action Bar */}
-                        <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-800 flex gap-3">
+                        <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-800 flex flex-col sm:flex-row gap-3">
                             <button 
                                 onClick={handleDepositClick}
-                                className="flex-1 py-2 bg-blue-50 dark:bg-terminal-accent/10 hover:bg-blue-100 dark:hover:bg-terminal-accent/20 border border-blue-200 dark:border-terminal-accent/30 text-blue-600 dark:text-terminal-accent rounded text-xs font-bold transition-all flex items-center justify-center gap-2"
+                                className="flex-1 py-3 bg-blue-50 dark:bg-terminal-accent/10 hover:bg-blue-100 dark:hover:bg-terminal-accent/20 border border-blue-200 dark:border-terminal-accent/30 text-blue-600 dark:text-terminal-accent rounded text-xs font-bold transition-all flex items-center justify-center gap-2"
                             >
-                                <ArrowDownCircle size={14}/> {chainId === 137 ? 'DEPOSIT USDC' : 'BRIDGE FUNDS'}
+                                <ArrowDownCircle size={16}/> {chainId === 137 ? 'DEPOSIT USDC' : 'BRIDGE FUNDS'}
                             </button>
                             <button 
-                                onClick={handleWithdraw}
-                                className="flex-1 py-2 bg-red-50 dark:bg-terminal-danger/10 hover:bg-red-100 dark:hover:bg-terminal-danger/20 border border-red-200 dark:border-terminal-danger/30 text-red-600 dark:text-terminal-danger rounded text-xs font-bold transition-all flex items-center justify-center gap-2"
+                                onClick={openWithdrawModal} // Updated Handler
+                                className="flex-1 py-3 bg-red-50 dark:bg-terminal-danger/10 hover:bg-red-100 dark:hover:bg-terminal-danger/20 border border-red-200 dark:border-terminal-danger/30 text-red-600 dark:text-terminal-danger rounded text-xs font-bold transition-all flex items-center justify-center gap-2"
                             >
-                                <ArrowUpCircle size={14}/> TRUSTLESS WITHDRAW
+                                <ArrowUpCircle size={16}/> WITHDRAW
                             </button>
                         </div>
                         
@@ -1580,12 +2118,359 @@ const App = () => {
             </div>
         )}
         
+        {/* BRIDGE (Refactored) */}
+        {activeTab === 'bridge' && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                {/* Bridge Guide Modal */}
+                {showBridgeGuide && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in">
+                        <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-xl max-w-md w-full p-6 relative shadow-2xl">
+                            <button onClick={() => { setShowBridgeGuide(false); localStorage.setItem('bridge_guide_dismissed', 'true'); }} className="absolute top-4 right-4 text-gray-500 hover:text-black dark:hover:text-white"><X/></button>
+                            
+                            <div className="flex flex-col items-center text-center gap-4 mb-4">
+                                <div className="w-16 h-16 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center text-blue-600 dark:text-blue-400">
+                                    <Fuel size={32}/>
+                                </div>
+                                <h3 className="text-xl font-bold text-gray-900 dark:text-white">First Time Setup</h3>
+                            </div>
+
+                            <div className="space-y-4 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                                <p>
+                                    To start your bot, you need two things on the Polygon network:
+                                </p>
+                                <ul className="list-disc pl-5 space-y-2">
+                                    <li><strong>USDC.e (Bridged):</strong> To place trades. This is the collateral used by Polymarket.</li>
+                                    <li><strong>POL (Matic):</strong> To pay for gas fees (even with account abstraction, some base gas is needed for activation).</li>
+                                </ul>
+                                <div className="bg-yellow-50 dark:bg-yellow-900/20 p-3 rounded-lg border border-yellow-200 dark:border-yellow-800 text-yellow-800 dark:text-yellow-200 text-xs font-bold">
+                                    💡 Tip: Bridge at least $2 of POL first, then bridge your USDC.
+                                </div>
+                            </div>
+
+                            <button 
+                                onClick={() => { setShowBridgeGuide(false); localStorage.setItem('bridge_guide_dismissed', 'true'); }}
+                                className="mt-6 w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-all"
+                            >
+                                Got it
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Bridge Form */}
+                <div className="md:col-span-2 glass-panel p-8 rounded-xl border border-gray-200 dark:border-terminal-border">
+                    <div className="flex items-center justify-between mb-8">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-blue-100 dark:bg-blue-900/20 rounded-lg text-blue-600 dark:text-blue-400">
+                                <Globe size={20}/>
+                            </div>
+                            <div>
+                                <h2 className="text-xl font-bold text-gray-900 dark:text-white">Cross-Chain Bridge</h2>
+                                <p className="text-xs text-gray-500">{bridgeMode === 'IN' ? 'External → Polygon Smart Vault' : 'Polygon Main Wallet → External'}</p>
+                            </div>
+                        </div>
+                        
+                        <div className="flex bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
+                            <button 
+                                onClick={() => bridgeMode !== 'IN' && handleSwapDirection()}
+                                className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${bridgeMode === 'IN' ? 'bg-white dark:bg-gray-700 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                            >
+                                Bridge In
+                            </button>
+                            <button 
+                                onClick={() => bridgeMode !== 'OUT' && handleSwapDirection()}
+                                className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${bridgeMode === 'OUT' ? 'bg-white dark:bg-gray-700 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                            >
+                                Bridge Out
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div className="space-y-4 max-w-lg mx-auto relative">
+                        
+                        {/* FROM CARD */}
+                        <div className="p-4 bg-white dark:bg-black/40 rounded-xl border border-gray-200 dark:border-terminal-border shadow-sm dark:shadow-none transition-all hover:border-blue-300 dark:hover:border-blue-700">
+                            <div className="flex justify-between items-center mb-2">
+                                <label className="text-xs text-gray-500 uppercase font-bold">From Network</label>
+                                <span className="text-[10px] text-gray-400 flex items-center gap-1">
+                                    <Wallet2 size={10}/> 
+                                    Bal: {getSourceBalance()}
+                                </span>
+                            </div>
+                            
+                            <div className="flex gap-4 items-center">
+                                {/* Chain Selector */}
+                                <div className="relative min-w-[140px]">
+                                    <button 
+                                        onClick={() => setIsSourceChainSelectOpen(!isSourceChainSelectOpen)}
+                                        className="w-full flex items-center justify-between bg-gray-50 dark:bg-white/5 hover:bg-gray-100 dark:hover:bg-white/10 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-white text-sm rounded-lg px-3 py-2.5 transition-colors"
+                                        disabled={bridgeMode === 'OUT'} // Locked to Polygon for Out
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <img src={CHAIN_ICONS[selectedSourceChain]} alt="" className="w-5 h-5 rounded-full"/>
+                                            <span className="font-bold truncate max-w-[80px]">{CHAIN_NAMES[selectedSourceChain]}</span>
+                                        </div>
+                                        {bridgeMode === 'IN' && <ChevronDown size={14} className={`text-gray-400 transition-transform ${isSourceChainSelectOpen ? 'rotate-180' : ''}`}/>}
+                                    </button>
+                                    
+                                    {isSourceChainSelectOpen && bridgeMode === 'IN' && (
+                                        <div className="absolute top-full left-0 w-full mt-1 bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-lg shadow-xl z-20 overflow-hidden animate-in fade-in slide-in-from-top-2">
+                                            {[8453, 56, 42161, 1, 1151111081099710].map(cId => (
+                                                <button 
+                                                    key={cId}
+                                                    onClick={() => { setSelectedSourceChain(cId); setIsSourceChainSelectOpen(false); }}
+                                                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors text-sm text-gray-900 dark:text-white text-left"
+                                                >
+                                                    <img src={CHAIN_ICONS[cId]} alt="" className="w-5 h-5 rounded-full"/>
+                                                    <span>{CHAIN_NAMES[cId]}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Amount Input */}
+                                <div className="flex-1 relative">
+                                    <input 
+                                        type="number" 
+                                        className="w-full bg-transparent text-2xl font-mono font-bold text-gray-900 dark:text-white outline-none text-right placeholder:text-gray-300 dark:placeholder:text-gray-700"
+                                        placeholder="0.00"
+                                        value={bridgeAmount}
+                                        onChange={(e) => setBridgeAmount(e.target.value)}
+                                    />
+                                    <div className="absolute -bottom-5 right-0 flex gap-2">
+                                         <button 
+                                            onClick={() => {
+                                                const bal = getSourceBalance();
+                                                // Only set if numeric to avoid setting 'Switch Chain' as amount
+                                                if (bal && !isNaN(parseFloat(bal))) {
+                                                    setBridgeAmount(bal);
+                                                }
+                                            }}
+                                            className="text-[10px] text-blue-600 dark:text-blue-400 font-bold hover:underline"
+                                         >
+                                            MAX
+                                         </button>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            {/* Token Selector Pill */}
+                            <div className="flex justify-end mt-4">
+                                <div className="flex bg-gray-100 dark:bg-white/5 p-1 rounded-lg">
+                                    {selectedSourceChain === 137 ? (
+                                        // Polygon Source Options
+                                        <>
+                                            <button onClick={() => setBridgeToken('USDC')} className={`px-3 py-1 text-[10px] font-bold rounded ${bridgeToken === 'USDC' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-white' : 'text-gray-500'}`}>USDC (Native)</button>
+                                            <button onClick={() => setBridgeToken('USDC.e')} className={`px-3 py-1 text-[10px] font-bold rounded ${bridgeToken === 'USDC.e' ? 'bg-white dark:bg-gray-600 shadow-sm text-green-600 dark:text-white' : 'text-gray-500'}`}>USDC.e</button>
+                                            <button onClick={() => setBridgeToken('NATIVE')} className={`px-3 py-1 text-[10px] font-bold rounded ${bridgeToken === 'NATIVE' ? 'bg-white dark:bg-gray-600 shadow-sm text-purple-600 dark:text-white' : 'text-gray-500'}`}>POL</button>
+                                        </>
+                                    ) : (
+                                        // External Source Options
+                                        <>
+                                            <button onClick={() => setBridgeToken('USDC')} className={`px-3 py-1 text-[10px] font-bold rounded ${bridgeToken === 'USDC' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-white' : 'text-gray-500'}`}>USDC</button>
+                                            <button onClick={() => setBridgeToken('NATIVE')} className={`px-3 py-1 text-[10px] font-bold rounded ${bridgeToken === 'NATIVE' ? 'bg-white dark:bg-gray-600 shadow-sm' : 'text-gray-500'}`}>{selectedSourceChain === 1151111081099710 ? 'SOL' : 'ETH'}</button>
+                                        </>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Swap Direction Button */}
+                        <div className="absolute left-1/2 top-[46%] -translate-x-1/2 -translate-y-1/2 z-10">
+                            <button 
+                                onClick={handleSwapDirection}
+                                className="p-2 bg-gray-100 dark:bg-gray-800 border-4 border-white dark:border-[#0a0a0a] rounded-full text-gray-500 hover:text-blue-600 dark:hover:text-blue-400 hover:rotate-180 transition-all shadow-sm"
+                            >
+                                <ArrowUpDown size={18}/>
+                            </button>
+                        </div>
+
+                        {/* TO CARD */}
+                        <div className="p-4 bg-gray-50 dark:bg-black/40 rounded-xl border border-gray-200 dark:border-terminal-border shadow-sm dark:shadow-none transition-all hover:border-blue-300 dark:hover:border-blue-700">
+                            <label className="text-xs text-gray-500 uppercase font-bold mb-2 block">To Network</label>
+                            <div className="flex gap-4 items-center">
+                                {/* Chain Selector */}
+                                <div className="relative min-w-[140px]">
+                                    <button 
+                                        onClick={() => setIsDestChainSelectOpen(!isDestChainSelectOpen)}
+                                        className="w-full flex items-center justify-between bg-white dark:bg-white/5 hover:bg-gray-50 dark:hover:bg-white/10 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-white text-sm rounded-lg px-3 py-2.5 transition-colors"
+                                        disabled={bridgeMode === 'IN'} // Locked to Polygon for IN
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <img src={CHAIN_ICONS[selectedDestChain]} alt="" className="w-5 h-5 rounded-full"/>
+                                            <span className="font-bold truncate max-w-[80px]">{CHAIN_NAMES[selectedDestChain]}</span>
+                                        </div>
+                                        {bridgeMode === 'OUT' && <ChevronDown size={14} className={`text-gray-400 transition-transform ${isDestChainSelectOpen ? 'rotate-180' : ''}`}/>}
+                                    </button>
+                                    
+                                    {isDestChainSelectOpen && bridgeMode === 'OUT' && (
+                                        <div className="absolute top-full left-0 w-full mt-1 bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-lg shadow-xl z-20 overflow-hidden animate-in fade-in slide-in-from-top-2">
+                                            {[8453, 56, 42161, 1, 1151111081099710].map(cId => (
+                                                <button 
+                                                    key={cId}
+                                                    onClick={() => { setSelectedDestChain(cId); setIsDestChainSelectOpen(false); }}
+                                                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors text-sm text-gray-900 dark:text-white text-left"
+                                                >
+                                                    <img src={CHAIN_ICONS[cId]} alt="" className="w-5 h-5 rounded-full"/>
+                                                    <span>{CHAIN_NAMES[cId]}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Recipient Input */}
+                                <div className="flex-1">
+                                    <div className="relative">
+                                        <input 
+                                            type="text" 
+                                            className="w-full bg-transparent border-b border-gray-300 dark:border-gray-700 py-2 text-sm font-mono text-gray-900 dark:text-white outline-none focus:border-blue-500 transition-colors pr-8"
+                                            placeholder="Recipient Address"
+                                            value={recipientAddress}
+                                            onChange={(e) => setRecipientAddress(e.target.value)}
+                                        />
+                                        {bridgeMode === 'OUT' && (
+                                            <button 
+                                                onClick={async () => { const text = await navigator.clipboard.readText(); setRecipientAddress(text); }}
+                                                className="absolute right-0 top-2 text-gray-400 hover:text-blue-500"
+                                                title="Paste"
+                                            >
+                                                <Clipboard size={14}/>
+                                            </button>
+                                        )}
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 mt-1 flex justify-between">
+                                        <span>Receive Address</span>
+                                        {bridgeMode === 'IN' && <span className="text-green-600 dark:text-green-400 font-bold">Smart Vault</span>}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Destination Token Toggle (Only for IN mode when receiving on Polygon) */}
+                            {bridgeMode === 'IN' && selectedDestChain === 137 && (
+                                <div className="flex justify-end mt-4">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-[10px] text-gray-500 font-bold uppercase">Receive:</span>
+                                        <div className="flex bg-gray-200 dark:bg-white/5 p-1 rounded-lg">
+                                            <button 
+                                                onClick={() => setDestToken('USDC')} 
+                                                className={`px-3 py-1 text-[10px] font-bold rounded transition-all ${destToken === 'USDC' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-white' : 'text-gray-500'}`}
+                                            >
+                                                USDC.e (Trade)
+                                            </button>
+                                            <button 
+                                                onClick={() => setDestToken('NATIVE')} 
+                                                className={`px-3 py-1 text-[10px] font-bold rounded transition-all ${destToken === 'NATIVE' ? 'bg-white dark:bg-gray-600 shadow-sm text-purple-600 dark:text-white' : 'text-gray-500'}`}
+                                            >
+                                                POL (Gas)
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {!bridgeQuote ? (
+                            <button onClick={handleGetBridgeQuote} className="w-full py-4 bg-blue-600 dark:bg-terminal-accent hover:bg-blue-700 dark:hover:bg-blue-600 text-white font-bold rounded-xl transition-all shadow-lg hover:shadow-blue-500/25 hover:-translate-y-0.5">
+                                Review Quote
+                            </button>
+                        ) : (
+                            <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2">
+                                {/* Detailed Quote Card */}
+                                <div className="p-4 bg-white dark:bg-black/20 border border-blue-200 dark:border-blue-500/30 rounded-xl text-sm space-y-3 shadow-sm relative overflow-hidden">
+                                    <div className="absolute top-0 left-0 w-1 h-full bg-blue-500"></div>
+                                    <div className="flex justify-between items-center border-b border-gray-100 dark:border-white/5 pb-2">
+                                        <span className="font-bold text-gray-900 dark:text-white">Quote Summary</span>
+                                        <span className="text-[10px] bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 px-2 py-0.5 rounded font-bold">BEST RATE</span>
+                                    </div>
+                                    
+                                    <div className="grid grid-cols-2 gap-4 pt-1">
+                                        <div>
+                                            <span className="text-[10px] text-gray-500 uppercase block font-bold">Estimated Return</span>
+                                            <span className="font-mono font-bold text-gray-900 dark:text-white text-lg">~{parseFloat(bridgeQuote.toAmountUSD).toFixed(2)} USD</span>
+                                        </div>
+                                        <div>
+                                            <span className="text-[10px] text-gray-500 uppercase block font-bold">Time</span>
+                                            <span className="font-mono font-bold text-gray-900 dark:text-white flex items-center gap-1"><Timer size={12}/> ~2 Mins</span>
+                                        </div>
+                                        <div>
+                                            <span className="text-[10px] text-gray-500 uppercase block font-bold">Network Fee</span>
+                                            <span className="font-mono font-bold text-gray-700 dark:text-gray-300 flex items-center gap-1"><Fuel size={12}/> ${parseFloat(bridgeQuote.gasCostUSD || '0').toFixed(2)}</span>
+                                        </div>
+                                        <div>
+                                            <span className="text-[10px] text-gray-500 uppercase block font-bold">Platform Fee (0.5%)</span>
+                                            <span className="font-mono font-bold text-gray-700 dark:text-gray-300">${(parseFloat(bridgeQuote.fromAmountUSD) * 0.005).toFixed(2)}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Action Button or Stepper */}
+                                {isBridging ? (
+                                    <BridgeStepper status={bridgeStatus} />
+                                ) : (
+                                    <button onClick={handleExecuteBridge} className="w-full py-4 bg-green-600 dark:bg-terminal-success hover:bg-green-700 dark:hover:bg-green-600 text-white font-bold rounded-xl transition-all flex justify-center gap-2 shadow-lg hover:shadow-green-500/25 hover:-translate-y-0.5">
+                                        <Zap size={18}/> CONFIRM TRANSACTION
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* History Panel */}
+                <div className="glass-panel p-6 rounded-xl border border-gray-200 dark:border-terminal-border flex flex-col h-[600px]">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-2"><History size={14}/> Bridge History</h3>
+                        <span className="text-[10px] text-gray-500">{bridgeHistory.length} Txns</span>
+                    </div>
+                    <div className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-700">
+                        {bridgeHistory.length === 0 && (
+                            <div className="flex flex-col items-center justify-center h-40 text-gray-400 dark:text-gray-600">
+                                <ArrowRightLeft size={32} className="mb-2 opacity-50"/>
+                                <p className="text-xs italic">No history available.</p>
+                            </div>
+                        )}
+                        {bridgeHistory.map(rec => (
+                            <div key={rec.id} className="p-3 bg-white dark:bg-white/5 rounded border border-gray-200 dark:border-white/5 text-xs hover:border-blue-500/30 transition-colors group">
+                                <div className="flex justify-between mb-2">
+                                    <span className="text-gray-500 dark:text-gray-400 text-[10px]">{new Date(rec.timestamp).toLocaleDateString()} {new Date(rec.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                    <span className={`font-bold text-[10px] px-1.5 py-0.5 rounded ${
+                                        rec.status === 'COMPLETED' ? 'bg-green-100 dark:bg-green-900/20 text-green-600 dark:text-green-500' : 
+                                        rec.status === 'FAILED' ? 'bg-red-100 dark:bg-red-900/20 text-red-600 dark:text-red-500' : 
+                                        'bg-yellow-100 dark:bg-yellow-900/20 text-yellow-600 dark:text-yellow-500'
+                                    }`}>
+                                        {rec.status}
+                                    </span>
+                                </div>
+                                <div className="flex items-center justify-between text-gray-900 dark:text-white mb-2 font-medium">
+                                    <span className="flex items-center gap-1">{rec.fromChain}</span> 
+                                    <ArrowRightLeft size={10} className="text-gray-400"/> 
+                                    <span className="flex items-center gap-1">{rec.toChain}</span>
+                                </div>
+                                <div className="flex justify-between items-end">
+                                    <div className="text-gray-600 dark:text-gray-400 font-mono">
+                                        ${parseFloat(rec.amountIn).toFixed(2)} &rarr; <span className="text-gray-900 dark:text-white font-bold">${parseFloat(rec.amountOut).toFixed(2)}</span>
+                                    </div>
+                                    {rec.txHash && (
+                                        <a href={`https://polygonscan.com/tx/${rec.txHash}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600 dark:hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <ExternalLink size={12}/>
+                                        </a>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        )}
+        
         {/* SYSTEM PAGE (Revamped) */}
         {activeTab === 'system' && systemStats && (
             <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
                 
                 {/* Header */}
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                     <div className="flex items-center gap-4">
                         <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl"><Gauge size={32} className="text-blue-600 dark:text-blue-500"/></div>
                         <div>
@@ -1593,7 +2478,7 @@ const App = () => {
                             <p className="text-gray-500">Global Aggregated Data & Platform Metrics</p>
                         </div>
                     </div>
-                    <div className="bg-yellow-50 dark:bg-yellow-900/10 border border-yellow-200 dark:border-yellow-500/30 px-4 py-2 rounded-lg flex items-center gap-3">
+                    <div className="bg-yellow-50 dark:bg-yellow-900/10 border border-yellow-200 dark:border-yellow-500/30 px-4 py-2 rounded-lg flex items-center gap-3 w-full sm:w-auto">
                         <Trophy size={20} className="text-yellow-600 dark:text-yellow-500"/>
                         <div>
                             <div className="text-[10px] font-bold text-yellow-600 dark:text-yellow-500 uppercase">Global Rank</div>
@@ -1747,249 +2632,6 @@ const App = () => {
             </div>
         )}
 
-        {/* BRIDGE */}
-        {activeTab === 'bridge' && (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
-                {/* Bridge Guide Modal */}
-                {showBridgeGuide && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in">
-                        <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-xl max-w-md w-full p-6 relative shadow-2xl">
-                            <button onClick={() => { setShowBridgeGuide(false); localStorage.setItem('bridge_guide_dismissed', 'true'); }} className="absolute top-4 right-4 text-gray-500 hover:text-black dark:hover:text-white"><X/></button>
-                            
-                            <div className="flex flex-col items-center text-center gap-4 mb-4">
-                                <div className="w-16 h-16 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center text-blue-600 dark:text-blue-400">
-                                    <Fuel size={32}/>
-                                </div>
-                                <h3 className="text-xl font-bold text-gray-900 dark:text-white">First Time Setup</h3>
-                            </div>
-
-                            <div className="space-y-4 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
-                                <p>
-                                    To start your bot, you need two things on the Polygon network:
-                                </p>
-                                <ul className="list-disc pl-5 space-y-2">
-                                    <li><strong>USDC:</strong> To place trades (Collateral).</li>
-                                    <li><strong>POL (Matic):</strong> To pay for gas fees (even with account abstraction, some base gas is needed for activation).</li>
-                                </ul>
-                                <div className="bg-yellow-50 dark:bg-yellow-900/20 p-3 rounded-lg border border-yellow-200 dark:border-yellow-800 text-yellow-800 dark:text-yellow-200 text-xs font-bold">
-                                    💡 Tip: Bridge at least $2 of POL first, then bridge your USDC.
-                                </div>
-                            </div>
-
-                            <button 
-                                onClick={() => { setShowBridgeGuide(false); localStorage.setItem('bridge_guide_dismissed', 'true'); }}
-                                className="mt-6 w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-all"
-                            >
-                                Got it
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* Bridge Form */}
-                <div className="md:col-span-2 glass-panel p-8 rounded-xl border border-gray-200 dark:border-terminal-border">
-                    <div className="flex items-center justify-between mb-8">
-                        <div className="flex items-center gap-3">
-                            <Globe className="text-blue-600 dark:text-terminal-accent" />
-                            <h2 className="text-xl font-bold text-gray-900 dark:text-white">Cross-Chain Deposit</h2>
-                        </div>
-                        <div className="flex gap-2">
-                             <div className="px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded text-[10px] text-gray-600 dark:text-gray-400 font-bold flex items-center gap-1">
-                                 <Zap size={10} className="text-blue-500"/> Powered by Li.Fi
-                             </div>
-                             <div className="px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded text-[10px] text-gray-600 dark:text-gray-400 font-bold">0.5% Fee</div>
-                        </div>
-                    </div>
-                    
-                    <div className="space-y-6 max-w-lg mx-auto">
-                        <div className="p-4 bg-white dark:bg-black/40 rounded-lg border border-gray-200 dark:border-terminal-border shadow-sm dark:shadow-none">
-                            <label className="text-xs text-gray-500 uppercase font-bold mb-2 block">From Network</label>
-                            
-                            {/* Custom Chain Dropdown */}
-                            <div className="relative mb-4">
-                                <button 
-                                    onClick={() => setIsChainSelectOpen(!isChainSelectOpen)}
-                                    className="w-full flex items-center justify-between bg-gray-50 dark:bg-terminal-card border border-gray-200 dark:border-terminal-border text-gray-900 dark:text-white text-sm rounded-lg px-3 py-3 outline-none focus:border-blue-500 transition-colors"
-                                >
-                                    <div className="flex items-center gap-3">
-                                        <img src={CHAIN_ICONS[bridgeFromChain]} alt="chain" className="w-6 h-6 rounded-full"/>
-                                        <span className="font-bold">{CHAIN_NAMES[bridgeFromChain]}</span>
-                                    </div>
-                                    <ChevronDown size={16} className={`transition-transform ${isChainSelectOpen ? 'rotate-180' : ''}`}/>
-                                </button>
-                                
-                                {isChainSelectOpen && (
-                                    <div className="absolute top-full left-0 w-full mt-1 bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-lg shadow-xl z-20 overflow-hidden animate-in fade-in slide-in-from-top-2">
-                                        {[8453, 56, 42161, 1, 1151111081099710].map(cId => (
-                                            <button 
-                                                key={cId}
-                                                onClick={() => { setBridgeFromChain(cId); setIsChainSelectOpen(false); }}
-                                                className="w-fullflex items-center gap-3 px-4 py-3 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors text-sm text-gray-900 dark:text-white w-full text-left"
-                                            >
-                                                <img src={CHAIN_ICONS[cId]} alt="" className="w-5 h-5 rounded-full"/>
-                                                <span>{CHAIN_NAMES[cId]}</span>
-                                            </button>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-
-                            <div className="flex gap-2 items-center">
-                                <input 
-                                    type="number" 
-                                    className="w-full bg-transparent text-2xl font-mono text-gray-900 dark:text-white outline-none"
-                                    placeholder="0.0"
-                                    value={bridgeAmount}
-                                    onChange={(e) => setBridgeAmount(e.target.value)}
-                                />
-                                {/* Source Token Selector */}
-                                <div className="flex bg-gray-100 dark:bg-gray-800 p-1 rounded-lg shrink-0">
-                                    <button 
-                                        onClick={() => setBridgeToken('NATIVE')}
-                                        className={`px-3 py-1 text-xs font-bold rounded transition-all ${bridgeToken === 'NATIVE' ? 'bg-white dark:bg-gray-700 shadow-sm text-gray-900 dark:text-white' : 'text-gray-500'}`}
-                                    >
-                                        {bridgeFromChain === 1151111081099710 ? 'SOL' : 'ETH/BNB'}
-                                    </button>
-                                    <button 
-                                        onClick={() => setBridgeToken('USDC')}
-                                        className={`px-3 py-1 text-xs font-bold rounded transition-all ${bridgeToken === 'USDC' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-500'}`}
-                                    >
-                                        USDC
-                                    </button>
-                                </div>
-                            </div>
-                            
-                            {/* --- Address Feedback --- */}
-                            <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700 text-[10px] text-gray-500 flex justify-between items-center">
-                                <span>Wallet:</span>
-                                <span className="font-mono bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded text-gray-700 dark:text-gray-300 truncate max-w-[180px]" title={senderAddressDisplay}>
-                                    {senderAddressDisplay || 'Not Connected'}
-                                </span>
-                            </div>
-                        </div>
-
-                        <div className="flex justify-center"><ArrowDownCircle className="text-gray-400 dark:text-gray-600" /></div>
-
-                        <div className="p-4 bg-gray-50 dark:bg-black/40 rounded-lg border border-gray-200 dark:border-terminal-border opacity-80 dark:opacity-70">
-                            <label className="text-xs text-gray-500 uppercase font-bold mb-2 block">To (Smart Vault)</label>
-                            <div className="flex justify-between items-center">
-                                <div className="flex items-center gap-3">
-                                    <img src={CHAIN_ICONS[137]} className="w-6 h-6 rounded-full" alt="Polygon"/>
-                                    <span className="text-gray-900 dark:text-white font-bold">Polygon</span>
-                                </div>
-                                
-                                {/* Destination Token Toggle (USDC/POL) */}
-                                <div className="flex bg-gray-200 dark:bg-gray-800 p-1 rounded-lg">
-                                    <button 
-                                        onClick={() => setDestToken('USDC')}
-                                        className={`px-3 py-1 text-xs font-bold rounded transition-all ${destToken === 'USDC' ? 'bg-white dark:bg-gray-600 shadow text-black dark:text-white' : 'text-gray-500'}`}
-                                    >
-                                        USDC
-                                    </button>
-                                    <button 
-                                        onClick={() => setDestToken('POL')}
-                                        className={`px-3 py-1 text-xs font-bold rounded transition-all ${destToken === 'POL' ? 'bg-white dark:bg-gray-600 shadow text-black dark:text-white' : 'text-gray-500'}`}
-                                    >
-                                        POL (Gas)
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-
-                        {!bridgeQuote ? (
-                            <button onClick={handleGetBridgeQuote} className="w-full py-3 bg-blue-600 dark:bg-terminal-accent hover:bg-blue-700 dark:hover:bg-blue-600 text-white font-bold rounded-lg transition-all shadow-lg">
-                                GET QUOTE
-                            </button>
-                        ) : (
-                            <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2">
-                                {/* Detailed Quote Card */}
-                                <div className="p-4 bg-white dark:bg-black/20 border border-blue-200 dark:border-blue-500/30 rounded-lg text-sm space-y-3 shadow-sm relative overflow-hidden">
-                                    <div className="absolute top-0 left-0 w-1 h-full bg-blue-500"></div>
-                                    <div className="flex justify-between items-center">
-                                        <span className="font-bold text-gray-900 dark:text-white">Quote Summary</span>
-                                        <span className="text-[10px] bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 px-2 py-0.5 rounded font-bold">BEST RATE</span>
-                                    </div>
-                                    
-                                    <div className="grid grid-cols-2 gap-4 pt-2">
-                                        <div>
-                                            <span className="text-[10px] text-gray-500 uppercase block">Receive</span>
-                                            <span className="font-mono font-bold text-gray-900 dark:text-white text-lg">~{parseFloat(bridgeQuote.toAmountUSD).toFixed(2)} {destToken}</span>
-                                        </div>
-                                        <div>
-                                            <span className="text-[10px] text-gray-500 uppercase block">Est. Time</span>
-                                            <span className="font-mono font-bold text-gray-900 dark:text-white flex items-center gap-1"><Timer size={12}/> ~2 Mins</span>
-                                        </div>
-                                        <div>
-                                            <span className="text-[10px] text-gray-500 uppercase block">Gas Cost</span>
-                                            <span className="font-mono font-bold text-gray-700 dark:text-gray-300 flex items-center gap-1"><Fuel size={12}/> ${parseFloat(bridgeQuote.gasCostUSD || '0').toFixed(2)}</span>
-                                        </div>
-                                        <div>
-                                            <span className="text-[10px] text-gray-500 uppercase block">Fee (0.5%)</span>
-                                            <span className="font-mono font-bold text-gray-700 dark:text-gray-300">${(parseFloat(bridgeQuote.fromAmountUSD) * 0.005).toFixed(2)}</span>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                {/* Action Button or Stepper */}
-                                {isBridging ? (
-                                    <BridgeStepper status={bridgeStatus} />
-                                ) : (
-                                    <button onClick={handleExecuteBridge} className="w-full py-3 bg-green-600 dark:bg-terminal-success hover:bg-green-700 dark:hover:bg-green-600 text-white font-bold rounded-lg transition-all flex justify-center gap-2 shadow-lg">
-                                        <Zap/> CONFIRM BRIDGE
-                                    </button>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                </div>
-
-                {/* History Panel */}
-                <div className="glass-panel p-6 rounded-xl border border-gray-200 dark:border-terminal-border flex flex-col h-[600px]">
-                    <div className="flex justify-between items-center mb-4">
-                        <h3 className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-2"><History size={14}/> Bridge History</h3>
-                        <span className="text-[10px] text-gray-500">{bridgeHistory.length} Txns</span>
-                    </div>
-                    <div className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-700">
-                        {bridgeHistory.length === 0 && (
-                            <div className="flex flex-col items-center justify-center h-40 text-gray-400 dark:text-gray-600">
-                                <ArrowRightLeft size={32} className="mb-2 opacity-50"/>
-                                <p className="text-xs italic">No history available.</p>
-                            </div>
-                        )}
-                        {bridgeHistory.map(rec => (
-                            <div key={rec.id} className="p-3 bg-white dark:bg-white/5 rounded border border-gray-200 dark:border-white/5 text-xs hover:border-blue-500/30 transition-colors group">
-                                <div className="flex justify-between mb-2">
-                                    <span className="text-gray-500 dark:text-gray-400 text-[10px]">{new Date(rec.timestamp).toLocaleDateString()} {new Date(rec.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-                                    <span className={`font-bold text-[10px] px-1.5 py-0.5 rounded ${
-                                        rec.status === 'COMPLETED' ? 'bg-green-100 dark:bg-green-900/20 text-green-600 dark:text-green-500' : 
-                                        rec.status === 'FAILED' ? 'bg-red-100 dark:bg-red-900/20 text-red-600 dark:text-red-500' : 
-                                        'bg-yellow-100 dark:bg-yellow-900/20 text-yellow-600 dark:text-yellow-500'
-                                    }`}>
-                                        {rec.status}
-                                    </span>
-                                </div>
-                                <div className="flex items-center justify-between text-gray-900 dark:text-white mb-2 font-medium">
-                                    <span className="flex items-center gap-1">{rec.fromChain}</span> 
-                                    <ArrowRightLeft size={10} className="text-gray-400"/> 
-                                    <span className="flex items-center gap-1">{rec.toChain}</span>
-                                </div>
-                                <div className="flex justify-between items-end">
-                                    <div className="text-gray-600 dark:text-gray-400 font-mono">
-                                        ${parseFloat(rec.amountIn).toFixed(2)} &rarr; <span className="text-gray-900 dark:text-white font-bold">${parseFloat(rec.amountOut).toFixed(2)}</span>
-                                    </div>
-                                    {rec.txHash && (
-                                        <a href={`https://polygonscan.com/tx/${rec.txHash}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600 dark:hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <ExternalLink size={12}/>
-                                        </a>
-                                    )}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            </div>
-        )}
-
         {/* WALLET (VAULT REBRAND) */}
         {activeTab === 'vault' && (
             <div className="max-w-5xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-300 pb-10">
@@ -2040,7 +2682,7 @@ const App = () => {
                              </div>
                              <div className="flex justify-between items-center pt-2">
                                  <div className="text-[10px] text-gray-500">{stats?.tradesCount || 0} Total Trades</div>
-                                 <button onClick={handleWithdraw} className="px-3 py-1 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-500 text-xs font-bold rounded hover:bg-red-100 dark:hover:bg-red-900/40">Trustless Withdraw</button>
+                                 <button onClick={openWithdrawModal} className="px-3 py-1 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-500 text-xs font-bold rounded hover:bg-red-100 dark:hover:bg-red-900/40">Trustless Withdraw</button>
                              </div>
                          </div>
                          {/* API Keys */}
@@ -2083,7 +2725,7 @@ const App = () => {
                             </div>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-6">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                             <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-xl p-5 shadow-sm dark:shadow-none">
                                 <div className="flex items-center justify-between mb-3">
                                     <label className="text-xs text-gray-500 font-bold uppercase">Risk Profile</label>
@@ -2382,7 +3024,7 @@ const App = () => {
                                     <td className="p-4 pl-6 text-gray-500">{new Date(tx.timestamp).toLocaleTimeString()}</td>
                                     <td className="p-4 text-gray-900 dark:text-white max-w-[200px] truncate" title={tx.marketId}>{tx.marketId}</td>
                                     <td className="p-4">
-                                        <span className={`px-2 py-0.5 rounded font-bold ${tx.side === 'BUY' ? 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-500' : 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-500'}`}>
+                                        <span className={`px-2 py-0.5 rounded font-bold ${tx.side === 'BUY' ? 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-500' : 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-500'}`}>
                                             {tx.side} {tx.outcome}
                                         </span>
                                     </td>
@@ -2485,7 +3127,7 @@ const App = () => {
                         </h3>
                         <div className="space-y-6 text-sm text-gray-600 dark:text-gray-400">
                             <p className="leading-relaxed">
-                                Bet Mirror is a <strong>Direct Market Access (DMA)</strong> terminal. We do not use side-pools. Every trade you execute is routed directly to the <strong>Polymarket Central Limit Order Book</strong>.
+                                Bet Mirror is a <strong>Direct Market Access (DMA)</strong> terminal. We do not use side-pools. Every trade you execute is routed directly to the <strong>Polymarket Central Limit Order Book (CLOB)</strong>**.
                             </p>
                             <div className="space-y-3">
                                 <div className="flex gap-3">
@@ -2618,246 +3260,20 @@ const App = () => {
       
       {/* Landing View Helper */}
       {!isConnected && <Landing onConnect={handleConnect} theme={theme} toggleTheme={toggleTheme} />}
+      
+      {/* Withdrawal Modal Instance */}
+      <WithdrawalModal 
+        isOpen={isWithdrawModalOpen}
+        onClose={() => { setIsWithdrawModalOpen(false); setWithdrawalTxHash(null); }}
+        balances={proxyWalletBal}
+        onWithdraw={handleWithdraw}
+        isWithdrawing={isWithdrawing}
+        successTx={withdrawalTxHash}
+      />
+
     </div>
   );
 };
-
-// --- HERO BACKGROUND (CLEAN GRID) ---
-const HeroBackground = () => {
-  return (
-    <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none">
-       {/* Very subtle clean grid, no glows */}
-       <div className="absolute inset-0 bg-grid-slate-200/[0.04] bg-[bottom_1px_center] dark:bg-grid-slate-800/[0.05]" style={{ backgroundSize: '40px 40px', maskImage: 'linear-gradient(to bottom, transparent 5%, black 40%, black 70%, transparent 95%)' }}></div>
-    </div>
-  )
-}
-
-const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, theme: string, toggleTheme: () => void }) => (
-    <div className="min-h-screen bg-gray-50 dark:bg-[#050505] font-sans transition-colors duration-300 flex flex-col relative overflow-x-hidden">
-        
-        <HeroBackground />
-
-        {/* Floating Header */}
-        <div className="absolute top-0 left-0 w-full p-6 flex justify-between items-center z-50 max-w-7xl mx-auto left-0 right-0">
-             <div className="opacity-0"></div> {/* Spacer */}
-             <button 
-                onClick={toggleTheme} 
-                className="p-3 bg-white/80 dark:bg-white/5 rounded-full hover:scale-110 transition-all shadow-sm backdrop-blur-md text-gray-600 dark:text-white border border-gray-200 dark:border-white/10"
-             >
-                {theme === 'light' ? <Moon size={18}/> : <Sun size={18}/>}
-             </button>
-         </div>
-
-        {/* Main Hero Section - Centered Vertically */}
-        <div className="flex-1 flex flex-col items-center justify-center px-6 z-10 w-full max-w-7xl mx-auto relative min-h-[100vh]">
-            
-            <div className="text-center flex flex-col items-center">
-                
-                {/* Logo Icon with Shadow Glow */}
-                <div className="mb-8 relative mt-7">
-                    <div className="absolute inset-0 bg-blue-500 blur-2xl opacity-20 rounded-full"></div>
-                    <div className="relative w-20 h-20 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl flex items-center justify-center shadow-xl shadow-blue-500/20">
-                        <Activity size={40} className="text-white" />
-                    </div>
-                </div>
-
-                {/* V2 Pill */}
-                <div className="mb-6 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-100">
-                    <span className="px-4 py-1.5 rounded-full bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/50 text-blue-600 dark:text-blue-400 text-[10px] font-bold uppercase tracking-widest">
-                        Account Abstraction V2 Live
-                    </span>
-                </div>
-
-                {/* Main Title */}
-                <h1 className="text-5xl md:text-7xl font-black tracking-tight text-gray-900 dark:text-white mb-6 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-200">
-                    BET <span className="text-blue-600">MIRROR</span>
-                </h1>
-
-                {/* Motto */}
-                <p className="text-lg text-gray-500 dark:text-gray-400 font-medium max-w-lg mx-auto leading-relaxed animate-in fade-in slide-in-from-bottom-4 duration-700 delay-300">
-                    The institutional-grade prediction market terminal.<br/>
-                    Non-Custodial. AI-Powered. 24/7 Cloud Execution.
-                </p>
-
-                {/* CTA Button */}
-                <div className="mt-12 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-400 w-full max-w-xs">
-                    <button 
-                        onClick={onConnect} 
-                        className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-black font-bold text-sm uppercase tracking-wider rounded-lg shadow-2xl hover:shadow-blue-500/10 hover:-translate-y-0.5 transition-all duration-300 flex items-center justify-center gap-3"
-                    >
-                        <Wallet size={18} /> Connect Terminal
-                    </button>
-                </div>
-
-                                {/* Trust Badges */}
-                <div className="mt-12 flex gap-8 opacity-40 animate-in fade-in duration-1000 delay-500">
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
-                        <Shield size={12}/> Secure
-                    </div>
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
-                        <ZapIcon size={12}/> Fast
-                    </div>
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
-                        <Globe size={12}/> Global
-                    </div>
-                </div>
-
-                {/* Footer Logos - Subtle */}
-                <div className="mt-32 flex flex-col items-center gap-6 animate-in fade-in duration-1000 delay-700">
-                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.3em] opacity-50">
-                        SUPPORTED CHAINS
-                    </p>
-                    <div className="flex gap-12 opacity-30 grayscale hover:grayscale-0 hover:opacity-100 transition-all duration-500">
-                        <img src="https://cryptologos.cc/logos/polygon-matic-logo.svg?v=026" alt="Polygon" className="h-5 w-auto" />
-                        <img src="https://cryptologos.cc/logos/ethereum-eth-logo.svg?v=026" alt="Ethereum" className="h-5 w-auto" />
-                        <img src="https://cdn.brandfetch.io/id6XsSOVVS/theme/dark/logo.svg?c=1bxid64Mup7aczewSAYMX&t=1757929765938" alt="Base" className="h-5 w-auto" />
-                        <img src="https://cryptologos.cc/logos/arbitrum-arb-logo.svg?v=026" alt="Arbitrum" className="h-5 w-auto" />
-                        <img src="https://cryptologos.cc/logos/solana-sol-logo.svg?v=026" alt="Solana" className="h-4 w-auto mt-0.5" />
-                    </div>
-                </div>
-             </div>
-            
-            {/* Scroll Indicator */}
-            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 animate-bounce opacity-20">
-                <ChevronDown className="text-gray-400 w-6 h-6"/>
-            </div>
-
-        </div>
-
-        {/* --- "SECOND PAGE" CONTENT --- */}
-        <div className="w-full bg-gray-100 dark:bg-[#030303] border-t border-gray-200 dark:border-white/5 relative z-20">
-            
-            {/* Markets Status Grid */}
-            <div className="max-w-5xl mx-auto py-32 px-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
-                    
-                    {/* Active Market Card - Rebranded */}
-                    <div className="p-10 rounded-3xl bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 shadow-lg hover:shadow-xl transition-all duration-300 group hover:-translate-y-1">
-                        <div className="flex items-center gap-3 mb-8">
-                            <span className="relative flex h-2.5 w-2.5">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
-                            </span>
-                            <span className="text-[10px] font-bold text-green-600 dark:text-green-400 uppercase tracking-wider">Live Integration</span>
-                        </div>
-                        <div className="flex items-center gap-5 mb-6">
-                            <img src="https://assets.polymarket.com/static/logo-round.svg" alt="Polymarket" className="w-14 h-14 rounded-full" referrerPolicy="no-referrer" onError={(e) => e.currentTarget.src = 'https://cryptologos.cc/logos/polygon-matic-logo.svg?v=026'}/>
-                            <h3 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">Polymarket</h3>
-                        </div>
-                        <p className="text-base text-gray-500 dark:text-gray-400 font-medium leading-relaxed mb-6">
-                            The most active market for blockchain wallets trading. Copy any top trader instantly.
-                        </p>
-                        <div className="inline-flex items-center gap-2 text-xs font-bold text-blue-600 dark:text-blue-500 uppercase tracking-wider group-hover:translate-x-1 transition-transform">
-                            Start Copying <ArrowRightLeft size={12}/>
-                        </div>
-                    </div>
-
-                    {/* Coming Soon Card */}
-                    <div className="p-10 rounded-3xl bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/5 opacity-60 hover:opacity-100 transition-all duration-300 group">
-                        <div className="flex items-center gap-3 mb-8">
-                            <span className="w-2.5 h-2.5 rounded-full bg-yellow-500"></span>
-                            <span className="text-[10px] font-bold text-yellow-600 dark:text-yellow-500 uppercase tracking-wider">Coming Soon</span>
-                        </div>
-                        <div className="flex items-center gap-5 mb-6">
-                             <div className="w-14 h-14 rounded-full bg-gray-200 dark:bg-gray-800 flex items-center justify-center font-bold text-gray-500 text-2xl">pb</div>
-                            <h3 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">PredictBase</h3>
-                        </div>
-                        <p className="text-base text-gray-500 dark:text-gray-400 font-medium leading-relaxed">
-                            Next-generation sports & crypto markets with high-frequency liquidity.
-                        </p>
-                    </div>
-
-                </div>
-
-                {/* Suggestion Input */}
-                <div className="pt-24 flex justify-center">
-                    <div className="inline-flex flex-col items-center gap-4 group cursor-pointer opacity-60 hover:opacity-100 transition-opacity">
-                        <div className="p-4 rounded-full bg-white dark:bg-white/10 border border-gray-200 dark:border-white/10 text-gray-400 group-hover:text-blue-500 group-hover:border-blue-200 transition-all">
-                            <MousePointerClick size={24} />
-                        </div>
-                        <p className="text-xs font-bold text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300 transition-colors uppercase tracking-widest">
-                            Suggest a market integration
-                        </p>
-                    </div>
-                </div>
-            </div>
-
-            {/* --- HOW IT WORKS SECTION --- */}
-            <div className="w-full max-w-7xl mx-auto pb-32 px-6 border-t border-gray-200 dark:border-white/5 pt-32">
-                <div className="text-center mb-24">
-                    <span className="text-blue-600 dark:text-blue-500 text-xs font-bold uppercase tracking-widest">Architecture</span>
-                    <h2 className="text-4xl md:text-5xl font-black text-gray-900 dark:text-white mt-4 tracking-tight">How It Works</h2>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-12">
-                    {/* Step 1 */}
-                    <div className="p-10 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-[2rem] hover:border-blue-500/30 transition-all shadow-sm group">
-                        <div className="w-16 h-16 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
-                            <Wallet size={32}/>
-                        </div>
-                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">1. Connect & Deploy</h3>
-                        <p className="text-gray-500 text-sm leading-relaxed">
-                            Link your wallet. We instantly deploy a non-custodial <strong>Smart Account</strong> (ZeroDev Kernel) on Polygon. This is your dedicated trading vault.
-                        </p>
-                    </div>
-
-                    {/* Step 2 */}
-                    <div className="p-10 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-[2rem] hover:border-purple-500/30 transition-all shadow-sm group">
-                        <div className="w-16 h-16 bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
-                            <Key size={32}/>
-                        </div>
-                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">2. Total Control</h3>
-                        <p className="text-gray-500 text-sm leading-relaxed">
-                            You hold the "Owner Key". You can revoke our trading permissions or trigger a <strong>trustless withdrawal</strong> directly on the blockchain at any time.
-                        </p>
-                    </div>
-
-                    {/* Step 3 */}
-                    <div className="p-10 bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 rounded-[2rem] hover:border-green-500/30 transition-all shadow-sm group">
-                        <div className="w-16 h-16 bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
-                            <Server size={32}/>
-                        </div>
-                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">3. Passive Alpha</h3>
-                        <p className="text-gray-500 text-sm leading-relaxed">
-                            Find the best trader in the Registry and hit Copy. Our Node.js engine monitors signals 24/7 so you can <strong>earn while you sleep</strong>.
-                        </p>
-                    </div>
-                </div>
-            </div>
-
-            {/* --- FOOTER --- */}
-            <footer className="border-t border-gray-200 dark:border-white/5 bg-white dark:bg-[#020202]">
-                <div className="max-w-7xl mx-auto px-6 py-12 flex flex-col md:flex-row justify-between items-center gap-6">
-                    <div className="flex items-center gap-2 opacity-50 hover:opacity-100 transition-opacity">
-                        <Activity size={16} className="text-blue-600 dark:text-white"/>
-                        <span className="text-xs font-bold text-gray-900 dark:text-white tracking-widest">BET MIRROR PRO</span>
-                    </div>
-                    
-                    <div className="flex gap-6">
-                        <a href="/pitchdeck.pdf" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors flex items-center gap-2 text-xs font-medium">
-                            <FileText size={16}/> Pitch Deck
-                        </a>
-                        <a href="https://docs.betmirror.bet" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
-                            <BookOpen size={16}/>
-                        </a>
-                        <a href="https://github.com/vchat-meme-blip/betmirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
-                            <Github size={16}/>
-                        </a>
-                        <a href="https://x.com/bet_mirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
-                            <Twitter size={16}/>
-                        </a>
-                    </div>
-
-                    <div className="text-[10px] text-gray-400 font-medium">
-                        © 2025 PolyCafe Labs. All rights reserved.
-                    </div>
-                </div>
-            </footer>
-
-        </div>
-
-    </div>
-);
 
 const root = createRoot(document.getElementById('root')!);
 root.render(<App />);

@@ -57,7 +57,7 @@ export function loadEnv() {
         retryLimit: Number(process.env.RETRY_LIMIT ?? 3),
         aggregationEnabled: String(process.env.TRADE_AGGREGATION_ENABLED ?? 'false') === 'true',
         aggregationWindowSeconds: Number(process.env.TRADE_AGGREGATION_WINDOW_SECONDS ?? 300),
-        usdcContractAddress: process.env.USDC_CONTRACT_ADDRESS || '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+        usdcContractAddress: process.env.USDC_CONTRACT_ADDRESS || '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
         // Trade API Keys
         polymarketApiKey: process.env.POLYMARKET_API_KEY,
         polymarketApiSecret: process.env.POLYMARKET_API_SECRET,
@@ -80,11 +80,12 @@ export function loadEnv() {
         twilioFromNumber: process.env.TWILIO_FROM_NUMBER,
         userPhoneNumber: process.env.USER_PHONE_NUMBER,
         // AA
-        zeroDevRpc: process.env.ZERODEV_RPC || 'https://rpc.zerodev.app/api/v2/bundler/our-project-id',
+        zeroDevRpc: process.env.ZERODEV_RPC || 'https://rpc.zerodev.app/api/v2/bundler/b9f9b537-8525-4b18-9cfe-9a7a6992b6df',
         zeroDevProjectId: process.env.ZERODEV_PROJECT_ID,
         // Li.Fi
         lifiIntegrator: process.env.LIFI_INTEGRATOR || 'BetMirror',
         lifiApiKey: process.env.LIFI_API_KEY,
+        solanaRpcUrl: process.env.SOLANA_RPC_URL || 'https://little-thrilling-layer.solana-mainnet.quiknode.pro/378fe82ae3cb5d38e4ac79c202990ad508e1c4c6',
         // Database
         mongoUri: process.env.MONGODB_URI || defaultMongoUri,
         mongoEncryptionKey: process.env.MONGO_ENCRYPTION_KEY || 'MmExQl8lTwgxA40wxbL5k5m+UCPb/0YvO5CDjypmiT0='
