@@ -1990,15 +1990,28 @@ const App = () => {
             <div className="flex items-center gap-2 sm:gap-4">
                  {/* Chain Indicator */}
                  <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-white/5 rounded-lg border border-gray-200 dark:border-white/10 text-xs font-medium">
-                    {chainId === 137 ? (
+                    {/* SMART BRIDGE INDICATOR */}
+                    {(activeTab === 'bridge' && bridgeMode === 'IN' && selectedSourceChain === 1151111081099710) ? (
                         <>
-                            <img src={CHAIN_ICONS[137]} className="w-4 h-4 rounded-full" alt="Polygon"/>
-                            <span className="hidden sm:inline text-gray-700 dark:text-gray-300">Polygon</span>
+                             <img src={CHAIN_ICONS[1151111081099710]} className="w-4 h-4 rounded-full" alt="Solana"/>
+                             <div className="flex flex-col leading-none">
+                                <span className="text-gray-700 dark:text-gray-300">Solana</span>
+                                <span className="text-[8px] text-gray-500 font-mono">
+                                    {senderAddressDisplay ? `${senderAddressDisplay.slice(0,4)}...` : 'Connect'}
+                                </span>
+                             </div>
                         </>
                     ) : (
-                        <button onClick={() => web3Service.switchToChain(137)} className="flex items-center gap-2 text-yellow-600 dark:text-yellow-500 font-bold animate-pulse">
-                            <AlertTriangle size={12}/> Wrong Network
-                        </button>
+                        chainId === 137 ? (
+                            <>
+                                <img src={CHAIN_ICONS[137]} className="w-4 h-4 rounded-full" alt="Polygon"/>
+                                <span className="hidden sm:inline text-gray-700 dark:text-gray-300">Polygon</span>
+                            </>
+                        ) : (
+                            <button onClick={() => web3Service.switchToChain(137)} className="flex items-center gap-2 text-yellow-600 dark:text-yellow-500 font-bold animate-pulse">
+                                <AlertTriangle size={12}/> Wrong Network
+                            </button>
+                        )
                     )}
                  </div>
 
