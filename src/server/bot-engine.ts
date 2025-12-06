@@ -1,3 +1,4 @@
+
 import { createPolymarketClient } from '../infrastructure/clob-client.factory.js';
 import { TradeMonitorService } from '../services/trade-monitor.service.js';
 import { TradeExecutorService } from '../services/trade-executor.service.js';
@@ -11,25 +12,28 @@ import { CashoutRecord, FeeDistributionEvent, IRegistryService } from '../domain
 import { UserStats } from '../domain/user.types.js';
 import { ProxyWalletConfig } from '../domain/wallet.types.js'; 
 import { ClobClient, Chain, ApiKeyCreds } from '@polymarket/clob-client';
-import { Wallet, AbstractSigner, Provider, JsonRpcProvider, TransactionRequest, Contract } from 'ethers';
+import { Wallet, AbstractSigner, Provider, JsonRpcProvider, TransactionRequest, Contract, parseUnits } from 'ethers';
 import { BotLog, User } from '../database/index.js';
 import { BuilderConfig, BuilderApiKeyCreds } from '@polymarket/builder-signing-sdk';
 import { getMarket } from '../utils/fetch-data.util.js';
 import { getUsdBalanceApprox, getPolBalance } from '../utils/get-balance.util.js';
-import { encodeFunctionData } from 'viem'; // Added for manual UserOp encoding
+import { TOKENS } from '../config/env.js';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- Local Enum Definition for SignatureType (Missing in export) ---
+// Polymarket Signature Types
+// 0 = EOA (Metamask), 1 = PolyProxy (Legacy), 2 = Gnosis Safe (Smart Accounts/Kernel)
 enum SignatureType {
     EOA = 0,
-    POLY_GNOSIS_SAFE = 1,
-    POLY_PROXY = 2
+    POLY_PROXY = 1,
+    GNOSIS_SAFE = 2 
 }
 
 // --- ADAPTER: ZeroDev (Viem) -> Ethers.js Signer ---
+// This ensures compatibility with the ClobClient which expects an Ethers v5/v6 signer
+// CRITICAL: Handles EIP-712 typing correctly for EIP-1271 validation by forcing primaryType.
 class KernelEthersSigner extends AbstractSigner {
-    public kernelClient: any; // Made public to access from BotEngine
+    private kernelClient: any;
     private address: string;
     
     constructor(kernelClient: any, address: string, provider: Provider) {
@@ -43,50 +47,71 @@ class KernelEthersSigner extends AbstractSigner {
     }
 
     async signMessage(message: string | Uint8Array): Promise<string> {
-        const signature = await this.kernelClient.signMessage({ 
+        // ZeroDev's signMessage handles EIP-1271 wrapping automatically
+        return await this.kernelClient.signMessage({ 
             message: typeof message === 'string' ? message : { raw: message } 
         });
-        return signature;
     }
 
+    // This method is called by ClobClient for L1 Headers (Auth) and Order Signing
+    // It is the Critical Path for "Invalid L1 Request" errors.
     async signTypedData(domain: any, types: any, value: any): Promise<string> {
+        // 1. CLEANUP: Viem does not want EIP712Domain in the types object
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { EIP712Domain, ...cleanTypes } = types;
+
+        // 2. PRIMARY TYPE DETECTION (The Magic Fix)
+        // Polymarket requires specific primary types. Viem infers them, but explicit is safer.
+        let primaryType = Object.keys(cleanTypes)[0]; // Default Fallback
+        
+        // If it looks like an auth message (contains 'message' and 'timestamp')
+        if (cleanTypes.ClobAuth || (value.message && value.timestamp && value.nonce)) {
+            primaryType = 'ClobAuth';
+        }
+        // If it looks like an order (contains 'side' and 'size')
+        else if (cleanTypes.Order || (value.side && value.size && value.maker)) {
+            primaryType = 'Order';
+        }
+
+        // 3. CHAIN ID SANITIZATION
+        const sanitizedDomain = { ...domain };
+        if (sanitizedDomain.chainId) {
+            sanitizedDomain.chainId = Number(sanitizedDomain.chainId);
+        }
+
+        // 4. SIGN VIA KERNEL
         return await this.kernelClient.signTypedData({
-            domain,
-            types,
-            primaryType: Object.keys(types)[0], 
+            domain: sanitizedDomain,
+            types: cleanTypes,
+            primaryType, 
             message: value
         });
     }
 
-    // --- COMPATIBILITY SHIM ---
-    // The Polymarket SDK (built for Ethers v5) calls _signTypedData.
-    // Ethers v6 removed the underscore. We map it here to prevent "is not a function" errors.
+    // Compatibility alias for Ethers v6
     async _signTypedData(domain: any, types: any, value: any): Promise<string> {
         return this.signTypedData(domain, types, value);
     }
 
     async signTransaction(tx: TransactionRequest): Promise<string> {
-        throw new Error("signTransaction is not supported for KernelEthersSigner. Use sendTransaction to dispatch UserOperations.");
+        throw new Error("signTransaction is not supported for Smart Accounts. Use sendTransaction.");
     }
 
     async sendTransaction(tx: TransactionRequest): Promise<any> {
-        // IMPORTANT: We cast to 'any' to avoid strict Viem type checks on the tx object
-        // The kernel client handles the UserOp construction internally.
+        // Convert Ethers TX to Viem UserOp
         const hash = await this.kernelClient.sendTransaction({
             to: tx.to,
             data: tx.data,
             value: tx.value ? BigInt(tx.value.toString()) : BigInt(0)
         });
         
-        // Return an object compatible with Ethers TransactionResponse.wait()
         return {
             hash,
             wait: async () => {
-                // Use ethers provider to wait for receipt, safer than relying on kernelClient
                 if(this.provider) {
                     return await this.provider.waitForTransaction(hash);
                 }
-                throw new Error("Provider missing in KernelEthersSigner");
+                return { hash };
             }
         };
     }
@@ -114,21 +139,18 @@ export interface BotConfig {
     destinationAddress: string;
   };
   activePositions?: ActivePosition[];
-  stats?: UserStats; // Inject existing stats from DB
+  stats?: UserStats;
   zeroDevRpc?: string;
-  zeroDevPaymasterRpc?: string; // NEW: Optional override for Paymaster
-  // Admin Credentials (Optional)
+  zeroDevPaymasterRpc?: string;
   polymarketApiKey?: string;
   polymarketApiSecret?: string;
   polymarketApiPassphrase?: string;
-  // L2 API Credentials for Smart Account (Passed from DB if they exist)
   l2ApiCredentials?: {
       key: string;
       secret: string;
       passphrase: string;
   };
-  // Restart Logic
-  startCursor?: number; // Timestamp to resume from
+  startCursor?: number; 
 }
 
 export interface BotCallbacks {
@@ -140,7 +162,8 @@ export interface BotCallbacks {
 }
 
 const USDC_ABI_MINIMAL = [
-    'function approve(address spender, uint256 amount) returns (bool)'
+    'function approve(address spender, uint256 amount) returns (bool)',
+    'function transfer(address to, uint256 amount) returns (bool)'
 ];
 
 export class BotEngine {
@@ -149,8 +172,6 @@ export class BotEngine {
   private executor?: TradeExecutorService;
   private client?: ClobClient & { wallet: any };
   private watchdogTimer?: NodeJS.Timeout;
-  
-  // Use in-memory logs as a buffer (optional backup)
   private activePositions: ActivePosition[] = [];
   
   private stats: UserStats = {
@@ -167,17 +188,12 @@ export class BotEngine {
     private registryService: IRegistryService,
     private callbacks?: BotCallbacks
   ) {
-      if (config.activePositions) {
-          this.activePositions = config.activePositions;
-      }
-      if (config.stats) {
-          this.stats = config.stats;
-      }
+      if (config.activePositions) this.activePositions = config.activePositions;
+      if (config.stats) this.stats = config.stats;
   }
 
   public getStats() { return this.stats; }
 
-  // Async log writing to DB
   private async addLog(type: 'info' | 'warn' | 'error' | 'success', message: string) {
     try {
         await BotLog.create({
@@ -191,457 +207,357 @@ export class BotEngine {
     }
   }
 
-  async revokePermissions() {
-      if (this.executor) {
-          await this.executor.revokeAllowance();
-          this.stats.allowanceApproved = false;
-          this.addLog('warn', 'Permissions Revoked by User.');
+  // --- ROBUST STARTUP PIPELINE ---
+
+  // Step 1: Wait for Funds (Blocking)
+  private async waitForFunds(wallet: Wallet | KernelEthersSigner): Promise<boolean> {
+      let attempts = 0;
+      // Bridged USDC is what we need
+      const USDC_ADDRESS = TOKENS.USDC_BRIDGED; 
+      
+      while (attempts < 20 && this.isRunning) {
+          try {
+              const usdcBal = await getUsdBalanceApprox(wallet as any, USDC_ADDRESS);
+              const polBal = await getPolBalance(wallet as any);
+              
+              await this.addLog('info', `💰 Balance Scan: ${usdcBal.toFixed(2)} USDC.e | ${polBal.toFixed(4)} POL`);
+
+              if (usdcBal >= 0.5) return true; // Enough to wake up and trade
+
+              // Native USDC Warning
+              try {
+                  const nativeBal = await getUsdBalanceApprox(wallet as any, TOKENS.USDC_NATIVE);
+                  if (nativeBal > 1.0) {
+                      await this.addLog('warn', `⚠️ You have Native USDC ($${nativeBal}). Polymarket REQUIRES Bridged USDC.e (0x2791...). Please bridge/swap.`);
+                  }
+              } catch(e) {}
+
+              if (attempts % 2 === 0) await this.addLog('warn', '💰 Account Empty (USDC.e < 0.50). Waiting for deposit...');
+              
+          } catch (e) {
+              console.error("Balance Check Failed", e);
+          }
+          await sleep(15000); // Check every 15s
+          attempts++;
       }
+      return false;
   }
 
-  // --- DEPOSIT GATED ACTIVATION ---
-  // The bot will effectively "Pause" until it sees funds.
-  // Once funds arrive, it sends a self-transaction to initialize the chain state
-  // and THEN attempts the Handshake.
-  private async waitForFunds(wallet: Wallet | KernelEthersSigner, usdcAddress: string): Promise<void> {
-      // Native USDC Address (for warning users who bridge wrong token)
-      const NATIVE_USDC = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
-
-      const checkBalances = async () => {
-          try {
-              // Check Bridged USDC (USDC.e) - Required
-              const balance = await getUsdBalanceApprox(wallet as any, usdcAddress);
-              
-              // Check Native USDC - Informational
-              let nativeBalance = 0;
-              try {
-                  nativeBalance = await getUsdBalanceApprox(wallet as any, NATIVE_USDC);
-              } catch(e) { /* ignore */ }
-
-              // Check POL - Informational
-              let polBalance = 0;
-              try {
-                polBalance = await getPolBalance(wallet as any);
-              } catch(e) { /* ignore */ }
-
-              await this.addLog('info', `💰 Balance Scan: ${balance.toFixed(2)} USDC.e | ${nativeBalance.toFixed(2)} USDC (Native) | ${polBalance.toFixed(4)} POL`);
-
-              // Valid if we have at least $0.50 bridged USDC
-              if (balance >= 0.5) { 
+  // Step 2: Ensure Contract is Deployed (The "Wake Up")
+  // Uses 0.1 USDC self-transfer to force Paymaster deployment
+  private async ensureDeployed(signer: any, walletAddress: string) {
+      try {
+          if (!signer.provider) throw new Error("No provider");
+          
+          // Check for code
+          const code = await signer.provider.getCode(walletAddress);
+          if (code && code.length > 2) {
+              await this.addLog('success', '✅ Smart Account Ready (Deployed).');
+              return true; // Already deployed
+          }
+          
+          // If not deployed, we force it with a 0.1 USDC transfer to self
+          await this.addLog('info', '🔄 Undeployed Account Detected. Sending 0.1 USDC self-transfer to deploy...');
+          
+          // 0.1 USDC.e (Bridged) = 100000 units (6 decimals)
+          const usdc = new Contract(TOKENS.USDC_BRIDGED, USDC_ABI_MINIMAL, signer);
+          const tx = await usdc.transfer(walletAddress, 100000);
+          
+          await this.addLog('info', `🚀 Wake-up Tx Sent: ${tx.hash?.slice(0,10)}... Waiting for indexing...`);
+          await tx.wait();
+          
+          // Verification Loop
+          let attempts = 0;
+          while (attempts < 10) {
+              await sleep(3000);
+              const newCode = await signer.provider.getCode(walletAddress);
+              if (newCode && newCode.length > 2) {
+                  await this.addLog('success', '✅ Smart Account Successfully Deployed.');
                   return true;
               }
-              
-              if (nativeBalance >= 1.0 && balance < 0.5) {
-                   await this.addLog('warn', `⚠️ Found Native USDC ($${nativeBalance}) but no Bridged USDC.e. Polymarket requires Bridged USDC.e (0x2791...). Please swap/bridge.`);
-              }
-
-          } catch (e: any) { 
-              console.error("Balance check error:", e);
-              await this.addLog('error', `Balance Check Failed: ${e.message || 'RPC Error'}`);
+              attempts++;
           }
+          throw new Error("Deployment verification timed out. Indexer lagging?");
+
+      } catch(e: any) {
+          await this.addLog('warn', `Deployment Sync Note: ${e.message}. Proceeding to auth (might fail if truly undeployed)...`);
           return false;
-      };
-
-      // Initial Check
-      if (await checkBalances()) return;
-
-      await this.addLog('warn', '💰 Account Empty (USDC.e < 0.50). Waiting for funds...');
-      
-      return new Promise((resolve) => {
-          const checkInterval = setInterval(async () => {
-             if (!this.isRunning) {
-                 clearInterval(checkInterval);
-                 return;
-             }
-             
-             const funded = await checkBalances();
-             if (funded) {
-                 clearInterval(checkInterval);
-                 await this.addLog('success', `✅ Funds detected. Initializing Bot...`);
-                 resolve();
-             }
-          }, 15000); // Check every 15s
-      });
-  }
-
-  // Force On-Chain Key Registration (only once funded)
-  private async activateOnChain(signer: any, walletAddress: string, usdcAddress: string) {
-      try {
-          await this.addLog('info', '🔄 Syncing Session Key on-chain...');
-          
-          if ((signer as any).kernelClient && (signer as any).kernelClient.account) {
-              const client = (signer as any).kernelClient;
-              const account = client.account;
-
-              // Re-instantiate service locally to access the helper
-              const rpcUrl = this.config.zeroDevRpc || process.env.ZERODEV_RPC;
-              const aaService = new ZeroDevService(rpcUrl!, this.config.zeroDevPaymasterRpc);
-              
-              // 1. Construct Approval for Paymaster (Critical for Gas Token Mode)
-              const approveCallData = await aaService.getPaymasterApprovalCallData();
-              
-              // 2. Construct Self-Approval (Legacy activation signal, harmless to keep)
-              const selfApproveData = encodeFunctionData({
-                  abi: [{
-                      type: 'function',
-                      name: 'approve',
-                      inputs: [{ name: 'spender', type: 'address' }, { name: 'amount', type: 'uint256' }],
-                      outputs: [{ name: '', type: 'bool' }]
-                  }],
-                  functionName: "approve",
-                  args: [walletAddress, BigInt(0)]
-              });
-              
-              // BATCH THEM: Approve Paymaster FIRST, then do the dummy tx
-              const encodedCalls = await account.encodeCalls([
-                  {
-                      to: usdcAddress, // USDC Contract
-                      value: BigInt(0),
-                      data: approveCallData // Approve Paymaster
-                  },
-                  {
-                      to: usdcAddress,
-                      value: BigInt(0),
-                      data: selfApproveData // Approve Self (0)
-                  }
-              ]);
-
-              // USE ROBUST SENDER (Paymaster -> Fallback)
-              const hash = await aaService.sendUserOperation(client, encodedCalls, account);
-              await this.addLog('info', `🚀 Activation Batch Sent: ${hash}`);
-              
-              // Wait for it
-              const provider = new JsonRpcProvider(this.config.rpcUrl);
-              await provider.waitForTransaction(hash);
-              
-          } else {
-               // Fallback for EOA (Non-AA)
-              const usdc = new Contract(usdcAddress, USDC_ABI_MINIMAL, signer);
-              const tx = await usdc.approve(walletAddress, 0);
-              await this.addLog('info', `🚀 Activation Tx Sent: ${tx.hash?.slice(0,10)}...`);
-              await tx.wait(); 
-          }
-
-          await this.addLog('success', '✅ Smart Account Deployed & Key Active.');
-      } catch (e: any) {
-          console.log("Activation Error:", e);
-          await this.addLog('error', `Activation Failed: ${e.message}`);
-          throw e; 
       }
   }
 
-  async start() {
-    if (this.isRunning) return;
-    
-    try {
+  public async start() {
+      if (this.isRunning) return;
       this.isRunning = true;
-      await this.addLog('info', 'Starting Server-Side Bot Engine...');
+      
+      try {
+          await this.addLog('info', '🚀 Initializing Bot Engine...');
 
-      const logger = {
-        info: (msg: string) => { console.log(`[${this.config.userId}] ${msg}`); this.addLog('info', msg); },
-        warn: (msg: string) => { console.warn(`[${this.config.userId}] ${msg}`); this.addLog('warn', msg); },
-        error: (msg: string, err?: Error) => { console.error(`[${this.config.userId}] ${msg}`, err); this.addLog('error', `${msg} ${err?.message || ''}`); },
-        debug: () => {}
-      };
-
-      const env: any = {
-        rpcUrl: this.config.rpcUrl,
-        tradeMultiplier: this.config.multiplier,
-        fetchIntervalSeconds: 2,
-        aggregationWindowSeconds: 300,
-        enableNotifications: this.config.enableNotifications,
-        adminRevenueWallet: process.env.ADMIN_REVENUE_WALLET || '0x0000000000000000000000000000000000000000',
-        // FIX: Forced Update to Bridged USDC (USDC.e) address for Polygon.
-        // Polymarket CLOB only accepts this specific token (0x2791...).
-        // Native USDC (0x3c49...) cannot be used for trading.
-        usdcContractAddress: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
-      };
-
-      // --- ACCOUNT STRATEGY SELECTION ---
-      let signerImpl: any;
-      let walletAddress: string;
-      let clobCreds: ApiKeyCreds | undefined = undefined;
-      let signatureType = SignatureType.EOA; // Default
-
-      // 1. Smart Account Strategy
-      if (this.config.walletConfig?.type === 'SMART_ACCOUNT' && this.config.walletConfig.serializedSessionKey) {
-          await this.addLog('info', '🔐 Initializing ZeroDev Smart Account Session...');
+          // 1. Setup Wallet / Signer
+          let wallet: any;
+          let signatureType = SignatureType.EOA;
+          let funderAddress: string | undefined;
           
-          const rpcUrl = this.config.zeroDevRpc || process.env.ZERODEV_RPC;
-          if (!rpcUrl || rpcUrl.includes('your-project-id') || rpcUrl.includes('DEFAULT')) {
-               throw new Error("CRITICAL: ZERODEV_RPC is missing or invalid in .env.");
-          }
-          
-          // Pass specific Paymaster RPC if available
-          const aaService = new ZeroDevService(rpcUrl, this.config.zeroDevPaymasterRpc);
-          const { address, client: kernelClient } = await aaService.createBotClient(this.config.walletConfig.serializedSessionKey);
-          
-          walletAddress = address;
-          
-          const provider = new JsonRpcProvider(this.config.rpcUrl);
-          signerImpl = new KernelEthersSigner(kernelClient, address, provider);
-          signatureType = SignatureType.POLY_PROXY; 
-
-          // --- DEPOSIT GATE: Block here if empty ---
-          await this.waitForFunds(signerImpl, env.usdcContractAddress);
-          
-          if (!this.isRunning) return; // If stopped while waiting
-
-          // --- ON-CHAIN ACTIVATION ---
-          // Now that we have funds (or just woke up), ensure we are deployed/active
-          // This prevents the 401 Invalid L1 Headers error
-          await this.activateOnChain(signerImpl, walletAddress, env.usdcContractAddress);
-
-          // --- L2 AUTHENTICATION ---
-          const dbCreds = this.config.l2ApiCredentials;
-          const hasValidCreds = dbCreds 
-              && typeof dbCreds.key === 'string' && dbCreds.key.length > 5
-              && typeof dbCreds.secret === 'string' && dbCreds.secret.length > 5;
-
-          if (hasValidCreds) {
-              clobCreds = dbCreds;
+          if (this.config.walletConfig && this.config.walletConfig.type === 'SMART_ACCOUNT') {
+              const { zeroDevRpc, zeroDevPaymasterRpc, walletConfig } = this.config;
+              if (!zeroDevRpc) throw new Error("Missing ZeroDev RPC URL");
+              
+              const zdService = new ZeroDevService(zeroDevRpc, zeroDevPaymasterRpc);
+              const { address, client } = await zdService.createBotClient(walletConfig.serializedSessionKey);
+              
+              // Verify address matches config
+              if (address.toLowerCase() !== walletConfig.address.toLowerCase()) {
+                  await this.addLog('warn', `⚠️ Address mismatch: Config=${walletConfig.address}, Derived=${address}`);
+              }
+              
+              // Wrap in Ethers Signer for ClobClient
+              const provider = new JsonRpcProvider(this.config.rpcUrl);
+              wallet = new KernelEthersSigner(client, address, provider);
+              
+              // Set Critical AA Params
+              signatureType = SignatureType.GNOSIS_SAFE; // 2
+              funderAddress = address;
+              
+              await this.addLog('success', `🔐 Smart Session Loaded: ${address.slice(0,6)}...`);
+              
+          } else if (this.config.privateKey) {
+              const provider = new JsonRpcProvider(this.config.rpcUrl);
+              wallet = new Wallet(this.config.privateKey, provider);
+              await this.addLog('success', `🔐 EOA Wallet Active: ${wallet.address.slice(0,6)}...`);
           } else {
-              await this.addLog('info', '🤝 Performing Polymarket L2 Handshake...');
+              throw new Error("No valid wallet configuration found.");
+          }
+
+          // 2. Wait for Funds
+          const funded = await this.waitForFunds(wallet);
+          if (!funded && this.isRunning) {
+              await this.addLog('error', '❌ Startup Aborted: Insufficient Funds.');
+              this.stop();
+              return;
+          }
+
+          // 3. Ensure Deployment (Smart Accounts Only)
+          if (signatureType === SignatureType.GNOSIS_SAFE && funderAddress) {
+              await this.ensureDeployed(wallet, funderAddress);
+          }
+
+          // 4. Initialize Clob Client (Auth)
+          await this.addLog('info', '🔌 Connecting to Polymarket CLOB...');
+          
+          // Construct credentials if available
+          let creds: ApiKeyCreds | undefined;
+          if (this.config.polymarketApiKey) {
+              creds = {
+                  key: this.config.polymarketApiKey,
+                  secret: this.config.polymarketApiSecret!,
+                  passphrase: this.config.polymarketApiPassphrase!
+              };
+          } else if (this.config.l2ApiCredentials) {
+              creds = this.config.l2ApiCredentials;
+          }
+
+          // Initialize client
+          // IMPORTANT: Explicitly pass signatureType (2) and funderAddress
+          this.client = new ClobClient(
+              'https://clob.polymarket.com',
+              Chain.POLYGON,
+              wallet,
+              creds,
+              signatureType as any,
+              funderAddress
+          ) as any;
+          // Attach wallet for convenience
+          if(!this.client!.wallet) (this.client as any).wallet = wallet;
+
+          // 5. L2 Handshake (If no creds)
+          if (!creds) {
+              await this.addLog('info', '🤝 Performing L2 Handshake (Deriving API Keys)...');
               try {
-                  const tempClient = new ClobClient(
-                      'https://clob.polymarket.com',
-                      Chain.POLYGON,
-                      signerImpl,
-                      undefined,
-                      signatureType as any 
-                  );
+                  const newCreds = await this.client!.createApiKey();
+                  if (newCreds && newCreds.key) {
+                      // Persist new credentials
+                      await User.findOneAndUpdate(
+                          { address: this.config.userId },
+                          { "proxyWallet.l2ApiCredentials": newCreds }
+                      );
+                      await this.addLog('success', '✅ L2 Login Successful. Credentials Saved.');
+                      // Re-init client with new creds
+                      this.client = new ClobClient(
+                          'https://clob.polymarket.com',
+                          Chain.POLYGON,
+                          wallet,
+                          newCreds,
+                          signatureType as any,
+                          funderAddress
+                      ) as any;
+                      if(!this.client!.wallet) (this.client as any).wallet = wallet;
+                  }
+              } catch (e: any) {
+                  console.error("Handshake Failed:", e);
+                  // Extract useful error info
+                  let errorMsg = e.message || "Unknown Error";
+                  if (e?.response?.data) errorMsg += ` | ${JSON.stringify(e.response.data)}`;
                   
-                  // Retry Logic for Handshake (Deals with Indexer Lag)
-                  let newCreds: ApiKeyCreds | null = null;
-                  for (let attempt = 1; attempt <= 3; attempt++) {
-                      try {
-                          newCreds = await tempClient.createApiKey();
-                          if (newCreds && newCreds.key) break;
-                      } catch (e) {
-                          await sleep(2000); // Wait for indexer
+                  await this.addLog('error', `❌ L2 Auth Failed: ${errorMsg}`);
+                  throw new Error(`L2 Handshake Failed.`);
+              }
+          }
+
+          // 6. Setup Services
+          const dummyLogger = {
+              info: (m: string) => console.log(`[${this.config.userId}] ${m}`),
+              warn: (m: string) => console.warn(`[${this.config.userId}] ${m}`),
+              error: (m: string, e?: any) => console.error(`[${this.config.userId}] ${m}`, e),
+              debug: () => {}
+          };
+
+          // Fake Env for services
+          const runtimeEnv: any = {
+              tradeMultiplier: this.config.multiplier,
+              usdcContractAddress: TOKENS.USDC_BRIDGED,
+              adminRevenueWallet: process.env.ADMIN_REVENUE_WALLET || '0x0000000000000000000000000000000000000000',
+              enableNotifications: this.config.enableNotifications,
+              userPhoneNumber: this.config.userPhoneNumber,
+              twilioAccountSid: process.env.TWILIO_ACCOUNT_SID,
+              twilioAuthToken: process.env.TWILIO_AUTH_TOKEN,
+              twilioFromNumber: process.env.TWILIO_FROM_NUMBER
+          };
+
+          // Services
+          const notificationService = new NotificationService(runtimeEnv, dummyLogger);
+          
+          const fundManagerConfig: FundManagerConfig = {
+              enabled: this.config.autoCashout?.enabled || false,
+              maxRetentionAmount: this.config.autoCashout?.maxAmount,
+              destinationAddress: this.config.autoCashout?.destinationAddress,
+              usdcContractAddress: TOKENS.USDC_BRIDGED
+          };
+          const fundManager = new FundManagerService(wallet, fundManagerConfig, dummyLogger, notificationService);
+          
+          const feeDistributor = new FeeDistributorService(wallet, runtimeEnv, dummyLogger, this.registryService);
+
+          this.executor = new TradeExecutorService({
+              client: this.client as any,
+              proxyWallet: funderAddress || await wallet.getAddress(),
+              env: runtimeEnv,
+              logger: dummyLogger
+          });
+
+          // 7. Setup Monitor
+          this.monitor = new TradeMonitorService({
+              client: this.client as any,
+              env: { 
+                  ...runtimeEnv, 
+                  fetchIntervalSeconds: 2,
+                  aggregationWindowSeconds: 300 
+              },
+              logger: dummyLogger,
+              userAddresses: this.config.userAddresses,
+              onDetectedTrade: async (signal) => {
+                  if (!this.isRunning) return;
+
+                  // AI Filter
+                  let riskScore = 0;
+                  let aiReasoning = "AI Disabled";
+                  let shouldTrade = true;
+
+                  const geminiKey = this.config.geminiApiKey || process.env.GEMINI_API_KEY;
+                  
+                  if (geminiKey) {
+                      await this.addLog('info', `🤖 Analyzing trade on market ${signal.marketId}...`);
+                      const analysis = await aiAgent.analyzeTrade(
+                          `Market ID: ${signal.marketId}`, 
+                          signal.side, 
+                          signal.outcome, 
+                          signal.sizeUsd, 
+                          signal.price, 
+                          this.config.riskProfile,
+                          geminiKey
+                      );
+                      
+                      aiReasoning = analysis.reasoning;
+                      riskScore = analysis.riskScore;
+                      shouldTrade = analysis.shouldCopy;
+                      
+                      if (!shouldTrade) {
+                          await this.addLog('warn', `🛑 AI Blocked Trade: ${aiReasoning}`);
                       }
                   }
-                  
-                  if (!newCreds || !newCreds.key) {
-                      throw new Error(`CLOB Handshake Failed. Ensure account is funded and deployed.`);
+
+                  let executedSize = 0;
+                  let status = 'SKIPPED';
+                  let txHash = '';
+
+                  if (shouldTrade) {
+                      await this.addLog('info', `⚡ Executing: ${signal.side} ${signal.outcome} ($${signal.sizeUsd.toFixed(2)})`);
+                      executedSize = await this.executor!.copyTrade(signal);
+                      
+                      if (executedSize > 0) {
+                          status = 'CLOSED'; // Or OPEN
+                          await this.addLog('success', `✅ Trade Filled! Size: $${executedSize.toFixed(2)}`);
+                          
+                          // Fee Distribution (on sell)
+                          if (signal.side === 'SELL') {
+                              const estProfit = signal.sizeUsd * 0.1; // Estimated PnL for fee calc
+                              const feeEvent = await feeDistributor.distributeFeesOnProfit(signal.marketId, estProfit, signal.trader);
+                              if (feeEvent && this.callbacks?.onFeePaid) {
+                                  await this.callbacks.onFeePaid(feeEvent);
+                              }
+                          }
+
+                          // Auto Cashout
+                          const cashout = await fundManager.checkAndSweepProfits();
+                          if (cashout && this.callbacks?.onCashout) {
+                              await this.callbacks.onCashout(cashout);
+                          }
+                      } else {
+                          status = 'FAILED';
+                          await this.addLog('error', `❌ Trade Execution Failed (Zero size).`);
+                      }
                   }
 
-                  clobCreds = newCreds;
+                  // Record History
+                  const historyEntry: TradeHistoryEntry = {
+                      id: Math.random().toString(36).substring(7),
+                      timestamp: new Date().toISOString(),
+                      marketId: signal.marketId,
+                      outcome: signal.outcome,
+                      side: signal.side,
+                      size: signal.sizeUsd,
+                      executedSize,
+                      price: signal.price,
+                      status: status as any,
+                      txHash, 
+                      aiReasoning,
+                      riskScore
+                  };
+
+                  if (this.callbacks?.onTradeComplete) {
+                      await this.callbacks.onTradeComplete(historyEntry);
+                  }
                   
-                  // Persist to DB
-                  await User.findOneAndUpdate(
-                      { address: this.config.userId },
-                      { "proxyWallet.l2ApiCredentials": newCreds }
-                  );
-                  await this.addLog('success', '✅ L2 Login Successful.');
-              } catch (e: any) {
-                  const msg = e?.message || JSON.stringify(e);
-                  await this.addLog('error', `CRITICAL: Auth Failed. Bot cannot trade. Error: ${msg}`);
-                  throw new Error(`L2 Handshake Failed: ${msg}`); 
+                  if (executedSize > 0) {
+                      this.stats.tradesCount++;
+                      this.stats.totalVolume += executedSize;
+                      if (this.callbacks?.onStatsUpdate) {
+                          await this.callbacks.onStatsUpdate(this.stats);
+                      }
+                  }
               }
-          }
+          });
 
-      } else {
-          // 2. Legacy EOA Strategy
-          await this.addLog('info', 'Using Standard EOA Wallet');
-          const activeKey = this.config.privateKey || this.config.walletConfig?.sessionPrivateKey;
-          if (!activeKey) throw new Error("No valid signing key found for EOA.");
+          // Start Monitoring
+          const startCursor = this.config.startCursor || Math.floor(Date.now() / 1000);
+          await this.monitor.start(startCursor);
+          await this.addLog('success', '🟢 Engine Online. Monitoring targets...');
           
-          const provider = new JsonRpcProvider(this.config.rpcUrl);
-          signerImpl = new Wallet(activeKey, provider);
-          walletAddress = signerImpl.address;
+          // Start Watchdog
+          this.watchdogTimer = setInterval(() => this.checkAutoTp(), 15000) as unknown as NodeJS.Timeout;
 
-          if (this.config.polymarketApiKey && this.config.polymarketApiSecret && this.config.polymarketApiPassphrase) {
-              clobCreds = {
-                  key: this.config.polymarketApiKey,
-                  secret: this.config.polymarketApiSecret,
-                  passphrase: this.config.polymarketApiPassphrase
-              };
-          }
+      } catch (e: any) {
+          console.error("Bot Start Error:", e);
+          await this.addLog('error', `❌ Start Failed: ${e.message}`);
+          this.isRunning = false;
       }
-
-      // --- FINAL CHECK ---
-      if (!clobCreds || !clobCreds.secret) {
-          throw new Error("Bot failed to initialize valid trading credentials. Please try 'Revoke' then 'Start' again.");
-      }
-
-      // --- BUILDER PROGRAM INTEGRATION ---
-      let builderConfig: BuilderConfig | undefined;
-      if (process.env.POLY_BUILDER_API_KEY && process.env.POLY_BUILDER_SECRET && process.env.POLY_BUILDER_PASSPHRASE) {
-           const builderCreds: BuilderApiKeyCreds = {
-              key: process.env.POLY_BUILDER_API_KEY,
-              secret: process.env.POLY_BUILDER_SECRET,
-              passphrase: process.env.POLY_BUILDER_PASSPHRASE
-          };
-          builderConfig = new BuilderConfig({ localBuilderCreds: builderCreds });
-      }
-
-      // Initialize Polymarket Client
-      const clobClient = new ClobClient(
-          'https://clob.polymarket.com',
-          Chain.POLYGON,
-          signerImpl, 
-          clobCreds,
-          signatureType as any, 
-          undefined, // funderAddress
-          undefined, // ...
-          undefined, // ...
-          builderConfig   
-      );
-
-      this.client = Object.assign(clobClient, { wallet: signerImpl });
-
-      await this.addLog('success', `Bot Online: ${walletAddress.slice(0,6)}...`);
-
-      const notifier = new NotificationService(env, logger);
-      
-      const fundManagerConfig: FundManagerConfig = {
-          enabled: this.config.autoCashout?.enabled || false,
-          maxRetentionAmount: this.config.autoCashout?.maxAmount || 0,
-          destinationAddress: this.config.autoCashout?.destinationAddress || '',
-          usdcContractAddress: env.usdcContractAddress
-      };
-
-      const fundManager = new FundManagerService(this.client.wallet, fundManagerConfig, logger, notifier);
-      const feeDistributor = new FeeDistributorService(this.client.wallet, env, logger, this.registryService);
-      
-      this.executor = new TradeExecutorService({
-        client: this.client,
-        proxyWallet: walletAddress,
-        env,
-        logger
-      });
-
-      // await this.addLog('info', 'Checking Token Allowances...');
-      const approved = await this.executor.ensureAllowance();
-      this.stats.allowanceApproved = approved;
-
-      try {
-         const cashoutResult = await fundManager.checkAndSweepProfits();
-         if (cashoutResult && this.callbacks?.onCashout) await this.callbacks.onCashout(cashoutResult);
-      } catch (e) { /* ignore start up cashout error */ }
-
-      // Start Trade Monitor
-      this.monitor = new TradeMonitorService({
-        client: this.client,
-        logger,
-        env,
-        userAddresses: this.config.userAddresses,
-        onDetectedTrade: async (signal) => {
-          let shouldExecute = true;
-          let aiReasoning = "Legacy Mode (No AI Key)";
-          let riskScore = 5;
-
-          const apiKeyToUse = this.config.geminiApiKey || process.env.API_KEY;
-
-          if (apiKeyToUse) {
-            await this.addLog('info', `[SIGNAL] ${signal.side} ${signal.outcome} @ ${signal.price} ($${signal.sizeUsd.toFixed(0)}) from ${signal.trader.slice(0,4)}`);
-            const analysis = await aiAgent.analyzeTrade(
-              `Market: ${signal.marketId}`,
-              signal.side,
-              signal.outcome,
-              signal.sizeUsd,
-              signal.price,
-              this.config.riskProfile,
-              apiKeyToUse // Pass dynamic key
-            );
-            shouldExecute = analysis.shouldCopy;
-            aiReasoning = analysis.reasoning;
-            riskScore = analysis.riskScore;
-          } else {
-             await this.addLog('warn', '⚠️ No Gemini API Key found. Skipping AI Analysis.');
-          }
-
-          if (shouldExecute) {
-            try {
-                let executedSize = 0;
-                if(this.executor) {
-                    executedSize = await this.executor.copyTrade(signal);
-                }
-                
-                if (executedSize > 0) {
-                    let realPnl = 0;
-                    if (signal.side === 'BUY') {
-                        const newPosition: ActivePosition = {
-                            marketId: signal.marketId,
-                            tokenId: signal.tokenId,
-                            outcome: signal.outcome,
-                            entryPrice: signal.price,
-                            sizeUsd: executedSize, 
-                            timestamp: Date.now()
-                        };
-                        this.activePositions.push(newPosition);
-                    } else if (signal.side === 'SELL') {
-                        const posIndex = this.activePositions.findIndex(p => p.marketId === signal.marketId && p.outcome === signal.outcome);
-                        if (posIndex !== -1) {
-                            const entry = this.activePositions[posIndex];
-                            const yieldPercent = (signal.price - entry.entryPrice) / entry.entryPrice;
-                            realPnl = entry.sizeUsd * yieldPercent; 
-                            await this.addLog('success', `✅ Realized PnL: $${realPnl.toFixed(2)} (${(yieldPercent*100).toFixed(1)}%)`);
-                            this.activePositions.splice(posIndex, 1);
-                        } else {
-                            realPnl = 0; 
-                        }
-                    }
-
-                    if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
-
-                    await this.recordTrade({
-                        marketId: signal.marketId,
-                        outcome: signal.outcome,
-                        side: signal.side,
-                        price: signal.price,
-                        size: signal.sizeUsd, 
-                        executedSize: executedSize, 
-                        aiReasoning: aiReasoning,
-                        riskScore: riskScore,
-                        pnl: realPnl,
-                        status: signal.side === 'SELL' ? 'CLOSED' : 'OPEN'
-                    });
-
-                    await notifier.sendTradeAlert(signal);
-
-                    if (signal.side === 'SELL' && realPnl > 0) {
-                        const feeEvent = await feeDistributor.distributeFeesOnProfit(signal.marketId, realPnl, signal.trader);
-                        if (feeEvent) {
-                            this.stats.totalFeesPaid += (feeEvent.platformFee + feeEvent.listerFee);
-                            if (this.callbacks?.onFeePaid) await this.callbacks.onFeePaid(feeEvent);
-                        }
-                    }
-                    
-                    if (this.callbacks?.onStatsUpdate) await this.callbacks.onStatsUpdate(this.stats);
-
-                    setTimeout(async () => {
-                    const cashout = await fundManager.checkAndSweepProfits();
-                    if (cashout && this.callbacks?.onCashout) await this.callbacks.onCashout(cashout);
-                    }, 15000);
-                }
-            } catch (err: any) {
-                await this.addLog('error', `Execution Failed: ${err.message}`);
-            }
-          } else {
-             await this.recordTrade({
-                marketId: signal.marketId,
-                outcome: signal.outcome,
-                side: signal.side,
-                price: signal.price,
-                size: signal.sizeUsd,
-                executedSize: 0,
-                aiReasoning: aiReasoning,
-                riskScore: riskScore,
-                status: 'SKIPPED'
-             });
-          }
-        }
-      });
-
-      await this.monitor.start(this.config.startCursor);
-      this.watchdogTimer = setInterval(() => this.checkAutoTp(), 10000) as unknown as NodeJS.Timeout;
-
-    } catch (e: any) {
-      this.isRunning = false;
-      await this.addLog('error', `Startup Failed: ${e.message}`);
-    }
   }
 
   private async checkAutoTp() {
@@ -651,15 +567,8 @@ export class BotEngine {
       
       for (const pos of positionsToCheck) {
           try {
-              let isClosed = false;
-              try {
-                  const market = await getMarket(pos.marketId);
-                  if (market.closed || market.active === false || market.enable_order_book === false) {
-                      isClosed = true;
-                  }
-              } catch (e) { continue; }
-
-              if (isClosed) {
+              const market = await getMarket(pos.marketId);
+              if ((market as any).closed || (market as any).active === false) {
                   this.activePositions = this.activePositions.filter(p => p.tokenId !== pos.tokenId);
                   if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
                   continue;
@@ -671,77 +580,30 @@ export class BotEngine {
                   const gainPercent = ((bestBid - pos.entryPrice) / pos.entryPrice) * 100;
                   
                   if (gainPercent >= this.config.autoTp) {
-                      await this.addLog('success', `🎯 Auto TP Hit! ${pos.outcome} is up +${gainPercent.toFixed(1)}%`);
+                      await this.addLog('success', `🎯 Auto TP Hit! ${pos.outcome} +${gainPercent.toFixed(1)}%`);
                       const success = await this.executor.executeManualExit(pos, bestBid);
                       if (success) {
                           this.activePositions = this.activePositions.filter(p => p.tokenId !== pos.tokenId);
                           if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
-                          
-                          const realPnl = pos.sizeUsd * (gainPercent / 100);
-                          await this.recordTrade({
-                              marketId: pos.marketId,
-                              outcome: pos.outcome,
-                              side: 'SELL',
-                              price: bestBid,
-                              size: pos.sizeUsd,
-                              executedSize: pos.sizeUsd,
-                              aiReasoning: 'Auto Take-Profit Trigger',
-                              riskScore: 0,
-                              pnl: realPnl,
-                              status: 'CLOSED'
-                          });
                       }
                   }
               }
           } catch (e: any) { 
-               if (e.message?.includes('404') || e.response?.status === 404 || e.status === 404) {
-                   this.activePositions = this.activePositions.filter(p => p.tokenId !== pos.tokenId);
-                   if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
-               }
+               // Ignore 404s
           }
       }
   }
 
-  private async recordTrade(data: {
-      marketId: string;
-      outcome: string;
-      side: 'BUY' | 'SELL';
-      price: number;
-      size: number;
-      executedSize: number;
-      aiReasoning?: string;
-      riskScore?: number;
-      pnl?: number;
-      status: 'OPEN' | 'CLOSED' | 'SKIPPED';
-      txHash?: string;
-  }) {
-      const entry: TradeHistoryEntry = {
-          id: Math.random().toString(36).substring(7),
-          timestamp: new Date().toISOString(),
-          ...data
-      };
-
-      if (data.status !== 'SKIPPED') {
-          this.stats.tradesCount = (this.stats.tradesCount || 0) + 1;
-          this.stats.totalVolume = (this.stats.totalVolume || 0) + data.executedSize; 
-          if (data.pnl) {
-              this.stats.totalPnl = (this.stats.totalPnl || 0) + data.pnl;
-          }
+  public stop() {
+      this.isRunning = false;
+      if (this.monitor) {
+          this.monitor.stop();
+          this.monitor = undefined;
       }
-
-      if (this.callbacks?.onTradeComplete) {
-          await this.callbacks.onTradeComplete(entry);
+      if (this.watchdogTimer) {
+          clearInterval(this.watchdogTimer);
+          this.watchdogTimer = undefined;
       }
-
-      if (data.status !== 'SKIPPED' && this.callbacks?.onStatsUpdate) {
-          await this.callbacks.onStatsUpdate(this.stats);
-      }
-  }
-
-  stop() {
-    this.isRunning = false;
-    if (this.monitor) this.monitor.stop();
-    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
-    this.addLog('warn', 'Bot Engine Stopped.');
+      this.addLog('info', '🔴 Engine Stopped.');
   }
 }
