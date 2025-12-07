@@ -6,7 +6,7 @@ import type { Logger } from '../utils/logger.util.js';
 import type { TradeSignal, ActivePosition } from '../domain/trade.types.js';
 import { computeProportionalSizing } from '../config/copy-strategy.js';
 import { postOrder } from '../utils/post-order.util.js';
-import { getUsdBalanceApprox, getPolBalance } from '../utils/get-balance.util.js';
+import { getUsdBalanceApprox } from '../utils/get-balance.util.js';
 import { httpGet } from '../utils/http.js';
 
 export type TradeExecutorDeps = {
@@ -39,7 +39,7 @@ export class TradeExecutorService {
   }
 
   async ensureAllowance(): Promise<boolean> {
-    const { logger, client } = this.deps;
+    const { logger } = this.deps;
     try {
       const allowance = await this.usdcContract.allowance(this.deps.proxyWallet, POLYMARKET_EXCHANGE);
       
@@ -105,7 +105,7 @@ export class TradeExecutorService {
     try {
       const yourUsdBalance = await getUsdBalanceApprox(client.wallet, env.usdcContractAddress);
       
-      // We assume a default whale size of $10,000 if the API fails, to prevent massive bets.
+      // Use robust HTTP get for whale balance
       const traderBalance = await this.getTraderBalance(signal.trader);
 
       const sizing = computeProportionalSizing({
@@ -115,8 +115,6 @@ export class TradeExecutorService {
         multiplier: env.tradeMultiplier,
       });
 
-      // --- DETAILED SIZING LOG (Crucial for Debugging) ---
-      // This helps debug "Zero Size" errors and shows the floor logic in action
       logger.info(`[Sizing] Whale: $${traderBalance.toFixed(0)} | Signal: $${signal.sizeUsd.toFixed(0)} | You: $${yourUsdBalance.toFixed(2)} | Target: $${sizing.targetUsdSize.toFixed(2)}`);
 
       if (sizing.targetUsdSize === 0) {
@@ -159,14 +157,14 @@ export class TradeExecutorService {
 
   private async getTraderBalance(trader: string): Promise<number> {
     try {
+      // Use the robust httpGet with retry
       const positions: Position[] = await httpGet<Position[]>(
         `https://data-api.polymarket.com/positions?user=${trader}`,
       );
       const totalValue = positions.reduce((sum, pos) => sum + (pos.currentValue || pos.initialValue || 0), 0);
-      // Assume a whale has at least $1k if API fails or returns 0, to prevent division by zero
       return Math.max(1000, totalValue);
     } catch {
-      return 10000; // Fallback whale size
+      return 10000; // Fallback whale size on API fail
     }
   }
 }

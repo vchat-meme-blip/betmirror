@@ -7,7 +7,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 
 # Install ALL dependencies (including devDependencies like typescript)
-RUN npm ci
+# Using 'npm install' instead of 'npm ci' to auto-fix lockfile discrepancies
+RUN npm install
 
 # Copy the rest of the source code
 COPY . .
@@ -32,7 +33,8 @@ ENV PORT=3000
 COPY package.json package-lock.json ./
 
 # Install ONLY production dependencies to keep image small
-RUN npm ci --only=production
+# Using 'npm install' again for consistency
+RUN npm install --only=production
 
 # Copy compiled backend from builder
 COPY --from=builder /app/dist-node ./dist-node

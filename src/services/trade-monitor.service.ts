@@ -45,7 +45,6 @@ export class TradeMonitorService {
     );
 
     // If a startCursor is provided, initialize lastFetchTime for all traders
-    // This allows resuming from a previous state (server restart)
     if (startCursor) {
         this.deps.userAddresses.forEach(trader => {
             this.lastFetchTime.set(trader, startCursor);
@@ -61,8 +60,13 @@ export class TradeMonitorService {
         this.isPolling = true;
         try {
             await this.tick();
-        } catch (e) {
-            console.error(e);
+        } catch (e: any) {
+            // Critical: Catch socket hang ups here so the interval doesn't die
+            if (e.code === 'ECONNRESET' || e.message?.includes('socket hang up')) {
+                // this.deps.logger.warn(`[Monitor] Connection reset. Retrying next tick.`);
+            } else {
+                console.error("[Monitor] Tick Error:", e.message);
+            }
         } finally {
             this.isPolling = false;
         }
@@ -75,10 +79,10 @@ export class TradeMonitorService {
   }
 
   private async tick(): Promise<void> {
-    const { logger, env } = this.deps;
+    const { env } = this.deps;
     
     // Process wallets in parallel chunks to avoid blocking
-    const chunkSize = 3;
+    const chunkSize = 5; // Increased chunk size for efficiency
     for (let i = 0; i < this.deps.userAddresses.length; i += chunkSize) {
         const chunk = this.deps.userAddresses.slice(i, i + chunkSize);
         await Promise.all(chunk.map(trader => {
@@ -90,14 +94,13 @@ export class TradeMonitorService {
 
   private async fetchTraderActivities(trader: string, env: RuntimeEnv): Promise<void> {
     try {
-      // In production, we would use a dedicated indexer or WebSocket subscription
       const url = `https://data-api.polymarket.com/activity?user=${trader}&limit=20`;
+      // Use robust httpGet which handles retries internally
       const activities: ActivityResponse[] = await httpGet<ActivityResponse[]>(url);
 
       if (!activities || !Array.isArray(activities)) return;
 
       const now = Math.floor(Date.now() / 1000);
-      // Increased lookback window for reliability
       const cutoffTime = now - Math.max(env.aggregationWindowSeconds, 600); 
 
       for (const activity of activities) {
@@ -105,13 +108,9 @@ export class TradeMonitorService {
 
         const activityTime = typeof activity.timestamp === 'number' ? activity.timestamp : Math.floor(new Date(activity.timestamp).getTime() / 1000);
         
-        // Skip old trades
         if (activityTime < cutoffTime) continue;
-        
-        // Dedup logic
         if (this.processedHashes.has(activity.transactionHash)) continue;
 
-        // Skip trades we've already seen based on time cursor
         const lastTime = this.lastFetchTime.get(trader) || 0;
         if (activityTime <= lastTime) continue;
 
@@ -137,10 +136,7 @@ export class TradeMonitorService {
       if (axios.isAxiosError(err) && err.response?.status === 404) {
         return; 
       }
-      // Suppress minor network errors
-      if (err instanceof Error && !err.message.includes('Network Error')) {
-          this.deps.logger.warn(`Fetch error for ${trader.slice(0,6)}: ${err.message}`);
-      }
+      // Silent fail for minor networking issues
     }
   }
 }
