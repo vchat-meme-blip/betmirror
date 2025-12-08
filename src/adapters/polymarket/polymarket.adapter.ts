@@ -16,7 +16,9 @@ import axios from 'axios';
 
 // --- CONSTANTS ---
 const USDC_BRIDGED_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+// Confirmed CTF Exchange Address
 const POLYMARKET_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
+
 const USDC_ABI = [
   'function allowance(address owner, address spender) view returns (uint256)',
   'function approve(address spender, uint256 amount) returns (bool)',
@@ -116,6 +118,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             try {
                 this.logger.info('🔄 Verifying Smart Account Deployment...');
                 // Idempotent "Approve 0" tx to force deployment if needed
+                // Using fallback-enabled sendTransaction
                 await this.zdService.sendTransaction(
                     this.config.walletConfig.serializedSessionKey,
                     USDC_BRIDGED_POLYGON,
@@ -208,15 +211,16 @@ export class PolymarketAdapter implements IExchangeAdapter {
     private async ensureAllowance() {
         if(!this.usdcContract || !this.funderAddress) return;
         try {
+            // Polymarket requires allowance on the CTF Exchange
             const allowance = await this.usdcContract.allowance(this.funderAddress, POLYMARKET_EXCHANGE);
             
             // Check if allowance is insufficient (less than 1000 USDC)
             if (allowance < BigInt(1000000 * 1000)) {
-                this.logger.info('🔓 Approving USDC for Trading...');
+                this.logger.info('🔓 Approving USDC for CTF Exchange...');
                 
                 if (this.zdService) {
                     // Send via ZeroDev (Smart Account)
-                    // This call will now THROW if the on-chain tx fails
+                    // The Updated sendTransaction will try Paymaster, catch failure, and fallback to Native
                     const txHash = await this.zdService.sendTransaction(
                         this.config.walletConfig.serializedSessionKey,
                         USDC_BRIDGED_POLYGON,
@@ -226,9 +230,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
                     );
                     this.logger.success(`✅ Approved. Tx: ${txHash}`);
                 }
-            } else {
-                 // Optimization: Don't spam logs if already approved
-                 // this.logger.info('✅ Allowance Sufficient.');
             }
         } catch(e: any) { 
             this.logger.error(`Allowance Failed: ${e.message}`);
@@ -356,7 +357,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
                     retryCount = 0;
                     lastOrderId = response.orderID;
                 } else {
-                    // Log specific error message from exchange
                     this.logger.warn(`Exchange Rejection: ${response.errorMsg || 'Unknown'}`);
                     retryCount++;
                 }
