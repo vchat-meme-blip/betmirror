@@ -1,4 +1,3 @@
-
 import {
   createKernelAccount,
   createZeroDevPaymasterClient,
@@ -26,12 +25,12 @@ import {
   toPermissionValidator,
 } from "@zerodev/permissions";
 import { toSudoPolicy } from "@zerodev/permissions/policies";
-import { KERNEL_V3_1 } from "@zerodev/sdk/constants";
+import { KERNEL_V3_1, getEntryPoint } from "@zerodev/sdk/constants";
 
 // Constants
 // Canonical EntryPoint 0.7.0 Address
-// Casting to any to avoid TypeScript errors with EntryPointType constraints in newer SDK versions
-const ENTRY_POINT_ADDRESS = "0x0000000071727De22E5E9d8BAf0edAc6f37da032" as any;
+// Use SDK helper to ensure correct type for deserialization
+const ENTRY_POINT = getEntryPoint("0.7");
 const KERNEL_VERSION = KERNEL_V3_1;
 const CHAIN = polygon;
 
@@ -103,10 +102,12 @@ export class ZeroDevService {
       
       // 2. Fallback: Parse logs to find UserOperationEvent
       let foundUserOpEvent = false;
+      const entryPointAddr = ENTRY_POINT as unknown as string;
+
       if (receipt.logs) {
           for (const log of receipt.logs) {
               try {
-                  if (log.address.toLowerCase() === ENTRY_POINT_ADDRESS.toLowerCase()) {
+                  if (log.address.toLowerCase() === entryPointAddr.toLowerCase()) {
                        const decoded: any = decodeEventLog({
                            abi: ENTRY_POINT_ABI,
                            data: log.data,
@@ -134,7 +135,7 @@ export class ZeroDevService {
   async sendTransaction(serializedSessionKey: string, to: string, abi: any[], functionName: string, args: any[]) {
        const sessionKeyAccount = await deserializePermissionAccount(
           this.publicClient as any,
-          ENTRY_POINT_ADDRESS,
+          ENTRY_POINT,
           KERNEL_VERSION,
           serializedSessionKey
        );
@@ -235,12 +236,12 @@ export class ZeroDevService {
       try {
           if (!ownerWalletClient) throw new Error("Missing owner wallet client");
           const ecdsaValidator = await signerToEcdsaValidator(this.publicClient as any, {
-              entryPoint: ENTRY_POINT_ADDRESS,
+              entryPoint: ENTRY_POINT,
               signer: ownerWalletClient as any,
               kernelVersion: KERNEL_VERSION,
           });
           const account = await createKernelAccount(this.publicClient as any, {
-              entryPoint: ENTRY_POINT_ADDRESS,
+              entryPoint: ENTRY_POINT,
               plugins: { sudo: ecdsaValidator },
               kernelVersion: KERNEL_VERSION,
           });
@@ -257,18 +258,18 @@ export class ZeroDevService {
     const sessionKeyAccount = privateKeyToAccount(sessionPrivateKey);
     const sessionKeySigner = await toECDSASigner({ signer: sessionKeyAccount });
     const ecdsaValidator = await signerToEcdsaValidator(this.publicClient as any, {
-      entryPoint: ENTRY_POINT_ADDRESS,
+      entryPoint: ENTRY_POINT,
       signer: ownerWalletClient as any, 
       kernelVersion: KERNEL_VERSION,
     });
     const permissionPlugin = await toPermissionValidator(this.publicClient as any, {
-      entryPoint: ENTRY_POINT_ADDRESS,
+      entryPoint: ENTRY_POINT,
       signer: sessionKeySigner,
       policies: [ toSudoPolicy({}) ],
       kernelVersion: KERNEL_VERSION,
     });
     const sessionKeyAccountObj = await createKernelAccount(this.publicClient as any, {
-      entryPoint: ENTRY_POINT_ADDRESS,
+      entryPoint: ENTRY_POINT,
       plugins: {
         sudo: ecdsaValidator,
         regular: permissionPlugin,
@@ -286,12 +287,12 @@ export class ZeroDevService {
   async withdrawFunds(ownerWalletClient: WalletClient, smartAccountAddress: string, toAddress: string, amount: bigint, tokenAddress: string) {
       console.log("Initiating Trustless Withdrawal...");
       const ecdsaValidator = await signerToEcdsaValidator(this.publicClient as any, {
-        entryPoint: ENTRY_POINT_ADDRESS,
+        entryPoint: ENTRY_POINT,
         signer: ownerWalletClient as any,
         kernelVersion: KERNEL_VERSION,
       });
       const account = await createKernelAccount(this.publicClient as any, {
-        entryPoint: ENTRY_POINT_ADDRESS,
+        entryPoint: ENTRY_POINT,
         plugins: { sudo: ecdsaValidator },
         kernelVersion: KERNEL_VERSION,
         address: smartAccountAddress as Hex,
