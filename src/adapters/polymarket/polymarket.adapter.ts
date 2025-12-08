@@ -1,3 +1,4 @@
+
 import { 
     IExchangeAdapter, 
     OrderParams
@@ -90,6 +91,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
         
         if (this.config.walletConfig.type === 'SMART_ACCOUNT') {
              if (!this.config.zeroDevRpc) throw new Error("Missing ZeroDev RPC");
+             // Note: Paymaster RPC is passed but ignored by service logic in simplified mode
              this.zdService = new ZeroDevService(
                  this.config.zeroDevRpc, 
                  this.config.zeroDevPaymasterRpc
@@ -280,7 +282,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             this.logger.info(`🔍 Allowance Check: ${formatUnits(allowance, 6)} USDC Approved for Exchange`);
 
             if (allowance < BigInt(1000000 * 1000)) {
-                this.logger.info('🔓 Approving USDC for CTF Exchange...');
+                this.logger.info('🔓 Approving USDC for CTF Exchange (Native Gas)...');
                 
                 if (this.zdService) {
                     const txHash = await this.zdService.sendTransaction(
