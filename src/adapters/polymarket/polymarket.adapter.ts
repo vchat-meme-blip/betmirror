@@ -1,3 +1,4 @@
+
 import { 
     IExchangeAdapter, 
     OrderParams
@@ -124,10 +125,10 @@ export class PolymarketAdapter implements IExchangeAdapter {
         // This interceptor forces Chrome headers on ALL requests, bypassing SDK defaults.
         const STEALTH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
         
+        // Force defaults
         axios.defaults.headers.common['User-Agent'] = STEALTH_UA;
         
-        // Remove existing interceptors to prevent duplicates on re-auth
-        // (Note: axios doesn't easily let us clear, so we just add a new one that wins)
+        // Intercept requests to inject headers dynamically
         axios.interceptors.request.use(config => {
             if (config.url?.includes('polymarket.com')) {
                 config.headers['User-Agent'] = STEALTH_UA;
@@ -135,7 +136,11 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 config.headers['Referer'] = 'https://polymarket.com/';
                 config.headers['Accept'] = 'application/json, text/plain, */*';
                 config.headers['Accept-Language'] = 'en-US,en;q=0.9';
-                // Remove SDK default agent if present
+                config.headers['Sec-Ch-Ua'] = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"';
+                config.headers['Sec-Ch-Ua-Mobile'] = '?0';
+                config.headers['Sec-Ch-Ua-Platform'] = '"Windows"';
+                
+                // Nuke SDK default if present
                 if (config.headers['User-Agent'] === '@polymarket/clob-client') {
                     config.headers['User-Agent'] = STEALTH_UA;
                 }
@@ -143,32 +148,19 @@ export class PolymarketAdapter implements IExchangeAdapter {
             return config;
         });
 
-        // Also pass as options for good measure
-        const stealthOptions = {
-            headers: {
-                'User-Agent': STEALTH_UA,
-                'Origin': 'https://polymarket.com',
-                'Referer': 'https://polymarket.com/',
-            },
-            timeout: 30000
-        };
-
         let apiCreds = this.config.l2ApiCredentials;
 
         if (!apiCreds || !apiCreds.key) {
             this.logger.info('🤝 Performing L2 Handshake...');
             
+            // Standard initialization without extra options to prevent SDK crashes
             const tempClient = new ClobClient(
                 'https://clob.polymarket.com',
                 Chain.POLYGON,
                 this.signerImpl,
                 undefined,
                 SignatureType.EOA,
-                this.funderAddress,
-                undefined,
-                undefined,
-                undefined,
-                stealthOptions as any
+                this.funderAddress
             );
 
             try {
@@ -208,6 +200,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             });
         }
 
+        // Initialize final client
         this.client = new ClobClient(
             'https://clob.polymarket.com',
             Chain.POLYGON,
@@ -217,8 +210,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             this.funderAddress,
             undefined, 
             undefined,
-            builderConfig,
-            stealthOptions as any
+            builderConfig
         );
         
         await this.ensureAllowance();
@@ -388,7 +380,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 retryCount++;
             }
             
-            // Random Jitter (2s - 4.5s) to look human
+            // Random Jitter (2s - 4.5s) to look human and avoid rate limits
             const jitter = Math.floor(Math.random() * 2500) + 2000;
             await new Promise(r => setTimeout(r, jitter));
         }
