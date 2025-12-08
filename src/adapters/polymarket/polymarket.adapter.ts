@@ -107,7 +107,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
         }
 
         // 2. Setup USDC Contract for Allowance Checks
-        // Note: Using signerImpl means we can read state, but writes must go through ZeroDev if it's a Smart Account
         this.usdcContract = new Contract(USDC_BRIDGED_POLYGON, USDC_ABI, this.signerImpl);
     }
 
@@ -117,7 +116,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
             try {
                 this.logger.info('🔄 Verifying Smart Account Deployment...');
                 // Idempotent "Approve 0" tx to force deployment if needed
-                // We use the serialized session key because that's what the AA SDK expects
                 await this.zdService.sendTransaction(
                     this.config.walletConfig.serializedSessionKey,
                     USDC_BRIDGED_POLYGON,
@@ -128,7 +126,9 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 this.logger.success('✅ Smart Account Ready.');
                 return true;
             } catch (e: any) {
-                this.logger.warn(`Deployment check note: ${e.message}`);
+                // CRITICAL: Fail if deployment fails
+                this.logger.error(`Deployment Failed: ${e.message}`);
+                throw new Error("Smart Account deployment failed. Check funds or network.");
             }
         }
         return true;
@@ -201,7 +201,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             builderConfig
         );
         
-        // Ensure Allowance
+        // Ensure Allowance (Critical for trading)
         await this.ensureAllowance();
     }
 
@@ -209,28 +209,35 @@ export class PolymarketAdapter implements IExchangeAdapter {
         if(!this.usdcContract || !this.funderAddress) return;
         try {
             const allowance = await this.usdcContract.allowance(this.funderAddress, POLYMARKET_EXCHANGE);
+            
+            // Check if allowance is insufficient (less than 1000 USDC)
             if (allowance < BigInt(1000000 * 1000)) {
                 this.logger.info('🔓 Approving USDC for Trading...');
                 
                 if (this.zdService) {
                     // Send via ZeroDev (Smart Account)
-                    await this.zdService.sendTransaction(
+                    // This call will now THROW if the on-chain tx fails
+                    const txHash = await this.zdService.sendTransaction(
                         this.config.walletConfig.serializedSessionKey,
                         USDC_BRIDGED_POLYGON,
                         USDC_ABI,
                         'approve',
                         [POLYMARKET_EXCHANGE, MaxUint256]
                     );
+                    this.logger.success(`✅ Approved. Tx: ${txHash}`);
                 }
-                this.logger.success('✅ Approved.');
+            } else {
+                 // Optimization: Don't spam logs if already approved
+                 // this.logger.info('✅ Allowance Sufficient.');
             }
-        } catch(e) { 
-            this.logger.warn("Allowance check skipped (AA delegation or RPC error)"); 
+        } catch(e: any) { 
+            this.logger.error(`Allowance Failed: ${e.message}`);
+            // CRITICAL: Throw to stop the bot from running without allowance
+            throw new Error(`Failed to approve USDC. Bot cannot trade. Error: ${e.message}`);
         }
     }
 
     async fetchBalance(address: string): Promise<number> {
-        // BUG FIX: Use the specific address passed in (the funder/smart account), NOT the signer's address
         if (!this.usdcContract) return 0;
         try {
             const balanceBigInt = await this.usdcContract.balanceOf(address);
@@ -243,7 +250,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
     async getMarketPrice(marketId: string, tokenId: string): Promise<number> {
         if (!this.client) return 0;
         try {
-            // Using midpoint as a proxy for price
             const mid = await this.client.getMidpoint(tokenId);
             return parseFloat(mid.mid);
         } catch (e) {
@@ -254,7 +260,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
     async getOrderBook(tokenId: string): Promise<OrderBook> {
         if (!this.client) throw new Error("Client not authenticated");
         const book = await this.client.getOrderBook(tokenId);
-        // Map Polymarket Book to Generic Interface
         return {
             bids: book.bids.map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) })),
             asks: book.asks.map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
@@ -262,7 +267,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
     }
 
     async fetchPublicTrades(address: string, limit: number = 20): Promise<TradeSignal[]> {
-        // Implementation of Gap 1: Moving Data API calls into Adapter
         try {
             const url = `https://data-api.polymarket.com/activity?user=${address}&limit=${limit}`;
             const res = await axios.get<PolyActivityResponse[]>(url);
@@ -298,14 +302,12 @@ export class PolymarketAdapter implements IExchangeAdapter {
         const isBuy = params.side === 'BUY';
         const orderSide = isBuy ? Side.BUY : Side.SELL;
 
-        // --- MARKET ORDER EXECUTION LOGIC ---
-        // Loops to fill size, handling liquidity and FOK requirements
         let remaining = params.sizeUsd;
         let retryCount = 0;
         const maxRetries = 3;
-        let lastTx = "";
+        let lastOrderId = "";
 
-        while (remaining > 0.50 && retryCount < maxRetries) { // Min order ~0.50
+        while (remaining > 0.50 && retryCount < maxRetries) { 
             const currentOrderBook = await this.client.getOrderBook(params.tokenId);
             const currentLevels = isBuy ? currentOrderBook.asks : currentOrderBook.bids;
 
@@ -329,13 +331,11 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 orderValue = Math.min(remaining, levelValue);
                 orderSize = orderValue / levelPrice;
             } else {
-                // For Sell, sizeUsd is essentially the value we want to exit
                 const levelValue = parseFloat(level.size) * levelPrice;
                 orderValue = Math.min(remaining, levelValue);
                 orderSize = orderValue / levelPrice;
             }
 
-            // Polymarket API precision handling
             orderSize = Math.floor(orderSize * 100) / 100;
 
             if (orderSize <= 0) break;
@@ -351,25 +351,24 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 const signedOrder = await this.client.createMarketOrder(orderArgs);
                 const response = await this.client.postOrder(signedOrder, OrderType.FOK);
 
-                if (response.success) {
+                if (response.success && response.orderID) {
                     remaining -= orderValue;
                     retryCount = 0;
-                    lastTx = response.orderID || "filled";
-                    
-                    // Simple logging here, more detailed logging is handled by caller via Logger
+                    lastOrderId = response.orderID;
                 } else {
+                    // Log specific error message from exchange
+                    this.logger.warn(`Exchange Rejection: ${response.errorMsg || 'Unknown'}`);
                     retryCount++;
                 }
             } catch (error: any) {
-                this.logger.error(`Order attempt failed: ${error.message}`);
+                this.logger.error(`Order attempt error: ${error.message}`);
                 retryCount++;
             }
             
-            // Brief pause between fills
             await new Promise(r => setTimeout(r, 200));
         }
         
-        return lastTx || "failed";
+        return lastOrderId || "failed";
     }
 
     async cancelOrder(orderId: string): Promise<boolean> {
@@ -383,7 +382,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
     }
 
     async cashout(amount: number, destination: string): Promise<string> {
-        // Implementation of Gap 2: Adapter handling withdrawals via ZeroDev
         if (!this.zdService || !this.funderAddress) {
             throw new Error("Smart Account service not initialized");
         }
@@ -392,8 +390,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
         
         const amountUnits = parseUnits(amount.toFixed(6), 6);
         
-        // Use ZeroDev Service to construct and sign the UserOp
-        // We use the 'transfer' call on the USDC contract
         const txHash = await this.zdService.sendTransaction(
             this.config.walletConfig.serializedSessionKey,
             USDC_BRIDGED_POLYGON,

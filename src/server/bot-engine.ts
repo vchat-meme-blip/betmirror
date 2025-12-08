@@ -83,8 +83,6 @@ export class BotEngine {
         try {
             await this.addLog('info', '🚀 Starting Engine...');
 
-            // --- RESTORED RICH LOGGING ---
-            // Bridge the local Logger to the Database persistence
             const engineLogger: Logger = {
                 info: (m: string) => { console.log(m); this.addLog('info', m); },
                 warn: (m: string) => { console.warn(m); this.addLog('warn', m); },
@@ -128,10 +126,8 @@ export class BotEngine {
     private async checkFunding(): Promise<boolean> {
         try {
             if(!this.exchange) return false;
-            // Use Adapter to check balance
             const funderAddr = this.exchange.getFunderAddress();
             if (!funderAddr) return false;
-            // adapter.fetchBalance now correctly queries the passed address
             const balance = await this.exchange.fetchBalance(funderAddr);
             console.log(`💰 Funding Check for ${funderAddr}: ${balance}`);
             return balance >= 0.1; 
@@ -153,9 +149,7 @@ export class BotEngine {
                 clearInterval(this.fundWatcher);
                 this.fundWatcher = undefined;
                 await this.addLog('success', '💰 Funds detected. Resuming startup...');
-                // We need to pass the logger, but since this is async detached, we recreate a basic one or store it
-                // Re-creating basic logger for simplicity
-                 const engineLogger: Logger = {
+                const engineLogger: Logger = {
                     info: (m: string) => { console.log(m); this.addLog('info', m); },
                     warn: (m: string) => { console.warn(m); this.addLog('warn', m); },
                     error: (m: string, e?: any) => { console.error(m, e); this.addLog('error', m); },
@@ -174,7 +168,8 @@ export class BotEngine {
             // 1. Ensure Deployed
             await this.exchange.validatePermissions();
 
-            // 2. Authenticate (Handshake)
+            // 2. Authenticate (Handshake) & APPROVE ALLOWANCE
+            // If allowance fails, this throws, stopping the bot.
             await this.exchange.authenticate();
 
             // 3. Start Services
@@ -267,40 +262,20 @@ export class BotEngine {
 
                 if (shouldTrade && this.executor) {
                     await this.addLog('info', `⚡ Executing ${signal.side}...`);
-                    const size = await this.executor.copyTrade(signal);
-                    if (size > 0) {
+                    const orderResult = await this.executor.copyTrade(signal);
+                    
+                    // Check if order returned a valid ID (not 0/failed)
+                    if (typeof orderResult === 'number' && orderResult > 0) {
+                        // Legacy handling where executor returns size
                         await this.addLog('success', `✅ Executed ${signal.marketId.slice(0,6)}...`);
-                        
-                        if (signal.side === 'BUY') {
-                            this.activePositions.push({
-                                marketId: signal.marketId,
-                                tokenId: signal.tokenId,
-                                outcome: signal.outcome,
-                                entryPrice: signal.price,
-                                sizeUsd: size,
-                                timestamp: Date.now()
-                            });
-                        }
-                        
-                        this.stats.tradesCount = (this.stats.tradesCount || 0) + 1;
-                        this.stats.totalVolume = (this.stats.totalVolume || 0) + size;
-
-                        if (this.callbacks?.onTradeComplete) {
-                            await this.callbacks.onTradeComplete({
-                                id: Math.random().toString(36),
-                                timestamp: new Date().toISOString(),
-                                marketId: signal.marketId,
-                                outcome: signal.outcome,
-                                side: signal.side,
-                                size: signal.sizeUsd,
-                                executedSize: size,
-                                price: signal.price,
-                                status: 'CLOSED',
-                                aiReasoning: reason,
-                                riskScore: score
-                            });
-                        }
-                        if(this.callbacks?.onStatsUpdate) await this.callbacks.onStatsUpdate(this.stats);
+                        this.updateStats(signal, orderResult, reason, score);
+                    } else if (typeof orderResult === 'string' && orderResult !== "failed" && orderResult !== "skipped_small_size") {
+                        // New handling where executor returns Order ID
+                        await this.addLog('success', `✅ Trade Filled (Order ID: ${orderResult})`);
+                        // Assume signal size was filled for now in stats, ideally we'd fetch fill details
+                        this.updateStats(signal, signal.sizeUsd, reason, score);
+                    } else if (orderResult === "failed") {
+                        await this.addLog('error', `❌ Trade Failed on Exchange`);
                     }
                 }
             }
@@ -312,6 +287,39 @@ export class BotEngine {
         await this.addLog('success', '🟢 Engine Online. Watching markets...');
     }
 
+    private async updateStats(signal: any, size: number, reason: string, score: number) {
+        if (signal.side === 'BUY') {
+            this.activePositions.push({
+                marketId: signal.marketId,
+                tokenId: signal.tokenId,
+                outcome: signal.outcome,
+                entryPrice: signal.price,
+                sizeUsd: size,
+                timestamp: Date.now()
+            });
+        }
+        
+        this.stats.tradesCount = (this.stats.tradesCount || 0) + 1;
+        this.stats.totalVolume = (this.stats.totalVolume || 0) + size;
+
+        if (this.callbacks?.onTradeComplete) {
+            await this.callbacks.onTradeComplete({
+                id: Math.random().toString(36),
+                timestamp: new Date().toISOString(),
+                marketId: signal.marketId,
+                outcome: signal.outcome,
+                side: signal.side,
+                size: signal.sizeUsd,
+                executedSize: size,
+                price: signal.price,
+                status: 'CLOSED',
+                aiReasoning: reason,
+                riskScore: score
+            });
+        }
+        if(this.callbacks?.onStatsUpdate) await this.callbacks.onStatsUpdate(this.stats);
+    }
+
     private async checkAutoTp() {
         if (!this.config.autoTp || !this.executor || !this.exchange || this.activePositions.length === 0) return;
         
@@ -319,13 +327,9 @@ export class BotEngine {
         
         for (const pos of positionsToCheck) {
             try {
-                // Use Adapter to get Market Data (Checking active status)
-                // Note: getMarketPrice is a simple check, for detailed market status we might need an adapter extension later
-                // For now, let's assume active if price is > 0
                 const currentPrice = await this.exchange.getMarketPrice(pos.marketId, pos.tokenId);
                 
                 if (currentPrice > 0) {
-                    // Check orderbook bids for exit liquidity
                     const orderBook = await this.exchange.getOrderBook(pos.tokenId);
                     if (orderBook.bids && orderBook.bids.length > 0) {
                         const bestBid = orderBook.bids[0].price;

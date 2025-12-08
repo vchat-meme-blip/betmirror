@@ -22,7 +22,6 @@ interface Position {
 export class TradeExecutorService {
   private readonly deps: TradeExecutorDeps;
   
-  // Cache whale balances to avoid API latency on every tick
   private balanceCache: Map<string, { value: number; timestamp: number }> = new Map();
   private readonly CACHE_TTL = 5 * 60 * 1000; // 5 Minutes Cache
 
@@ -51,7 +50,7 @@ export class TradeExecutorService {
       }
   }
 
-  async copyTrade(signal: TradeSignal): Promise<number> {
+  async copyTrade(signal: TradeSignal): Promise<string | number> {
     const { logger, env, adapter, proxyWallet } = this.deps;
     try {
       // 1. Get User Balance via Adapter
@@ -76,16 +75,17 @@ export class TradeExecutorService {
           } else {
              logger.warn(`❌ Skipped: Calculated size $0.00 (Ratio too small).`);
           }
-          return 0;
+          return "skipped_small_size";
       }
 
       if (signal.side === 'BUY' && yourUsdBalance < sizing.targetUsdSize) {
           logger.error(`Insufficient USDC. Need: $${sizing.targetUsdSize.toFixed(2)}, Have: $${yourUsdBalance.toFixed(2)}`);
-          return 0;
+          return "insufficient_funds";
       }
 
       // 4. Execute via Adapter
-      await adapter.createOrder({
+      // Returns Order ID (String) or "filled"
+      const result = await adapter.createOrder({
         marketId: signal.marketId,
         tokenId: signal.tokenId,
         outcome: signal.outcome,
@@ -93,7 +93,7 @@ export class TradeExecutorService {
         sizeUsd: sizing.targetUsdSize
       });
       
-      return sizing.targetUsdSize;
+      return result;
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -102,7 +102,7 @@ export class TradeExecutorService {
       } else {
         logger.error(`Failed to copy trade: ${errorMessage}`, err as Error);
       }
-      return 0;
+      return "failed";
     }
   }
 

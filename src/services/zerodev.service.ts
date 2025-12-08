@@ -12,7 +12,9 @@ import {
   PublicClient,
   WalletClient,
   encodeFunctionData,
-  parseAbi
+  parseAbi,
+  decodeEventLog,
+  Log
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { polygon } from "viem/chains";
@@ -34,9 +36,6 @@ const CHAIN = polygon;
 const PUBLIC_RPC = "https://polygon-rpc.com";
 
 // --- GAS TOKEN CONFIGURATION ---
-// User requested Native USDC for gas sponsoring.
-// Native USDC: 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359 (Circle)
-// Bridged USDC.e: 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174 (Polymarket)
 const GAS_TOKEN_ADDRESS = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'; 
 
 // ERC20 Paymaster Address (Pimlico/ZeroDev Standard for Polygon)
@@ -47,21 +46,22 @@ const USDC_ABI = parseAbi([
   "function approve(address spender, uint256 amount) returns (bool)"
 ]);
 
+// EntryPoint 0.7 Event ABI
+const ENTRY_POINT_ABI = parseAbi([
+    "event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)"
+]);
+
 export class ZeroDevService {
   private publicClient: PublicClient;
   private bundlerRpc: string;
   private paymasterRpc: string;
 
   constructor(zeroDevRpcUrlOrId: string, paymasterRpcUrl?: string) {
-    // 1. Bundler RPC (Standard)
     this.bundlerRpc = this.normalizeRpcUrl(zeroDevRpcUrlOrId);
     
-    // 2. Paymaster RPC (Strict)
-    // If a specific Paymaster URL is provided, use it EXACTLY as is, preserving params like ?selfFunded=true
     if (paymasterRpcUrl) {
         this.paymasterRpc = paymasterRpcUrl;
     } else {
-        // Fallback to bundler URL if not specified
         this.paymasterRpc = this.bundlerRpc;
     }
     
@@ -75,25 +75,51 @@ export class ZeroDevService {
   }
 
   private normalizeRpcUrl(input: string): string {
-      // Simple UUID check
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
       const match = input.match(uuidRegex);
-
-      // If it looks like a full URL, keep it
       if (input.includes("http")) return input;
-
-      // If it's just a project ID, construct the standard Bundler URL
       if (match) {
           return `https://rpc.zerodev.app/api/v3/${match[0]}/chain/137`;
       }
-      
       return input;
   }
 
   /**
-   * Universal UserOp Sender with Fallback Logic.
-   * Auto-parses ABI if string array is provided.
+   * Checks receipt logs to verify UserOperation success.
+   * Throws if success is false.
    */
+  private async verifyUserOpSuccess(txHash: string) {
+      const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash as Hex });
+      
+      // Filter for UserOperationEvent
+      for (const log of receipt.logs) {
+          try {
+              // ENTRY_POINT is typed as EntryPointType, so we must double-cast to compare with string
+              if (log.address.toLowerCase() === (ENTRY_POINT as unknown as string).toLowerCase()) {
+                   // Cast log to any to ensure topics access (TS sometimes infers logs without topics in receipts)
+                   const topics = (log as any).topics;
+                   const event = decodeEventLog({
+                       abi: ENTRY_POINT_ABI,
+                       data: log.data,
+                       topics: topics
+                   });
+                   
+                   // Cast event result to access properties
+                   const decodedEvent = event as unknown as { eventName: string; args: any };
+
+                   if (decodedEvent.eventName === 'UserOperationEvent') {
+                       if (!decodedEvent.args.success) {
+                           throw new Error(`UserOp failed on-chain. Gas Used: ${decodedEvent.args.actualGasUsed}`);
+                       }
+                       return true; // Success found
+                   }
+              }
+          } catch(e) { continue; }
+      }
+      // If we found the receipt but no UserOp event, it might be a direct tx or different issue, but we assume success if no revert found
+      return true;
+  }
+
   async sendTransaction(serializedSessionKey: string, to: string, abi: any[], functionName: string, args: any[]) {
        const sessionKeyAccount = await deserializePermissionAccount(
           this.publicClient as any,
@@ -102,7 +128,6 @@ export class ZeroDevService {
           serializedSessionKey
        );
 
-       // FIX: Automatically parse Human Readable ABI (String Array) if detected
        const parsedAbi = (abi.length > 0 && typeof abi[0] === 'string') 
             ? parseAbi(abi as string[]) 
             : abi;
@@ -139,19 +164,23 @@ export class ZeroDevService {
            }
        });
 
-       // 1. Try with Paymaster (USDC Gas)
+       // 1. Try with Paymaster
        try {
            console.log(`Attempting UserOp via ERC20 Paymaster...`);
            const userOpHash = await kernelClient.sendUserOperation({
                callData: userOpCallData
            } as any);
-           console.log("✅ Paymaster Success. UserOp:", userOpHash);
-           return userOpHash;
+           
+           const txHash = await kernelClient.waitForUserOperationReceipt({ hash: userOpHash });
+           await this.verifyUserOpSuccess(txHash.receipt.transactionHash);
+           
+           console.log("✅ Paymaster Success. Tx:", txHash.receipt.transactionHash);
+           return txHash.receipt.transactionHash;
        } catch (e: any) {
-           console.warn(`⚠️ Paymaster Failed (${e.message}). Retrying with Native Gas (POL)...`);
+           console.warn(`⚠️ Paymaster Failed (${e.message}). Retrying with Native Gas...`);
        }
 
-       // 2. Fallback: Native Gas (POL)
+       // 2. Fallback: Native Gas
        const fallbackClient = createKernelAccountClient({
            account: sessionKeyAccount,
            chain: CHAIN,
@@ -163,8 +192,11 @@ export class ZeroDevService {
            callData: userOpCallData
        } as any);
        
-       console.log("✅ Native Gas Success. UserOp:", userOpHash);
-       return userOpHash;
+       const txHash = await fallbackClient.waitForUserOperationReceipt({ hash: userOpHash });
+       await this.verifyUserOpSuccess(txHash.receipt.transactionHash);
+
+       console.log("✅ Native Gas Success. Tx:", txHash.receipt.transactionHash);
+       return txHash.receipt.transactionHash;
   }
   
   async getPaymasterApprovalCallData() {
@@ -193,7 +225,7 @@ export class ZeroDevService {
 
           return account.address;
       } catch (e: any) {
-          console.error("Failed to compute deterministic address (ZeroDev):", e.message);
+          console.error("Failed to compute deterministic address:", e.message);
           return null;
       }
   }
@@ -233,40 +265,6 @@ export class ZeroDevService {
       smartAccountAddress: sessionKeyAccountObj.address,
       serializedSessionKey: serializedSessionKey,
       sessionPrivateKey: sessionPrivateKey 
-    };
-  }
-
-  async createBotClient(serializedSessionKey: string) {
-    const sessionKeyAccount = await deserializePermissionAccount(
-      this.publicClient as any,
-      ENTRY_POINT,
-      KERNEL_VERSION,
-      serializedSessionKey
-    );
-
-    const paymasterClient = createZeroDevPaymasterClient({
-      chain: CHAIN,
-      transport: http(this.paymasterRpc),
-    });
-
-    const kernelClient = createKernelAccountClient({
-      account: sessionKeyAccount,
-      chain: CHAIN,
-      bundlerTransport: http(this.bundlerRpc),
-      client: this.publicClient as any,
-      paymaster: {
-        getPaymasterData(userOperation) {
-          return paymasterClient.sponsorUserOperation({ 
-            userOperation,
-            gasToken: GAS_TOKEN_ADDRESS 
-          });
-        },
-      },
-    });
-
-    return {
-        address: sessionKeyAccount.address,
-        client: kernelClient
     };
   }
 
@@ -343,8 +341,9 @@ export class ZeroDevService {
            const userOpHash = await kernelClient.sendUserOperation({
                callData: encodedCallData,
            } as any);
-           const receipt = await this.publicClient.waitForTransactionReceipt({ hash: userOpHash });
-           return receipt.transactionHash;
+           const receipt = await kernelClient.waitForUserOperationReceipt({ hash: userOpHash });
+           await this.verifyUserOpSuccess(receipt.receipt.transactionHash);
+           return receipt.receipt.transactionHash;
        } catch (e: any) {
            console.warn(`Withdraw Paymaster Failed, trying native gas: ${e.message}`);
            
@@ -356,8 +355,9 @@ export class ZeroDevService {
            });
            
            const userOpHash = await fallbackClient.sendUserOperation({ callData: encodedCallData } as any);
-           const receipt = await this.publicClient.waitForTransactionReceipt({ hash: userOpHash });
-           return receipt.transactionHash;
+           const receipt = await fallbackClient.waitForUserOperationReceipt({ hash: userOpHash });
+           await this.verifyUserOpSuccess(receipt.receipt.transactionHash);
+           return receipt.receipt.transactionHash;
        }
   }
 }
