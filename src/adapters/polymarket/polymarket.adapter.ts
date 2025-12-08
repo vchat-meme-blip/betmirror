@@ -16,6 +16,8 @@ import axios from 'axios';
 // --- CONSTANTS ---
 const USDC_BRIDGED_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 const POLYMARKET_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
+// FALLBACK PROXY (WebShare Rotating)
+const FALLBACK_PROXY = 'http://toagonef-rotate:1t19is7izars@p.webshare.io:80';
 
 const USDC_ABI = [
   'function allowance(address owner, address spender) view returns (uint256)',
@@ -72,7 +74,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             builderApiKey?: string;
             builderApiSecret?: string;
             builderApiPassphrase?: string;
-            proxyUrl?: string; // New Proxy Config
+            proxyUrl?: string; 
         },
         private logger: Logger
     ) {}
@@ -120,88 +122,61 @@ export class PolymarketAdapter implements IExchangeAdapter {
         return true;
     }
     
-    // Helper to parse proxy string into Axios config
-    private getHttpOptions() {
-        const proxyUrl = this.config.proxyUrl;
+    // Apply proxy settings to global axios
+    private applyProxySettings() {
+        const proxyUrl = this.config.proxyUrl || FALLBACK_PROXY;
         
-        // 1. Base Headers (Stealth)
-        const headers: any = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Origin': 'https://polymarket.com',
-            'Referer': 'https://polymarket.com/',
-        };
+        const STEALTH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+        axios.defaults.headers.common['User-Agent'] = STEALTH_UA;
 
-        const httpOptions: any = { headers, timeout: 30000 };
-
-        // 2. Proxy Configuration
         if (proxyUrl && proxyUrl.startsWith('http')) {
             try {
+                // Parse: http://user:pass@host:port
                 const url = new URL(proxyUrl);
-                httpOptions.proxy = {
+                const proxyConfig = {
                     protocol: url.protocol.replace(':', ''),
                     host: url.hostname,
                     port: parseInt(url.port) || 80,
-                };
-                
-                if (url.username && url.password) {
-                    httpOptions.proxy.auth = {
+                    auth: (url.username && url.password) ? {
                         username: url.username,
                         password: url.password
-                    };
-                }
-                this.logger.info(`🛡️ Proxy Configured: ${url.hostname}`);
+                    } : undefined
+                };
+                
+                // Set Global Defaults
+                axios.defaults.proxy = proxyConfig;
+                this.logger.info(`🛡️ Proxy Activated: ${url.hostname}`);
             } catch (e) {
                 this.logger.warn(`Invalid Proxy URL: ${proxyUrl}`);
             }
         }
         
-        return httpOptions;
-    }
-
-    async authenticate(): Promise<void> {
-        // --- GLOBAL AXIOS PATCH (Anti-Cloudflare) ---
-        const STEALTH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-        axios.defaults.headers.common['User-Agent'] = STEALTH_UA;
-        
-        // --- PROXY SETUP ---
-        const httpOptions = this.getHttpOptions();
-        
-        // If we have a proxy, apply it globally to axios as a fallback
-        if (httpOptions.proxy) {
-            axios.defaults.proxy = httpOptions.proxy;
-        }
-
-        // Add interceptor to ensure headers persist
+        // Anti-Cloudflare Interceptor
         axios.interceptors.request.use(config => {
             if (config.url?.includes('polymarket.com')) {
                 config.headers['User-Agent'] = STEALTH_UA;
                 config.headers['Origin'] = 'https://polymarket.com';
-                
-                // Remove SDK default
-                if (config.headers['User-Agent'] === '@polymarket/clob-client') {
-                    config.headers['User-Agent'] = STEALTH_UA;
-                }
+                config.headers['Referer'] = 'https://polymarket.com/';
             }
             return config;
         });
+    }
+
+    async authenticate(): Promise<void> {
+        this.applyProxySettings();
 
         let apiCreds = this.config.l2ApiCredentials;
 
         if (!apiCreds || !apiCreds.key) {
             this.logger.info('🤝 Performing L2 Handshake...');
             
-            // Pass httpOptions to constructor (10th arg)
             const tempClient = new ClobClient(
                 'https://clob.polymarket.com',
                 Chain.POLYGON,
                 this.signerImpl,
                 undefined,
                 SignatureType.EOA,
-                this.funderAddress,
-                undefined,
-                undefined,
-                undefined,
-                httpOptions 
+                this.funderAddress
             );
 
             try {
@@ -250,8 +225,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             this.funderAddress,
             undefined, 
             undefined,
-            builderConfig,
-            httpOptions // Pass proxy options here too
+            builderConfig
         );
         
         await this.ensureAllowance();
@@ -320,8 +294,8 @@ export class PolymarketAdapter implements IExchangeAdapter {
     async fetchPublicTrades(address: string, limit: number = 20): Promise<TradeSignal[]> {
         try {
             const url = `https://data-api.polymarket.com/activity?user=${address}&limit=${limit}`;
-            // Use configured proxy options for this request as well
-            const res = await axios.get<PolyActivityResponse[]>(url, this.getHttpOptions());
+            // Proxy settings are globally applied to axios, so this call uses them automatically
+            const res = await axios.get<PolyActivityResponse[]>(url);
             
             if (!res.data || !Array.isArray(res.data)) return [];
 
