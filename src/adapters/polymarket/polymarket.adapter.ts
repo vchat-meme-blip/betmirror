@@ -136,8 +136,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
     private applyProxySettings() {
         const proxyUrl = this.config.proxyUrl || FALLBACK_PROXY;
         
-        // Remove the incompatible wrapper(axios) call
-        
         // Browser Emulation Headers
         const STEALTH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
         
@@ -149,12 +147,10 @@ export class PolymarketAdapter implements IExchangeAdapter {
         
         if (proxyUrl && proxyUrl.startsWith('http')) {
             try {
-                // Use HttpsProxyAgent for better compatibility with node-fetch/axios
                 this.httpsAgent = new HttpsProxyAgent(proxyUrl);
                 
                 // Set global axios defaults
                 axios.defaults.httpsAgent = this.httpsAgent;
-                // Also set proxy config for axios (some versions prefer this)
                 const url = new URL(proxyUrl);
                 axios.defaults.proxy = {
                     protocol: url.protocol.replace(':', ''),
@@ -173,29 +169,23 @@ export class PolymarketAdapter implements IExchangeAdapter {
         }
         
         // --- MANUAL COOKIE MANAGEMENT INTERCEPTORS ---
-        
-        // 1. Request Interceptor: Inject Cookie Header
         axios.interceptors.request.use(async (config) => {
-            if (config.url) {
-                // Force headers again just in case SDK overrode them
-                if (config.url.includes('polymarket.com')) {
-                    config.headers['User-Agent'] = STEALTH_UA;
-                    config.headers['Origin'] = 'https://polymarket.com';
-                    config.headers['Referer'] = 'https://polymarket.com/';
-                    
-                    // Manually get cookies from jar and set header
-                    try {
-                        const cookieString = await this.cookieJar.getCookieString(config.url);
-                        if (cookieString) {
-                            config.headers['Cookie'] = cookieString;
-                        }
-                    } catch(e) { /* ignore cookie read error */ }
-                }
+            if (config.url && config.url.includes('polymarket.com')) {
+                config.headers['User-Agent'] = STEALTH_UA;
+                config.headers['Origin'] = 'https://polymarket.com';
+                config.headers['Referer'] = 'https://polymarket.com/';
+                
+                try {
+                    // Attach cookies from tough-cookie jar
+                    const cookieString = await this.cookieJar.getCookieString(config.url);
+                    if (cookieString) {
+                        config.headers['Cookie'] = cookieString;
+                    }
+                } catch(e) { /* ignore cookie read error */ }
             }
             return config;
         });
 
-        // 2. Response Interceptor: Save Set-Cookie Header
         axios.interceptors.response.use(async (response) => {
             if (response.headers['set-cookie']) {
                 const cookies = response.headers['set-cookie'];
@@ -210,7 +200,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
             }
             return response;
         }, async (error) => {
-            // Also capture cookies on error responses (like 403 Forbidden which often sets the __cf_bm cookie)
             if (error.response && error.response.headers && error.response.headers['set-cookie']) {
                 const cookies = error.response.headers['set-cookie'];
                 const url = error.config?.url;
@@ -226,11 +215,9 @@ export class PolymarketAdapter implements IExchangeAdapter {
         });
     }
 
-    // Visits the homepage to acquire Cloudflare cookies
     private async warmUpCookies() {
         try {
             this.logger.info("🍪 Warming up cookies via Proxy...");
-            // Request the homepage to trigger WAF cookie generation
             await axios.get('https://polymarket.com/', {
                 headers: {
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -242,8 +229,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
             });
             this.logger.info("✅ Cookies secured.");
         } catch (e) {
-             // 403 on homepage might still return cookies in headers
-             // We continue, relying on the jar to have captured anything sent back
              if (e instanceof Error && e.message.includes('403')) {
                   this.logger.info("✅ Cookies captured (from 403 challenge).");
              } else {
@@ -252,17 +237,13 @@ export class PolymarketAdapter implements IExchangeAdapter {
         }
     }
     
-    // Inject our settings into a ClobClient instance
     private patchClient(client: any) {
         try {
-            // 1. Patch Axios Instance if it exists
             if (client.axiosInstance) {
-                 // We don't set .jar property directly anymore, our interceptors handle it
                  client.axiosInstance.defaults.httpsAgent = this.httpsAgent;
                  client.axiosInstance.defaults.proxy = axios.defaults.proxy;
                  client.axiosInstance.defaults.headers['User-Agent'] = axios.defaults.headers.common['User-Agent'];
             }
-            // 2. Patch internal httpClient if it exists
             if (client.httpClient) {
                  client.httpClient.defaults.httpsAgent = this.httpsAgent;
                  client.httpClient.defaults.proxy = axios.defaults.proxy;
@@ -402,11 +383,25 @@ export class PolymarketAdapter implements IExchangeAdapter {
 
     async getOrderBook(tokenId: string): Promise<OrderBook> {
         if (!this.client) throw new Error("Client not authenticated");
-        const book = await this.client.getOrderBook(tokenId);
-        return {
-            bids: book.bids.map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) })),
-            asks: book.asks.map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
-        };
+        
+        // MANUAL AXIOS FALLBACK for Orderbook to avoid UA leak in SDK
+        // The SDK's getOrderBook might be simple enough to replicate
+        try {
+             const res = await axios.get(`${HOST_URL}/book`, { 
+                 params: { token_id: tokenId } 
+             });
+             return {
+                 bids: res.data.bids.map((b: any) => ({ price: parseFloat(b.price), size: parseFloat(b.size) })),
+                 asks: res.data.asks.map((a: any) => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
+             };
+        } catch(e) {
+             // Fallback to SDK if manual fails, though manual is preferred for proxy
+             const book = await this.client.getOrderBook(tokenId);
+             return {
+                bids: book.bids.map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) })),
+                asks: book.asks.map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
+             };
+        }
     }
 
     async fetchPublicTrades(address: string, limit: number = 20): Promise<TradeSignal[]> {
@@ -471,7 +466,8 @@ export class PolymarketAdapter implements IExchangeAdapter {
         let lastOrderId = "";
 
         while (remaining >= 0.50 && retryCount < maxRetries) { 
-            const currentOrderBook = await this.client.getOrderBook(params.tokenId);
+            // Use our manual getOrderBook to avoid UA leak
+            const currentOrderBook = await this.getOrderBook(params.tokenId);
             const currentLevels = isBuy ? currentOrderBook.asks : currentOrderBook.bids;
 
             if (!currentLevels || currentLevels.length === 0) {
@@ -480,7 +476,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             }
 
             const level = currentLevels[0];
-            const levelPrice = parseFloat(level.price);
+            const levelPrice = level.price;
 
             if (isBuy && params.priceLimit && levelPrice > params.priceLimit) break;
             if (!isBuy && params.priceLimit && levelPrice < params.priceLimit) break;
@@ -489,11 +485,11 @@ export class PolymarketAdapter implements IExchangeAdapter {
             let orderValue: number;
 
             if (isBuy) {
-                const levelValue = parseFloat(level.size) * levelPrice;
+                const levelValue = level.size * levelPrice;
                 orderValue = Math.min(remaining, levelValue);
                 orderSize = orderValue / levelPrice;
             } else {
-                const levelValue = parseFloat(level.size) * levelPrice;
+                const levelValue = level.size * levelPrice;
                 orderValue = Math.min(remaining, levelValue);
                 orderSize = orderValue / levelPrice;
             }
@@ -520,8 +516,8 @@ export class PolymarketAdapter implements IExchangeAdapter {
                     response = await this.client.postOrder(signedOrder, OrderType.FOK);
                 } catch(postError: any) {
                     // 3. Fallback: Manual HTTP POST
-                    if ((postError.message.includes("403") || postError.message.includes("Forbidden")) && this.apiCreds) {
-                        this.logger.warn("⚠️ SDK 403 Forbidden. Attempting Manual Fallback with Cookies...");
+                    if ((postError.message.includes("403") || postError.message.includes("Forbidden") || postError.message.includes("502")) && this.apiCreds) {
+                        this.logger.warn("⚠️ SDK Network Error. Attempting Manual Fallback...");
                         
                         const body = {
                             order: signedOrder,
@@ -531,7 +527,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
                         
                         const headers = this.signL2Request('POST', '/order', body);
                         
-                        // Use global axios (patched with interceptors for cookies)
+                        // Use global axios (patched with interceptors for cookies/proxy)
                         const manualRes = await axios.post(`${HOST_URL}/order`, body, { headers });
                         response = manualRes.data;
                         this.logger.success("✅ Manual Fallback Succeeded.");
