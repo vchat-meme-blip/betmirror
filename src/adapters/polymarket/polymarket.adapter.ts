@@ -12,7 +12,6 @@ import { User } from '../../database/index.js';
 import { BuilderConfig } from '@polymarket/builder-signing-sdk';
 import { Logger } from '../../utils/logger.util.js';
 import axios, { AxiosInstance } from 'axios';
-// Removed conflicting wrapper import
 import { CookieJar } from 'tough-cookie';
 import * as crypto from 'crypto'; 
 import { HttpsProxyAgent } from 'https-proxy-agent';
@@ -136,8 +135,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
     private applyProxySettings() {
         const proxyUrl = this.config.proxyUrl || FALLBACK_PROXY;
         
-        // Remove the incompatible wrapper(axios) call
-        
         // Browser Emulation Headers
         const STEALTH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
         
@@ -180,7 +177,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 config.headers['Referer'] = 'https://polymarket.com/';
                 
                 try {
-                    // Attach cookies from tough-cookie jar
+                    // Attach cookies from tough-cookie jar manually
                     const cookieString = await this.cookieJar.getCookieString(config.url);
                     if (cookieString) {
                         config.headers['Cookie'] = cookieString;
@@ -204,6 +201,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             }
             return response;
         }, async (error) => {
+            // Capture cookies even on 403 errors (Cloudflare challenge cookies)
             if (error.response && error.response.headers && error.response.headers['set-cookie']) {
                 const cookies = error.response.headers['set-cookie'];
                 const url = error.config?.url;
@@ -222,6 +220,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
     private async warmUpCookies() {
         try {
             this.logger.info("🍪 Warming up cookies via Proxy...");
+            // Request the homepage to trigger WAF cookie generation
             await axios.get('https://polymarket.com/', {
                 headers: {
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
