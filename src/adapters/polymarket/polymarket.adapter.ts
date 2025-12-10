@@ -7,7 +7,7 @@ import { TradeSignal } from '../../domain/trade.types.js';
 import { ClobClient, Chain, OrderType, Side } from '@polymarket/clob-client';
 import { Wallet, JsonRpcProvider, Contract, MaxUint256, formatUnits, parseUnits } from 'ethers';
 import { ZeroDevService } from '../../services/zerodev.service.js';
-import { ProxyWalletConfig } from '../../domain/wallet.types.js';
+import { ProxyWalletConfig, L2ApiCredentials } from '../../domain/wallet.types.js';
 import { User } from '../../database/index.js';
 import { BuilderConfig } from '@polymarket/builder-signing-sdk';
 import { Logger } from '../../utils/logger.util.js';
@@ -18,7 +18,10 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 const USDC_BRIDGED_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 const POLYMARKET_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
 const HOST_URL = 'https://clob.polymarket.com';
-const PROXY_URL = 'http://toagonef-rotate:1t19is7izars@p.webshare.io:80';
+
+// DEDICATED STATIC RESIDENTIAL PROXY (WebShare)
+// Format: http://user:pass@ip:port
+const PROXY_URL = 'http://toagonef:1t19is7izars@142.111.48.253:7030';
 
 const USDC_ABI = [
   'function allowance(address owner, address spender) view returns (uint256)',
@@ -70,7 +73,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             rpcUrl: string;
             walletConfig: ProxyWalletConfig;
             userId: string;
-            l2ApiCredentials?: any;
+            l2ApiCredentials?: L2ApiCredentials;
             zeroDevRpc?: string;
             zeroDevPaymasterRpc?: string;
             builderApiKey?: string;
@@ -81,7 +84,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
     ) {}
 
     async initialize(): Promise<void> {
-        this.logger.info(`[${this.exchangeName}] Initializing Adapter (Proxy Mode)...`);
+        this.logger.info(`[${this.exchangeName}] Initializing Adapter (Dedicated Proxy Mode)...`);
         const provider = new JsonRpcProvider(this.config.rpcUrl);
         
         if (this.config.walletConfig.type === 'SMART_ACCOUNT') {
@@ -127,7 +130,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
         return base64Url.replace(/-/g, '+').replace(/_/g, '/');
     }
     
-    // Inject Proxy Agent into Client
+    // Inject Dedicated Proxy Agent into Client
     private applyProxy(client: ClobClient) {
         try {
             const agent = new HttpsProxyAgent(PROXY_URL);
@@ -135,8 +138,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             // Try to patch known internal axios locations
             if ((client as any).axiosInstance) {
                 (client as any).axiosInstance.defaults.httpsAgent = agent;
-                // Also set proxy: false to force usage of httpsAgent
-                (client as any).axiosInstance.defaults.proxy = false;
+                (client as any).axiosInstance.defaults.proxy = false; 
             }
             
             if ((client as any).httpClient) {
@@ -144,7 +146,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
                  (client as any).httpClient.defaults.proxy = false;
             }
             
-            this.logger.info("🛡️ Proxy Agent Injected into SDK");
+            this.logger.info("🛡️ Dedicated Proxy Injected");
         } catch (e) {
             this.logger.warn("Failed to inject proxy into SDK");
         }
@@ -279,6 +281,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
 
     async getOrderBook(tokenId: string): Promise<OrderBook> {
         if (!this.client) throw new Error("Client not authenticated");
+        // Ensure proxy is used
         const book = await this.client.getOrderBook(tokenId);
         return {
             bids: book.bids.map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) })),
@@ -289,7 +292,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
     async fetchPublicTrades(address: string, limit: number = 20): Promise<TradeSignal[]> {
         try {
             const url = `https://data-api.polymarket.com/activity?user=${address}&limit=${limit}`;
-            // Use manual axios with proxy
+            // Use dedicated proxy
             const agent = new HttpsProxyAgent(PROXY_URL);
             const res = await axios.get<PolyActivityResponse[]>(url, {
                 httpsAgent: agent,
@@ -365,11 +368,11 @@ export class PolymarketAdapter implements IExchangeAdapter {
 
                 if (orderSize <= 0) break;
 
-                const orderArgs = {
-                    side: orderSide,
+                const orderArgs: any = {
                     tokenID: params.tokenId,
-                    size: orderSize, 
+                    side: orderSide,
                     price: levelPrice,
+                    size: orderSize, 
                     feeRateBps: 0,
                     orderType: OrderType.FOK 
                 };
