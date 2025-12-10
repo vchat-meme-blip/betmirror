@@ -18,7 +18,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = parseInt(process.env.PORT || '3000', 10);
+const PORT = process.env.PORT || 3000;
 const ENV = loadEnv();
 
 // Service Singletons
@@ -525,7 +525,8 @@ connectDB(ENV.mongoUri).then(async () => {
     // await seedOfficialWallets(); // Optional
     registryAnalytics.updateAllRegistryStats(); 
     
-    app.listen(PORT, '0.0.0.0', () => {
+    // Explicitly bind to 0.0.0.0 to fix Fly.io listener issue
+    app.listen(Number(PORT), '0.0.0.0', () => {
         console.log(`🌍 Bet Mirror Cloud Server running on port ${PORT}`);
         restoreBots();
     });
