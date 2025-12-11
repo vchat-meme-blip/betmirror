@@ -7,7 +7,7 @@ import { web3Service } from './web3.service';
 // --- GLOBAL CONFIGURATION ---
 // Use private RPCs to avoid public rate limits (403/429 Errors)
 const privateSolanaRpc = process.env.SOLANA_RPC_URL || 'https://little-thrilling-layer.solana-mainnet.quiknode.pro/378fe82ae3cb5d38e4ac79c202990ad508e1c4c6';
-const privatePolygonRpc = process.env.RPC_URL || 'https://little-thrilling-layer.matic.quiknode.pro/378fe82ae3cb5d38e4ac79c202990ad508e1c4c6';
+const privatePolygonRpc = process.env.RPC_URL || 'https://polygon-rpc.com';
 
 // --- HELPER: Solana Adapter for LiFi ---
 // Robust wrapper for Phantom, Solflare, Backpack, and Standard Wallets

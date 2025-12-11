@@ -7,7 +7,7 @@ import { FundManagerService } from '../services/fund-manager.service.js';
 import { TradeHistoryEntry, ActivePosition } from '../domain/trade.types.js';
 import { CashoutRecord, FeeDistributionEvent, IRegistryService } from '../domain/alpha.types.js';
 import { UserStats } from '../domain/user.types.js';
-import { ProxyWalletConfig, L2ApiCredentials } from '../domain/wallet.types.js'; 
+import { TradingWalletConfig, L2ApiCredentials } from '../domain/wallet.types.js'; 
 import { BotLog, User } from '../database/index.js';
 import { getMarket } from '../utils/fetch-data.util.js';
 import { PolymarketAdapter } from '../adapters/polymarket/polymarket.adapter.js';
@@ -19,7 +19,7 @@ const USDC_BRIDGED_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 export interface BotConfig {
     userId: string;
     privateKey?: string;
-    walletConfig?: ProxyWalletConfig;
+    walletConfig?: TradingWalletConfig;
     userAddresses: string[];
     rpcUrl: string;
     geminiApiKey?: string;
@@ -31,13 +31,12 @@ export interface BotConfig {
     autoCashout?: { enabled: boolean; maxAmount: number; destinationAddress: string; };
     activePositions?: ActivePosition[];
     stats?: UserStats;
-    zeroDevRpc?: string;
-    zeroDevPaymasterRpc?: string;
     l2ApiCredentials?: L2ApiCredentials;
     startCursor?: number;
     builderApiKey?: string;
     builderApiSecret?: string;
     builderApiPassphrase?: string;
+    mongoEncryptionKey: string;
 }
 
 export interface BotCallbacks {
@@ -96,11 +95,10 @@ export class BotEngine {
                 walletConfig: this.config.walletConfig!,
                 userId: this.config.userId,
                 l2ApiCredentials: this.config.l2ApiCredentials,
-                zeroDevRpc: this.config.zeroDevRpc,
-                zeroDevPaymasterRpc: this.config.zeroDevPaymasterRpc,
                 builderApiKey: this.config.builderApiKey,
                 builderApiSecret: this.config.builderApiSecret,
-                builderApiPassphrase: this.config.builderApiPassphrase
+                builderApiPassphrase: this.config.builderApiPassphrase,
+                mongoEncryptionKey: this.config.mongoEncryptionKey
             }, engineLogger);
 
             await this.exchange.initialize();
@@ -169,7 +167,6 @@ export class BotEngine {
             await this.exchange.validatePermissions();
 
             // 2. Authenticate (Handshake) & APPROVE ALLOWANCE
-            // If allowance fails, this throws, stopping the bot.
             await this.exchange.authenticate();
 
             // 3. Start Services
@@ -238,6 +235,19 @@ export class BotEngine {
             userAddresses: this.config.userAddresses,
             onDetectedTrade: async (signal) => {
                 if (!this.isRunning) return;
+
+                // --- NEW: SELL VALIDATION CHECK ---
+                if (signal.side === 'SELL') {
+                    // Check if we actually hold this position before trying to sell it
+                    // Matches on TokenID (most accurate) or MarketID + Outcome
+                    const hasPosition = this.activePositions.some(p => p.tokenId === signal.tokenId);
+                    
+                    if (!hasPosition) {
+                        // Silent info log to avoid spamming the user with errors
+                        await this.addLog('info', `⏭️ Skipping SELL signal (No active position for ${signal.outcome} in ${signal.marketId.slice(0,6)}...)`);
+                        return;
+                    }
+                }
                 
                 const geminiKey = this.config.geminiApiKey || process.env.GEMINI_API_KEY;
                 let shouldTrade = true;
@@ -264,15 +274,11 @@ export class BotEngine {
                     await this.addLog('info', `⚡ Executing ${signal.side}...`);
                     const orderResult = await this.executor.copyTrade(signal);
                     
-                    // Check if order returned a valid ID (not 0/failed)
                     if (typeof orderResult === 'number' && orderResult > 0) {
-                        // Legacy handling where executor returns size
                         await this.addLog('success', `✅ Executed ${signal.marketId.slice(0,6)}...`);
                         this.updateStats(signal, orderResult, reason, score);
-                    } else if (typeof orderResult === 'string' && orderResult !== "failed" && orderResult !== "skipped_small_size") {
-                        // New handling where executor returns Order ID
+                    } else if (typeof orderResult === 'string' && orderResult !== "failed" && orderResult !== "skipped_small_size" && orderResult !== "skipped_dust" && orderResult !== "insufficient_funds") {
                         await this.addLog('success', `✅ Trade Filled (Order ID: ${orderResult})`);
-                        // Assume signal size was filled for now in stats, ideally we'd fetch fill details
                         this.updateStats(signal, signal.sizeUsd, reason, score);
                     } else if (orderResult === "failed") {
                         await this.addLog('error', `❌ Trade Failed on Exchange`);
@@ -297,6 +303,16 @@ export class BotEngine {
                 sizeUsd: size,
                 timestamp: Date.now()
             });
+        }
+        
+        // If SELL, we should remove or reduce the position?
+        // Simple logic for now: If we sold, try to find and remove the matching position to keep state clean
+        if (signal.side === 'SELL') {
+             this.activePositions = this.activePositions.filter(p => p.tokenId !== signal.tokenId);
+             if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
+        } else {
+             // Only update DB on BUY (Add)
+             if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
         }
         
         this.stats.tradesCount = (this.stats.tradesCount || 0) + 1;

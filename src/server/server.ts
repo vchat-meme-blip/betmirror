@@ -5,11 +5,12 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import 'dotenv/config';
 import { BotEngine, BotConfig } from './bot-engine.js';
-import { ProxyWalletConfig } from '../domain/wallet.types.js';
+import { TradingWalletConfig } from '../domain/wallet.types.js';
 import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog, DepositLog } from '../database/index.js';
 import { loadEnv } from '../config/env.js';
 import { DbRegistryService } from '../services/db-registry.service.js';
 import { registryAnalytics } from '../services/registry-analytics.service.js';
+import { EvmWalletService } from '../services/evm-wallet.service.js';
 import { BuilderVolumeData } from '../domain/alpha.types.js';
 import axios from 'axios';
 
@@ -23,6 +24,8 @@ const ENV = loadEnv();
 
 // Service Singletons
 const dbRegistryService = new DbRegistryService();
+// Initialize Wallet Service with Encryption Key
+const evmWalletService = new EvmWalletService(ENV.rpcUrl, ENV.mongoEncryptionKey);
 
 // In-Memory Bot Instances (Runtime State)
 const ACTIVE_BOTS = new Map<string, BotEngine>();
@@ -40,14 +43,6 @@ async function startUserBot(userId: string, config: BotConfig) {
     
     if (ACTIVE_BOTS.has(normId)) {
         ACTIVE_BOTS.get(normId)?.stop();
-    }
-
-    // --- CRITICAL CHECK ---
-    // If the user hasn't migrated to the new Session Key system (EOA Signer),
-    // we cannot start the bot. Skip it to avoid "Missing Private Key" crash loops.
-    if (config.walletConfig?.type === 'SMART_ACCOUNT' && !config.walletConfig.sessionPrivateKey) {
-        console.warn(`[SKIP] Bot ${normId} skipped. Requires 'RESTORE SESSION' to generate new keys.`);
-        return;
     }
 
     const startCursor = config.startCursor || Math.floor(Date.now() / 1000);
@@ -95,8 +90,6 @@ async function startUserBot(userId: string, config: BotConfig) {
     engine.start().catch(err => console.error(`[Bot Error] ${normId}:`, err.message));
 }
 
-// ... [Keep existing stats/registry/feedback routes identical] ...
-
 // 0. Health Check
 app.get('/health', (req, res) => {
     res.status(200).json({ 
@@ -116,18 +109,14 @@ app.post('/api/wallet/status', async (req: any, res: any) => {
   try {
       const user = await User.findOne({ address: normId });
       
-      // Check if user exists AND has the new session private key
-      // If they have proxyWallet but NO private key, force re-activation
-      if (!user || !user.proxyWallet) {
+      // If user has a wallet, return it (regardless of type for now, though we prefer TRADING_EOA)
+      if (!user || !user.tradingWallet) {
         res.json({ status: 'NEEDS_ACTIVATION' });
-      } else if (user.proxyWallet.type === 'SMART_ACCOUNT' && !user.proxyWallet.sessionPrivateKey) {
-         // Migration path for existing users
-         res.json({ status: 'NEEDS_ACTIVATION', address: user.proxyWallet.address });
       } else {
         res.json({ 
             status: 'ACTIVE', 
-            address: user.proxyWallet.address,
-            type: 'SMART_ACCOUNT'
+            address: user.tradingWallet.address,
+            type: user.tradingWallet.type
         });
       }
   } catch (e) {
@@ -136,47 +125,43 @@ app.post('/api/wallet/status', async (req: any, res: any) => {
   }
 });
 
-// 2. Activate Smart Account
+// 2. Activate Trading Wallet (EOA)
 app.post('/api/wallet/activate', async (req: any, res: any) => {
     console.log(`[ACTIVATION REQUEST] Received payload for user: ${req.body?.userId}`);
+    const { userId } = req.body;
     
-    // IMPORTANT: Receive sessionPrivateKey now
-    const { userId, serializedSessionKey, smartAccountAddress, sessionPrivateKey } = req.body;
-    
-    if (!userId || !serializedSessionKey || !smartAccountAddress) { 
-        console.error('[ACTIVATION ERROR] Missing fields:', { userId, hasKey: !!serializedSessionKey, hasAddress: !!smartAccountAddress });
-        res.status(400).json({ error: 'Missing activation parameters' }); 
+    if (!userId) { 
+        res.status(400).json({ error: 'Missing userId' }); 
         return; 
     }
     const normId = userId.toLowerCase();
 
-    const walletConfig: ProxyWalletConfig = {
-        type: 'SMART_ACCOUNT',
-        address: smartAccountAddress,
-        serializedSessionKey: serializedSessionKey,
-        sessionPrivateKey: sessionPrivateKey, // Save this!
-        ownerAddress: normId,
-        createdAt: new Date().toISOString()
-    };
-
     try {
+        // Generate new Trading EOA
+        const walletConfig = await evmWalletService.createTradingWallet(normId);
+        
+        // Add type manually
+        const configToSave: TradingWalletConfig = {
+            ...walletConfig,
+            type: 'TRADING_EOA'
+        };
+
         await User.findOneAndUpdate(
             { address: normId },
-            { proxyWallet: walletConfig },
+            { tradingWallet: configToSave },
             { upsert: true, new: true }
         );
-        console.log(`[ACTIVATION SUCCESS] Smart Account Activated: ${smartAccountAddress} (Owner: ${normId})`);
-        res.json({ success: true, address: smartAccountAddress });
+        console.log(`[ACTIVATION SUCCESS] Trading Wallet Created: ${configToSave.address} (Owner: ${normId})`);
+        res.json({ success: true, address: configToSave.address });
     } catch (e: any) {
         console.error("[ACTIVATION DB ERROR]", e);
         res.status(500).json({ error: e.message || 'Failed to activate' });
     }
 });
 
-// 3. Global Stats & Builder Data
+// 3. Global Stats
 app.get('/api/stats/global', async (req: any, res: any) => {
     try {
-        // Internal Stats (DB)
         const userCount = await User.countDocuments();
         const tradeAgg = await Trade.aggregate([
             { $group: { _id: null, signalVolume: { $sum: "$size" }, executedVolume: { $sum: "$executedSize" }, count: { $sum: 1 } } }
@@ -185,13 +170,11 @@ app.get('/api/stats/global', async (req: any, res: any) => {
         const executedVolume = tradeAgg[0]?.executedVolume || 0;
         const internalTrades = tradeAgg[0]?.count || 0;
 
-        // Platform Revenue (1% Fees)
         const revenueAgg = await User.aggregate([
             { $group: { _id: null, total: { $sum: "$stats.totalFeesPaid" } } }
         ]);
         const totalRevenue = revenueAgg[0]?.total || 0;
 
-        // Total Liquidity (Bridged + Direct Deposits)
         const bridgeAgg = await BridgeTransaction.aggregate([
              { $match: { status: 'COMPLETED' } },
              { $group: { _id: null, total: { $sum: { $toDouble: "$amountIn" } } } }
@@ -204,14 +187,12 @@ app.get('/api/stats/global', async (req: any, res: any) => {
         const totalDirect = directAgg[0]?.total || 0;
         const totalLiquidity = totalBridged + totalDirect;
 
-        // External Builder API Stats (Polymarket)
         let builderStats: BuilderVolumeData | null = null;
         let leaderboard: BuilderVolumeData[] = [];
         let ecosystemVolume = 0;
         const myBuilderId = ENV.builderId || 'BetMirror'; 
 
         try {
-            // Fetch Global Leaderboard (Top 50)
             const lbUrl = `https://data-api.polymarket.com/v1/builders/leaderboard?timePeriod=ALL&limit=50`;
             const lbResponse = await axios.get<BuilderVolumeData[]>(lbUrl, { timeout: 4000 });
             
@@ -281,24 +262,17 @@ app.post('/api/bot/start', async (req: any, res: any) => {
 
   try {
       const user = await User.findOne({ address: normId });
-      if (!user || !user.proxyWallet) { 
-          res.status(400).json({ error: 'Bot Wallet not activated.' }); 
+      if (!user || !user.tradingWallet) { 
+          res.status(400).json({ error: 'Trading Wallet not activated.' }); 
           return; 
       }
 
-      // Check for missing key AGAIN - Double protection
-      if (!user.proxyWallet.sessionPrivateKey && user.proxyWallet.type === 'SMART_ACCOUNT') {
-          res.status(400).json({ error: "Session Key outdated. Please click 'RESTORE SESSION' to update." });
-          return;
-      }
-
-      // --- EXTRACT L2 CREDENTIALS FROM DB ---
-      // This is crucial for the "Use API Keys" step
-      const l2Creds = user.proxyWallet.l2ApiCredentials;
+      // --- EXTRACT L2 CREDENTIALS ---
+      const l2Creds = user.tradingWallet.l2ApiCredentials;
       
       const config: BotConfig = {
         userId: normId,
-        walletConfig: user.proxyWallet,
+        walletConfig: user.tradingWallet,
         userAddresses: Array.isArray(userAddresses) ? userAddresses : userAddresses.split(',').map((s: string) => s.trim()),
         rpcUrl,
         geminiApiKey,
@@ -311,10 +285,8 @@ app.post('/api/bot/start', async (req: any, res: any) => {
         activePositions: user.activePositions || [],
         stats: user.stats,
         // PASS ENV VARS
-        zeroDevRpc: ENV.zeroDevRpc,
-        zeroDevPaymasterRpc: ENV.zeroDevPaymasterRpc,
-        // PASS CREDENTIALS
         l2ApiCredentials: l2Creds,
+        mongoEncryptionKey: ENV.mongoEncryptionKey,
         startCursor: Math.floor(Date.now() / 1000) 
       };
 
@@ -477,6 +449,34 @@ app.post('/api/deposit/record', async (req, res) => {
     }
 });
 
+// 11. Withdraw Funds (New Endpoint for EOA)
+app.post('/api/wallet/withdraw', async (req: any, res: any) => {
+    const { userId, tokenType, toAddress } = req.body;
+    const normId = userId.toLowerCase();
+
+    try {
+        const user = await User.findOne({ address: normId });
+        if (!user || !user.tradingWallet || !user.tradingWallet.encryptedPrivateKey) {
+            res.status(400).json({ error: 'Wallet not configured' });
+            return;
+        }
+
+        let tokenAddress = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // USDC.e
+        if (tokenType === 'POL') tokenAddress = '0x0000000000000000000000000000000000000000';
+        
+        const txHash = await evmWalletService.withdrawFunds(
+            user.tradingWallet.encryptedPrivateKey,
+            toAddress || normId,
+            tokenAddress
+        );
+
+        res.json({ success: true, txHash });
+    } catch (e: any) {
+        console.error("Withdrawal Failed:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.get('*', (req, res) => {
     res.sendFile(path.join(distPath, 'index.html'));
 });
@@ -489,27 +489,25 @@ async function restoreBots() {
         console.log(`Found ${activeUsers.length} bots to restore.`);
 
         for (const user of activeUsers) {
-            if (user.activeBotConfig && user.proxyWallet) {
+            if (user.activeBotConfig && user.tradingWallet) {
                  const lastTrade = await Trade.findOne({ userId: user.address }).sort({ timestamp: -1 });
                  const lastTime = lastTrade ? Math.floor(lastTrade.timestamp.getTime() / 1000) + 1 : Math.floor(Date.now() / 1000) - 3600;
 
-                 // Restore credentials specifically
-                 const l2Creds = user.proxyWallet.l2ApiCredentials;
+                 const l2Creds = user.tradingWallet.l2ApiCredentials;
 
                  const config: BotConfig = {
                      ...user.activeBotConfig,
-                     walletConfig: user.proxyWallet,
+                     walletConfig: user.tradingWallet,
                      stats: user.stats,
                      activePositions: user.activePositions,
                      startCursor: lastTime,
-                     l2ApiCredentials: l2Creds, // Pass restored creds
-                     zeroDevRpc: ENV.zeroDevRpc,
-                     zeroDevPaymasterRpc: ENV.zeroDevPaymasterRpc
+                     l2ApiCredentials: l2Creds,
+                     mongoEncryptionKey: ENV.mongoEncryptionKey
                  };
                  
                  try {
                     await startUserBot(user.address, config);
-                    console.log(`✅ Restored Bot: ${user.address} (Has L2 Creds: ${!!l2Creds})`);
+                    console.log(`✅ Restored Bot: ${user.address}`);
                  } catch (err: any) {
                     console.error(`Bot Start Error: ${err.message}`);
                  }
@@ -522,10 +520,8 @@ async function restoreBots() {
 
 // ... [Connect DB and Listen] ...
 connectDB(ENV.mongoUri).then(async () => {
-    // await seedOfficialWallets(); // Optional
     registryAnalytics.updateAllRegistryStats(); 
     
-    // Explicitly bind to 0.0.0.0 to fix Fly.io listener issue
     app.listen(Number(PORT), '0.0.0.0', () => {
         console.log(`🌍 Bet Mirror Cloud Server running on port ${PORT}`);
         restoreBots();

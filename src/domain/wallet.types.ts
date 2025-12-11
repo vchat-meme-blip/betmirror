@@ -1,5 +1,5 @@
 
-export type WalletType = 'SMART_ACCOUNT';
+export type WalletType = 'TRADING_EOA';
 
 export interface L2ApiCredentials {
     key: string;        // Client expects 'key'
@@ -7,13 +7,14 @@ export interface L2ApiCredentials {
     passphrase: string;
 }
 
-export interface ProxyWalletConfig {
+export interface TradingWalletConfig {
   address: string;
   type: WalletType;
   
-  // Account Abstraction Fields
-  serializedSessionKey: string; 
-  sessionPrivateKey?: string; 
+  // Encrypted Private Key (Server-Side Custody / Burner Wallet)
+  encryptedPrivateKey: string; 
+  
+  // Link to the main user (Admin)
   ownerAddress: string; 
   createdAt: string;
 

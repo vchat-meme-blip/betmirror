@@ -1,49 +1,23 @@
 import { ClobClient, Chain, OrderType, Side } from '@polymarket/clob-client';
-import { Wallet, JsonRpcProvider, Contract, MaxUint256, formatUnits, parseUnits } from 'ethers';
-import { ZeroDevService } from '../../services/zerodev.service.js';
+import { JsonRpcProvider, Contract, MaxUint256, formatUnits, parseUnits } from 'ethers';
+import { EvmWalletService } from '../../services/evm-wallet.service.js';
 import { User } from '../../database/index.js';
 import { BuilderConfig } from '@polymarket/builder-signing-sdk';
 import axios from 'axios';
-import { HttpsProxyAgent } from 'https-proxy-agent';
 // --- CONSTANTS ---
 const USDC_BRIDGED_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 const POLYMARKET_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
 const HOST_URL = 'https://clob.polymarket.com';
-// DEDICATED STATIC RESIDENTIAL PROXY
-const PROXY_URL = 'http://toagonef:1t19is7izars@142.111.48.253:7030';
-// Browser Fingerprint
-const BROWSER_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-    'Sec-Ch-Ua-Mobile': '?0',
-    'Sec-Ch-Ua-Platform': '"Windows"',
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-site',
-    'Referer': 'https://polymarket.com/',
-    'Origin': 'https://polymarket.com',
-    'Connection': 'keep-alive'
-};
 const USDC_ABI = [
     'function allowance(address owner, address spender) view returns (uint256)',
     'function approve(address spender, uint256 amount) returns (bool)',
     'function balanceOf(address owner) view returns (uint256)',
     'function transfer(address to, uint256 amount) returns (bool)'
 ];
-// Adapter to make Ethers v6 Wallet compatible with ClobClient requirements
-class EthersV6Adapter extends Wallet {
-    async _signTypedData(domain, types, value) {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        const { EIP712Domain, ...cleanTypes } = types;
-        // Ensure chainId is number for EIP-712 domain matching
-        if (domain.chainId)
-            domain.chainId = Number(domain.chainId);
-        return this.signTypedData(domain, cleanTypes, value);
-    }
-}
+// Polymarket CLOB Signature Types
+// 0: EOA (Standard Ethereum Wallet) - WE USE THIS NOW
+// 1: PolyProxy (Old Magic Link)
+// 2: Gnosis Safe
 var SignatureType;
 (function (SignatureType) {
     SignatureType[SignatureType["EOA"] = 0] = "EOA";
@@ -57,90 +31,58 @@ export class PolymarketAdapter {
         this.exchangeName = 'Polymarket';
     }
     async initialize() {
-        this.logger.info(`[${this.exchangeName}] Initializing Adapter (Dedicated Proxy Mode)...`);
-        const provider = new JsonRpcProvider(this.config.rpcUrl);
-        if (this.config.walletConfig.type === 'SMART_ACCOUNT') {
-            if (!this.config.zeroDevRpc)
-                throw new Error("Missing ZeroDev RPC");
-            this.zdService = new ZeroDevService(this.config.zeroDevRpc, this.config.zeroDevPaymasterRpc);
-            this.funderAddress = this.config.walletConfig.address;
-            if (!this.config.walletConfig.sessionPrivateKey) {
-                throw new Error("Missing Session Private Key for Auth");
-            }
-            this.signerImpl = new EthersV6Adapter(this.config.walletConfig.sessionPrivateKey, provider);
+        this.logger.info(`[${this.exchangeName}] Initializing Adapter (EOA Mode)...`);
+        // Initialize Wallet Service
+        this.walletService = new EvmWalletService(this.config.rpcUrl, this.config.mongoEncryptionKey);
+        // Rehydrate Wallet from Encrypted Key
+        if (this.config.walletConfig.encryptedPrivateKey) {
+            this.wallet = await this.walletService.getWalletInstance(this.config.walletConfig.encryptedPrivateKey);
+            this.patchWalletForSdk(this.wallet);
         }
         else {
-            throw new Error("Only Smart Accounts supported in this adapter version.");
+            throw new Error("Missing Encrypted Private Key for Trading Wallet");
         }
-        this.usdcContract = new Contract(USDC_BRIDGED_POLYGON, USDC_ABI, this.signerImpl);
+        const provider = new JsonRpcProvider(this.config.rpcUrl);
+        this.usdcContract = new Contract(USDC_BRIDGED_POLYGON, USDC_ABI, provider);
+    }
+    /**
+     * CRITICAL FIX: Ethers v6 removed `_signTypedData` but Polymarket SDK relies on it.
+     * We re-add it as a proxy to `signTypedData`.
+     */
+    patchWalletForSdk(wallet) {
+        if (!wallet._signTypedData) {
+            wallet._signTypedData = async (domain, types, value) => {
+                // Ethers v6 separates domain/types/value same as v5, just renamed method.
+                // We remove EIP712Domain from types if present to avoid duplication errors in v6
+                if (types && types.EIP712Domain) {
+                    delete types.EIP712Domain;
+                }
+                return wallet.signTypedData(domain, types, value);
+            };
+        }
     }
     async validatePermissions() {
-        if (this.zdService && this.funderAddress) {
-            try {
-                this.logger.info('🔄 Verifying Smart Account Deployment...');
-                await this.zdService.sendTransaction(this.config.walletConfig.serializedSessionKey, USDC_BRIDGED_POLYGON, USDC_ABI, 'approve', [this.funderAddress, 0]);
-                this.logger.success('✅ Smart Account Ready.');
-                return true;
-            }
-            catch (e) {
-                this.logger.error(`Deployment Failed: ${e.message}`);
-                throw new Error("Smart Account deployment failed. Check funds or network.");
-            }
-        }
         return true;
-    }
-    // Inject Dedicated Proxy Agent + Browser Headers into Client
-    applyProxy(client) {
-        try {
-            const agent = new HttpsProxyAgent(PROXY_URL);
-            const patchInstance = (instance) => {
-                if (!instance)
-                    return;
-                // 1. Set Proxy Agent
-                instance.defaults.httpsAgent = agent;
-                instance.defaults.proxy = false;
-                // 2. Overwrite Headers (Critical for Cloudflare)
-                if (!instance.defaults.headers)
-                    instance.defaults.headers = {};
-                Object.assign(instance.defaults.headers, BROWSER_HEADERS);
-                Object.assign(instance.defaults.headers.common, BROWSER_HEADERS);
-            };
-            // Patch known internal axios locations
-            patchInstance(client.axiosInstance);
-            patchInstance(client.httpClient);
-            this.logger.info("🛡️ Dedicated Proxy + Stealth Headers Injected");
-        }
-        catch (e) {
-            this.logger.warn("Failed to inject proxy into SDK");
-        }
     }
     async authenticate() {
         let apiCreds = this.config.l2ApiCredentials;
+        if (!this.wallet)
+            throw new Error("Wallet not initialized");
+        // 2. Derive Keys if missing
         if (!apiCreds || !apiCreds.key) {
-            this.logger.info('🤝 Performing L2 Handshake...');
-            const tempClient = new ClobClient(HOST_URL, Chain.POLYGON, this.signerImpl, undefined, SignatureType.EOA, this.funderAddress);
-            this.applyProxy(tempClient);
-            try {
-                const rawCreds = await tempClient.createOrDeriveApiKey();
-                if (!rawCreds || !rawCreds.key) {
-                    throw new Error("Handshake returned empty keys");
-                }
-                apiCreds = {
-                    key: rawCreds.key,
-                    secret: rawCreds.secret,
-                    passphrase: rawCreds.passphrase
-                };
-                await User.findOneAndUpdate({ address: this.config.userId }, { "proxyWallet.l2ApiCredentials": apiCreds });
-                this.logger.success('✅ Authenticated & Keys Saved.');
-            }
-            catch (e) {
-                this.logger.error(`Auth Failed: ${e.message}`);
-                throw e;
-            }
+            this.logger.info('🤝 Deriving L2 API Keys...');
+            await this.deriveAndSaveKeys();
+            apiCreds = this.config.l2ApiCredentials;
         }
         else {
-            this.logger.info('🔌 Connecting to CLOB...');
+            this.logger.info('🔌 Using existing CLOB Credentials');
         }
+        // 3. Initialize Client
+        this.initClobClient(apiCreds);
+        // 4. Allowance
+        this.ensureAllowance().catch(e => this.logger.warn(`Allowance check deferred: ${e.message}`));
+    }
+    initClobClient(apiCreds) {
         let builderConfig;
         if (this.config.builderApiKey) {
             builderConfig = new BuilderConfig({
@@ -151,41 +93,58 @@ export class PolymarketAdapter {
                 }
             });
         }
-        // Use raw creds - SDK v4 handles its own normalization usually
-        this.client = new ClobClient(HOST_URL, Chain.POLYGON, this.signerImpl, apiCreds, SignatureType.EOA, this.funderAddress, undefined, undefined, builderConfig);
-        this.applyProxy(this.client);
-        await this.ensureAllowance();
+        // USE STANDARD EOA (0) SIGNATURE TYPE
+        // The wallet (EOA) is both the signer AND the funder.
+        // CASTING TO ANY: Ethers v6 Wallet structure differs slightly from v5 expected by SDK
+        this.client = new ClobClient(HOST_URL, Chain.POLYGON, this.wallet, apiCreds, SignatureType.EOA, undefined, // Funder defaults to signer address for EOA
+        undefined, undefined, builderConfig);
+    }
+    async deriveAndSaveKeys() {
+        try {
+            // Handshake using standard EOA signature
+            const tempClient = new ClobClient(HOST_URL, Chain.POLYGON, this.wallet, undefined, SignatureType.EOA, undefined);
+            const rawCreds = await tempClient.createOrDeriveApiKey();
+            if (!rawCreds || !rawCreds.key)
+                throw new Error("Empty keys returned");
+            const apiCreds = {
+                key: rawCreds.key,
+                secret: rawCreds.secret,
+                passphrase: rawCreds.passphrase
+            };
+            await User.findOneAndUpdate({ address: this.config.userId }, { "tradingWallet.l2ApiCredentials": apiCreds });
+            this.config.l2ApiCredentials = apiCreds;
+            this.logger.success('✅ API Keys Derived & Saved');
+        }
+        catch (e) {
+            this.logger.error(`Handshake Failed: ${e.message}`);
+            throw e;
+        }
     }
     async ensureAllowance() {
-        if (!this.usdcContract || !this.funderAddress)
+        if (!this.wallet || !this.usdcContract)
             return;
         try {
-            const publicProvider = new JsonRpcProvider("https://polygon-rpc.com");
-            const readContract = new Contract(USDC_BRIDGED_POLYGON, USDC_ABI, publicProvider);
-            const allowance = await readContract.allowance(this.funderAddress, POLYMARKET_EXCHANGE);
-            this.logger.info(`🔍 Allowance Check: ${formatUnits(allowance, 6)} USDC Approved for Exchange`);
-            if (allowance < BigInt(1000000 * 1000)) {
-                this.logger.info('🔓 Approving USDC for CTF Exchange...');
-                if (this.zdService) {
-                    const txHash = await this.zdService.sendTransaction(this.config.walletConfig.serializedSessionKey, USDC_BRIDGED_POLYGON, USDC_ABI, 'approve', [POLYMARKET_EXCHANGE, MaxUint256]);
-                    this.logger.success(`✅ Approved. Tx: ${txHash}`);
-                }
-            }
-            else {
-                this.logger.info('✅ Allowance Sufficient.');
+            // Need a signer connected to the contract for write ops
+            const signerContract = this.usdcContract.connect(this.wallet);
+            const allowance = await signerContract.allowance(this.wallet.address, POLYMARKET_EXCHANGE);
+            if (allowance < BigInt(1000000 * 50)) { // < 50 USDC
+                this.logger.info('🔓 Approving USDC (Native Gas Transaction)...');
+                // Note: User needs MATIC (POL) in this wallet for gas!
+                const tx = await signerContract.approve(POLYMARKET_EXCHANGE, MaxUint256);
+                await tx.wait();
+                this.logger.success(`✅ Approved. Tx: ${tx.hash}`);
             }
         }
         catch (e) {
-            this.logger.error(`Allowance Check Failed: ${e.message}`);
-            throw new Error(`Failed to approve USDC. Bot cannot trade. Error: ${e.message}`);
+            this.logger.warn(`Allowance check failed: ${e.message}. Ensure wallet has POL for gas.`);
         }
     }
     async fetchBalance(address) {
         if (!this.usdcContract)
             return 0;
         try {
-            const balanceBigInt = await this.usdcContract.balanceOf(address);
-            return parseFloat(formatUnits(balanceBigInt, 6));
+            const bal = await this.usdcContract.balanceOf(address);
+            return parseFloat(formatUnits(bal, 6));
         }
         catch (e) {
             return 0;
@@ -204,7 +163,7 @@ export class PolymarketAdapter {
     }
     async getOrderBook(tokenId) {
         if (!this.client)
-            throw new Error("Client not authenticated");
+            throw new Error("Not auth");
         const book = await this.client.getOrderBook(tokenId);
         return {
             bids: book.bids.map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) })),
@@ -214,32 +173,21 @@ export class PolymarketAdapter {
     async fetchPublicTrades(address, limit = 20) {
         try {
             const url = `https://data-api.polymarket.com/activity?user=${address}&limit=${limit}`;
-            // Use dedicated proxy with spoofed headers
-            const agent = new HttpsProxyAgent(PROXY_URL);
-            const res = await axios.get(url, {
-                httpsAgent: agent,
-                proxy: false,
-                headers: BROWSER_HEADERS
-            });
+            const res = await axios.get(url);
             if (!res.data || !Array.isArray(res.data))
                 return [];
-            const trades = [];
-            for (const act of res.data) {
-                if (act.type === 'TRADE' || act.type === 'ORDER_FILLED') {
-                    const activityTime = typeof act.timestamp === 'number' ? act.timestamp : Math.floor(new Date(act.timestamp).getTime() / 1000);
-                    trades.push({
-                        trader: address,
-                        marketId: act.conditionId,
-                        tokenId: act.asset,
-                        outcome: act.outcomeIndex === 0 ? 'YES' : 'NO',
-                        side: act.side.toUpperCase(),
-                        sizeUsd: act.usdcSize || (act.size * act.price),
-                        price: act.price,
-                        timestamp: activityTime * 1000,
-                    });
-                }
-            }
-            return trades;
+            return res.data
+                .filter(act => act.type === 'TRADE' || act.type === 'ORDER_FILLED')
+                .map(act => ({
+                trader: address,
+                marketId: act.conditionId,
+                tokenId: act.asset,
+                outcome: act.outcomeIndex === 0 ? 'YES' : 'NO',
+                side: act.side.toUpperCase(),
+                sizeUsd: act.usdcSize || (act.size * act.price),
+                price: act.price,
+                timestamp: (act.timestamp > 1e11 ? act.timestamp : act.timestamp * 1000)
+            }));
         }
         catch (e) {
             return [];
@@ -248,73 +196,47 @@ export class PolymarketAdapter {
     async createOrder(params) {
         if (!this.client)
             throw new Error("Client not authenticated");
-        const isBuy = params.side === 'BUY';
-        const orderSide = isBuy ? Side.BUY : Side.SELL;
-        let remaining = params.sizeUsd;
-        let retryCount = 0;
-        const maxRetries = 3;
-        let lastOrderId = "";
-        while (remaining >= 0.50 && retryCount < maxRetries) {
-            try {
-                const currentOrderBook = await this.client.getOrderBook(params.tokenId);
-                const currentLevels = isBuy ? currentOrderBook.asks : currentOrderBook.bids;
-                if (!currentLevels || currentLevels.length === 0) {
-                    if (retryCount === 0)
-                        throw new Error("No liquidity in orderbook");
-                    break;
-                }
-                const level = currentLevels[0];
-                const levelPrice = parseFloat(level.price);
-                if (isBuy && params.priceLimit && levelPrice > params.priceLimit)
-                    break;
-                if (!isBuy && params.priceLimit && levelPrice < params.priceLimit)
-                    break;
-                let orderSize;
-                let orderValue;
-                if (isBuy) {
-                    const levelValue = parseFloat(level.size) * levelPrice;
-                    orderValue = Math.min(remaining, levelValue);
-                    orderSize = orderValue / levelPrice;
-                }
-                else {
-                    const levelValue = parseFloat(level.size) * levelPrice;
-                    orderValue = Math.min(remaining, levelValue);
-                    orderSize = orderValue / levelPrice;
-                }
-                orderSize = Math.floor(orderSize * 100) / 100;
-                if (orderSize <= 0)
-                    break;
-                const orderArgs = {
-                    tokenID: params.tokenId,
-                    side: orderSide,
-                    price: levelPrice,
-                    size: orderSize,
-                    feeRateBps: 0,
-                    orderType: OrderType.FOK
-                };
-                const response = await this.client.createAndPostOrder(orderArgs);
-                if (response.success && response.orderID) {
-                    remaining -= orderValue;
-                    retryCount = 0;
-                    lastOrderId = response.orderID;
-                }
-                else {
-                    const errMsg = response.errorMsg || 'Unknown Relayer Error';
-                    this.logger.error(`❌ Exchange Rejection: ${errMsg}`);
-                    if (errMsg.toLowerCase().includes("proxy") || errMsg.toLowerCase().includes("allowance")) {
-                        this.logger.warn("Triggering emergency allowance check...");
-                        await this.ensureAllowance();
-                    }
-                    retryCount++;
-                }
+        try {
+            const side = params.side === 'BUY' ? Side.BUY : Side.SELL;
+            const book = await this.client.getOrderBook(params.tokenId);
+            const price = params.priceLimit || (side === Side.BUY ? Number(book.asks[0]?.price) : Number(book.bids[0]?.price));
+            if (!price || isNaN(price))
+                throw new Error("Could not determine price");
+            const rawSize = params.sizeUsd / price;
+            const size = Math.floor(rawSize * 100) / 100;
+            if (size <= 0)
+                return "skipped_dust";
+            const orderArgs = {
+                tokenID: params.tokenId,
+                price: price,
+                side: side,
+                size: size,
+                feeRateBps: 0,
+                nonce: 0 // SDK auto-fills
+            };
+            this.logger.info(`📝 Placing Order: ${params.side} $${params.sizeUsd.toFixed(2)} (${size} shares @ ${price})`);
+            const signedOrder = await this.client.createOrder(orderArgs);
+            const res = await this.client.postOrder(signedOrder, OrderType.FOK);
+            if (res && res.success) {
+                return res.orderID || "filled";
             }
-            catch (error) {
-                this.logger.error(`Order attempt error: ${error.message}`);
-                retryCount++;
-            }
-            await new Promise(r => setTimeout(r, 1000));
+            throw new Error(res.errorMsg || "Order failed");
         }
-        return lastOrderId || "failed";
+        catch (error) {
+            // AUTH RETRY
+            if (String(error).includes("403") || String(error).includes("auth")) {
+                this.logger.warn("403 Auth Error during Order. Refreshing keys...");
+                this.config.l2ApiCredentials = undefined;
+                await this.deriveAndSaveKeys();
+                this.initClobClient(this.config.l2ApiCredentials);
+                // Retry once
+                return this.createOrder(params);
+            }
+            // DETAILED ERROR LOGGING
+            const errorMsg = error.response?.data?.error || error.message;
+            this.logger.error(`Order Error: ${errorMsg}`);
+            return "failed";
+        }
     }
     async cancelOrder(orderId) {
         if (!this.client)
@@ -328,15 +250,13 @@ export class PolymarketAdapter {
         }
     }
     async cashout(amount, destination) {
-        if (!this.zdService || !this.funderAddress) {
-            throw new Error("Smart Account service not initialized");
-        }
-        this.logger.info(`💸 Adapters initiating cashout of $${amount} to ${destination}`);
-        const amountUnits = parseUnits(amount.toFixed(6), 6);
-        const txHash = await this.zdService.sendTransaction(this.config.walletConfig.serializedSessionKey, USDC_BRIDGED_POLYGON, USDC_ABI, 'transfer', [destination, amountUnits]);
-        return txHash;
+        if (!this.walletService || !this.config.walletConfig.encryptedPrivateKey)
+            throw new Error("Wallet not available");
+        const units = parseUnits(amount.toFixed(6), 6);
+        return this.walletService.withdrawFunds(this.config.walletConfig.encryptedPrivateKey, destination, USDC_BRIDGED_POLYGON, units);
     }
-    getRawClient() { return this.client; }
-    getSigner() { return this.signerImpl; }
-    getFunderAddress() { return this.funderAddress; }
+    // Helper to get raw wallet address if needed
+    getFunderAddress() {
+        return this.config.walletConfig.address;
+    }
 }

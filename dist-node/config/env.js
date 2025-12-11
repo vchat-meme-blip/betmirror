@@ -53,24 +53,12 @@ export function loadEnv() {
         console.log(`✅ Loaded ${userAddresses.length} unique system wallets.`);
     }
     const defaultMongoUri = 'mongodb+srv://limeikenji_db_user:lT4HIyBhbui8vFQr@cluster0.bwk2i6s.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
-    // Fix ZeroDev RPC URL to always be V3
-    let zdRpc = process.env.ZERODEV_RPC || 'https://rpc.zerodev.app/api/v3/b9f9b537-8525-4b18-9cfe-9a7a6992b6df/chain/137';
-    if (zdRpc.includes('/v2/')) {
-        zdRpc = zdRpc.replace('/v2/bundler/', '/v3/').replace('https://rpc.zerodev.app/api/v3/', 'https://rpc.zerodev.app/api/v3/') + '/chain/137';
-    }
-    // Paymaster Specific - User provided override
-    // This ensures the ?selfFunded=true parameter is preserved and correct Project ID is used
-    let zdPaymaster = process.env.ZERODEV_PAYMASTER_RPC || 'https://rpc.zerodev.app/api/v3/b9f9b537-8525-4b18-9cfe-9a7a6992b6df/chain/137?selfFunded=true';
-    // If user only provided a Project ID in ZERODEV_RPC but not a specific paymaster url, construct it
-    if (!process.env.ZERODEV_PAYMASTER_RPC && zdRpc.includes('b9f9b537')) {
-        // already set to default above
-    }
     const env = {
         userAddresses,
         proxyWallet: process.env.PUBLIC_KEY || '',
         privateKey: process.env.PRIVATE_KEY || '',
         // Default high-performance Polygon RPC
-        rpcUrl: process.env.RPC_URL || 'https://little-thrilling-layer.matic.quiknode.pro/378fe82ae3cb5d38e4ac79c202990ad508e1c4c6',
+        rpcUrl: process.env.RPC_URL || 'https://polygon-rpc.com',
         fetchIntervalSeconds: Number(process.env.FETCH_INTERVAL ?? 1),
         tradeMultiplier: Number(process.env.TRADE_MULTIPLIER ?? 1.0),
         retryLimit: Number(process.env.RETRY_LIMIT ?? 3),
@@ -99,10 +87,6 @@ export function loadEnv() {
         twilioAuthToken: process.env.TWILIO_AUTH_TOKEN,
         twilioFromNumber: process.env.TWILIO_FROM_NUMBER,
         userPhoneNumber: process.env.USER_PHONE_NUMBER,
-        // AA
-        zeroDevRpc: zdRpc,
-        zeroDevPaymasterRpc: zdPaymaster,
-        zeroDevProjectId: process.env.ZERODEV_PROJECT_ID,
         // Li.Fi
         lifiIntegrator: process.env.LIFI_INTEGRATOR || 'BetMirror',
         lifiApiKey: process.env.LIFI_API_KEY,

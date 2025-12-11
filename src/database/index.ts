@@ -1,7 +1,7 @@
 
 import mongoose, { Schema, Document, Model } from 'mongoose';
 import { TraderProfile } from '../domain/alpha.types';
-import { ProxyWalletConfig } from '../domain/wallet.types';
+import { TradingWalletConfig } from '../domain/wallet.types';
 import { ActivePosition, TradeHistoryEntry } from '../domain/trade.types';
 import { UserStats } from '../domain/user.types';
 import { BotConfig } from '../server/bot-engine';
@@ -11,7 +11,7 @@ import { BridgeTransactionRecord } from '../services/lifi-bridge.service';
 
 export interface IUser extends Document {
   address: string;
-  proxyWallet?: ProxyWalletConfig;
+  tradingWallet?: TradingWalletConfig; // RENAMED from proxyWallet
   activeBotConfig?: BotConfig;
   isBotRunning: boolean;
   activePositions: ActivePosition[];
@@ -79,11 +79,10 @@ const ActivePositionSchema = new Schema({
   timestamp: Number
 }, { _id: false });
 
-const ProxyWalletSchema = new Schema({
+const TradingWalletSchema = new Schema({
   address: String,
   type: String,
-  serializedSessionKey: String,
-  sessionPrivateKey: String,
+  encryptedPrivateKey: String,
   ownerAddress: String,
   createdAt: String,
   // L2 CLOB Credentials (Not Private Keys, just API Access tokens)
@@ -96,7 +95,7 @@ const ProxyWalletSchema = new Schema({
 
 const UserSchema = new Schema<IUser>({
   address: { type: String, required: true, unique: true, index: true },
-  proxyWallet: ProxyWalletSchema,
+  tradingWallet: TradingWalletSchema, // Updated field name
   activeBotConfig: { type: Schema.Types.Mixed }, // Store flex config
   isBotRunning: { type: Boolean, default: false },
   activePositions: [ActivePositionSchema],
@@ -203,23 +202,16 @@ export const connectDB = async (uri: string) => {
     await mongoose.connect(uri);
 
     // --- FIX: Drop Legacy Index ---
-    // The error 'E11000 ... index: handle_1 dup key: { handle: null }' happens because
-    // an old index exists on 'handle' but our schema doesn't use it, causing all new users
-    // to default to null, which violates uniqueness. We drop it here.
     try {
         if (mongoose.connection.db) {
             const indexName = 'handle_1';
             const indexExists = await mongoose.connection.db.collection('users').indexExists(indexName);
             if (indexExists) {
                 await mongoose.connection.db.collection('users').dropIndex(indexName);
-                console.log('🧹 Cleaned up legacy index: handle_1 (Fixed Activation Error)');
             }
         }
     } catch (e: any) {
-        // Ignore if index doesn't exist or other non-critical error
-        if (e.code !== 27) { 
-            console.warn('⚠️ Index cleanup check:', e.message);
-        }
+        // Ignore
     }
     
     console.log(`📦 Connected to MongoDB successfully (${uri.includes('mongodb.net') ? 'Atlas Cloud' : 'Local'})`);
