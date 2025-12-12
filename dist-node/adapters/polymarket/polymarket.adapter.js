@@ -71,7 +71,9 @@ export class PolymarketAdapter {
     }
     initClobClient(apiCreds) {
         let builderConfig;
-        if (this.config.builderApiKey) {
+        // Inject Builder Credentials if available in Env
+        if (this.config.builderApiKey && this.config.builderApiSecret && this.config.builderApiPassphrase) {
+            this.logger.info('🏗️ Builder Attribution Enabled');
             builderConfig = new BuilderConfig({
                 localBuilderCreds: {
                     key: this.config.builderApiKey,
@@ -80,7 +82,8 @@ export class PolymarketAdapter {
                 }
             });
         }
-        this.client = new ClobClient(HOST_URL, Chain.POLYGON, this.wallet, apiCreds, SignatureType.EOA, undefined, undefined, undefined, builderConfig);
+        this.client = new ClobClient(HOST_URL, Chain.POLYGON, this.wallet, apiCreds, SignatureType.EOA, undefined, undefined, undefined, builderConfig // Pass builder config here
+        );
     }
     async deriveAndSaveKeys() {
         try {
@@ -231,10 +234,6 @@ export class PolymarketAdapter {
                 price = 0.99;
             if (price < 0.01)
                 price = 0.01;
-            // SAFETY VALVE: Abort if final price deviates too much from requested
-            // E.g. If we wanted 0.002 but had to floor to 0.01, that's a 5x price increase.
-            // However, usually we want to BUY, so 0.01 is acceptable if we really want in.
-            // If selling, selling at 0.01 when price is 0.002 is great.
             // 2. SIZE CALCULATION (CRITICAL FIX)
             // We calculate size based on the ACTUAL price we are sending.
             // This ensures size * price <= sizeUsd.

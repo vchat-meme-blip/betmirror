@@ -25,8 +25,23 @@ export class Web3Service {
       throw new Error("No wallet found. Please install MetaMask, Rabbit, or Coinbase Wallet.");
     }
 
+    // FIX: Use native EIP-1193 request instead of Ethers provider.send() for initial connection.
+    // This prevents "Could not coalesce error" (-32603) when Ethers tries to wrap JSON-RPC errors.
+    try {
+        await (window as any).ethereum.request({ method: "eth_requestAccounts" });
+    } catch (e: any) {
+        // Handle common wallet errors explicitly
+        if (e.code === -32002) {
+            throw new Error("Connection request already pending. Please check your wallet extension.");
+        }
+        if (e.code === 4001) {
+            throw new Error("Connection rejected by user.");
+        }
+        throw e;
+    }
+
+    // Initialize Ethers provider after successful permission grant
     this.provider = new BrowserProvider((window as any).ethereum as Eip1193Provider);
-    await this.provider.send("eth_requestAccounts", []);
     this.signer = await this.provider.getSigner();
     
     // Auto-switch to Polygon on connect for best UX

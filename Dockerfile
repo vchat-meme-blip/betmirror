@@ -1,56 +1,44 @@
-# --- Stage 1: Builder ---
-FROM node:20-alpine AS builder
+# Build stage
+FROM node:20-slim AS builder
+
+# Install build tools for native dependencies
+RUN apt-get update && apt-get install -y \
+    python3 \
+    make \
+    g++ \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy package files first to leverage Docker cache
+# Copy package files
 COPY package.json package-lock.json ./
+COPY tsconfig.json ./
 
-# Install ALL dependencies (including devDependencies like typescript)
-# Using 'npm install' instead of 'npm ci' to auto-fix lockfile discrepancies
-RUN npm install
+# Install dependencies including devDependencies
+RUN npm ci
 
-# Copy the rest of the source code
+# Copy source code
 COPY . .
 
-# CRITICAL FIX: Ensure wallets.txt exists before build/copy
-# This prevents the build from crashing if theres no file locally yet.
-RUN touch wallets.txt
-
-# Run the build script (compiles TS to dist-node and Vite to dist)
+# Build the project
+# This handles both frontend (Vite) and backend (TSC) builds via the "build" script
 RUN npm run build
 
-# --- Stage 2: Production Runner ---
-FROM node:20-alpine AS runner
+# Production stage
+FROM node:20-slim
 
 WORKDIR /app
 
-# Set production environment
-ENV NODE_ENV=production
-ENV PORT=3000
-
-# Copy package files again
-COPY package.json package-lock.json ./
-
-# Install ONLY production dependencies to keep image small
-# Using 'npm install' again for consistency
-RUN npm install --only=production
-
-# Copy compiled backend from builder
-COPY --from=builder /app/dist-node ./dist-node
-
-# Copy compiled frontend from builder (for static serving)
+# Copy built artifacts and necessary files from builder
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/dist-node ./dist-node
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/package-lock.json ./package-lock.json
+COPY --from=builder /app/node_modules ./node_modules
 
-# Copy wallets.txt to the runner's working directory
-COPY --from=builder /app/wallets.txt ./
-
-# Create a non-root user for security
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-USER appuser
-
-# Expose the application port
+# Expose the port the app runs on
 EXPOSE 3000
 
-# Start the server directly from the compiled JS file
-CMD ["node", "dist-node/server/server.js"]
+# Start the application using experimental specifier resolution for ESM support
+CMD ["node", "--experimental-specifier-resolution=node", "dist-node/server/server.js"]

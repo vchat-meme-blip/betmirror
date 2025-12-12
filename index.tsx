@@ -929,7 +929,7 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                         </div>
                         <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">1. Connect & Deploy</h3>
                         <p className="text-gray-500 text-sm leading-relaxed">
-                            Link your wallet. We instantly deploy a non-custodial <strong>Smart Account</strong> (ZeroDev Kernel) on Polygon. This is your dedicated trading vault.
+                            Link your wallet. We instantly deploy a dedicated <strong>Trading Wallet</strong> (EOA) on the server. This is your high-speed execution engine.
                         </p>
                     </div>
 
@@ -939,7 +939,7 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                         </div>
                         <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">2. Total Control</h3>
                         <p className="text-gray-500 text-sm leading-relaxed">
-                            You hold the "Owner Key". You can revoke our trading permissions or trigger a <strong>trustless withdrawal</strong> directly on the blockchain at any time.
+                            You control the flow. Deposit funds to trade, withdraw profits at any time. The bot only executes strategy, it cannot lock your assets.
                         </p>
                     </div>
 
@@ -1912,14 +1912,14 @@ return (
                                 <div className="flex items-center justify-between mb-2">
                                     <div className="flex items-center gap-2">
                                         <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] text-white bg-green-600">P</div>
-                                        <span className="text-sm font-bold text-gray-900 dark:text-white">Trading Wallet</span>
+                                        <span className="text-sm font-bold text-gray-900 dark:text-white">Smart Bot</span>
                                         <button 
                                             onClick={() => copyToClipboard(proxyAddress)} 
                                             className="p-1 hover:bg-gray-200 dark:hover:bg-white/10 rounded transition-colors text-gray-500"
                                         >
                                             <Copy size={12}/>
                                         </button>
-                                        <Tooltip text="This is your dedicated EOA trading wallet managed by the server. It executes your trades on Polymarket." />
+                                        <Tooltip text="This is your dedicated EOA trading wallet managed by the server. It executes your trades on Polymarket CLOB." />
                                     </div>
                                     <button 
                                         onClick={fetchBalances} 
@@ -2281,7 +2281,7 @@ return (
                                                     onChange={(e) => setRecipientAddress(e.target.value)}
                                                     className="w-full appearance-none bg-transparent border-b border-gray-300 dark:border-gray-700 py-2 text-sm font-mono text-gray-900 dark:text-white outline-none focus:border-blue-500 transition-colors pr-8 cursor-pointer"
                                                 >
-                                                    <option value={proxyAddress}>Trading Wallet (Bot) - {proxyAddress ? `${proxyAddress.slice(0,6)}...` : 'Initialize First'}</option>
+                                                    <option value={proxyAddress}>Smart Bot (Trading) - {proxyAddress ? `${proxyAddress.slice(0,6)}...` : 'Initialize First'}</option>
                                                     <option value={userAddress}>Main Wallet (You) - {userAddress.slice(0,6)}...</option>
                                                 </select>
                                                 <ChevronDown size={14} className="absolute right-0 top-3 text-gray-400 pointer-events-none"/>
@@ -2951,51 +2951,70 @@ return (
 
         {/* HISTORY TAB */}
         {activeTab === 'history' && (
-            <div className="glass-panel border border-gray-200 dark:border-terminal-border rounded-xl overflow-hidden h-full animate-in fade-in slide-in-from-bottom-2 duration-300">
+            <div className="glass-panel border border-gray-200 dark:border-terminal-border rounded-xl overflow-hidden h-full animate-in fade-in slide-in-from-bottom-2 duration-300 flex flex-col">
                 <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center">
                     <h3 className="font-bold text-gray-900 dark:text-white flex items-center gap-2"><History size={16} className="text-gray-500"/> Trade Log</h3>
-                    <span className="text-xs text-gray-500 font-mono">{history.length} Entries</span>
+                    <div className="flex items-center gap-4">
+                        <span className="text-xs text-gray-500 font-mono">{history.length} Entries</span>
+                        {proxyAddress && (
+                            <a 
+                                href={`https://polymarket.com/profile/${proxyAddress}?tab=activity`} 
+                                target="_blank" 
+                                rel="noreferrer" 
+                                className="flex items-center gap-1 text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 px-2 py-1 rounded hover:underline"
+                            >
+                                Verify on Polymarket <ExternalLink size={10}/>
+                            </a>
+                        )}
+                    </div>
                 </div>
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto flex-1">
                     <table className="w-full text-left text-xs">
-                        <thead className="bg-gray-100 dark:bg-black text-gray-500 uppercase font-bold tracking-wider">
+                        <thead className="bg-gray-100 dark:bg-black text-gray-500 uppercase font-bold tracking-wider sticky top-0 z-10">
                             <tr>
                                 <th className="p-4 pl-6">Time</th>
                                 <th className="p-4">Market</th>
                                 <th className="p-4">Side</th>
-                                <th className="p-4">Size</th>
-                                <th className="p-4">Price</th>
+                                <th className="p-4">Exec. Price</th>
+                                <th className="p-4">Total Cost</th>
                                 <th className="p-4">AI Reasoning</th>
                                 <th className="p-4 text-right pr-6">Status</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-200 dark:divide-gray-800 font-mono">
-                            {history.map((tx) => (
-                                <tr key={tx.id} className={`hover:bg-gray-50 dark:hover:bg-white/5 transition-colors ${tx.status === 'SKIPPED' ? 'opacity-50 grayscale' : ''}`}>
-                                    <td className="p-4 pl-6 text-gray-500">{new Date(tx.timestamp).toLocaleTimeString()}</td>
-                                    <td className="p-4 text-gray-900 dark:text-white max-w-[200px] truncate" title={tx.marketId}>{tx.marketId}</td>
-                                    <td className="p-4">
-                                        <span className={`px-2 py-0.5 rounded font-bold ${tx.side === 'BUY' ? 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-500' : 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-500'}`}>
-                                            {tx.side} {tx.outcome}
-                                        </span>
-                                    </td>
-                                    <td className="p-4 text-gray-900 dark:text-white">${tx.size.toFixed(2)}</td>
-                                    <td className="p-4 text-gray-500">{tx.price.toFixed(2)}</td>
-                                    <td className="p-4 text-gray-500 max-w-[300px] truncate" title={tx.aiReasoning}>
-                                        {tx.riskScore ? <span className="text-purple-500 mr-2">[{tx.riskScore}/10]</span> : ''}
-                                        {tx.aiReasoning || '-'}
-                                    </td>
-                                    <td className="p-4 text-right pr-6">
-                                        <span className={`font-bold px-2 py-1 rounded text-[10px] ${
-                                            tx.status === 'CLOSED' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-500' : 
-                                            tx.status === 'SKIPPED' ? 'bg-gray-200 dark:bg-gray-800 text-gray-500' : 
-                                            'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-500'
-                                        }`}>
-                                            {tx.status}
-                                        </span>
-                                    </td>
-                                </tr>
-                            ))}
+                            {history.map((tx) => {
+                                // Calculate total cost if executed size is available, otherwise use planned size
+                                const totalCost = tx.executedSize ? tx.executedSize : tx.size;
+                                // In new logic, executedSize is USD value.
+                                // If tx.size (USD) is used, it's correct.
+                                
+                                return (
+                                    <tr key={tx.id} className={`hover:bg-gray-50 dark:hover:bg-white/5 transition-colors ${tx.status === 'SKIPPED' ? 'opacity-50 grayscale' : ''}`}>
+                                        <td className="p-4 pl-6 text-gray-500 whitespace-nowrap">{new Date(tx.timestamp).toLocaleString()}</td>
+                                        <td className="p-4 text-gray-900 dark:text-white max-w-[200px] truncate" title={tx.marketId}>{tx.marketId}</td>
+                                        <td className="p-4">
+                                            <span className={`px-2 py-0.5 rounded font-bold ${tx.side === 'BUY' ? 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-500' : 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-500'}`}>
+                                                {tx.side} {tx.outcome}
+                                            </span>
+                                        </td>
+                                        <td className="p-4 text-gray-900 dark:text-white font-bold">{tx.price > 0 ? tx.price.toFixed(2) : '-'}</td>
+                                        <td className="p-4 text-gray-900 dark:text-white font-mono">${totalCost.toFixed(2)}</td>
+                                        <td className="p-4 text-gray-500 max-w-[300px] truncate" title={tx.aiReasoning}>
+                                            {tx.riskScore ? <span className={`mr-2 font-bold ${tx.riskScore > 7 ? 'text-red-500' : 'text-purple-500'}`}>[{tx.riskScore}/10]</span> : ''}
+                                            {tx.aiReasoning || '-'}
+                                        </td>
+                                        <td className="p-4 text-right pr-6">
+                                            <span className={`font-bold px-2 py-1 rounded text-[10px] uppercase ${
+                                                tx.status === 'CLOSED' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-500' : 
+                                                tx.status === 'SKIPPED' || tx.status === 'FAILED' ? 'bg-gray-200 dark:bg-gray-800 text-gray-500' : 
+                                                'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-500'
+                                            }`}>
+                                                {tx.status}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
                         </tbody>
                     </table>
                     {history.length === 0 && <div className="p-12 text-center text-gray-600 text-sm">No history available yet. Start the bot to generate data.</div>}
@@ -3070,7 +3089,7 @@ return (
                     </div>
                 </div>
 
-                {/* 3. CLOB & ARCHITECTURE (New Tech Specs) */}
+                {/* 3. CLOB & ARCHITECTURE (Updated for EOA) */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div className="glass-panel p-8 rounded-2xl border border-gray-200 dark:border-terminal-border bg-blue-50/50 dark:bg-blue-900/5">
                         <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-6 flex items-center gap-2">
@@ -3078,7 +3097,7 @@ return (
                         </h3>
                         <div className="space-y-6 text-sm text-gray-600 dark:text-gray-400">
                             <p className="leading-relaxed">
-                                Bet Mirror is a <strong>Direct Market Access (DMA)</strong> terminal. We do not use side-pools. Every trade you execute is routed directly to the <strong>Polymarket Central Limit Order Book (CLOB)</strong> via standard EOA signatures.
+                                Bet Mirror uses the <strong>Dedicated Trading Wallet (EOA)</strong> model. Unlike slower Smart Accounts, our engine creates a dedicated, high-speed Ethereum wallet for every user. This ensures 100% compatibility with Polymarket's CLOB signature requirements.
                             </p>
                             <div className="space-y-3">
                                 <div className="flex gap-3">
@@ -3101,15 +3120,15 @@ return (
                                 <thead>
                                     <tr className="border-b border-gray-200 dark:border-gray-800">
                                         <th className="pb-2 font-bold text-gray-500 uppercase">Feature</th>
-                                        <th className="pb-2 font-bold text-gray-500 uppercase">Polymarket Native</th>
+                                        <th className="pb-2 font-bold text-gray-500 uppercase">Standard Web Bot</th>
                                         <th className="pb-2 font-bold text-blue-600 dark:text-blue-400 uppercase">Bet Mirror Pro</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
                                     <tr>
                                         <td className="py-3 font-medium text-gray-900 dark:text-white">Wallet Type</td>
-                                        <td className="py-3 text-gray-500">Gnosis Safe</td>
-                                        <td className="py-3 text-gray-500 font-bold">Dedicated EOA</td>
+                                        <td className="py-3 text-gray-500">Shared / Custodial</td>
+                                        <td className="py-3 text-gray-500 font-bold">Dedicated EOA per User</td>
                                     </tr>
                                     <tr>
                                         <td className="py-3 font-medium text-gray-900 dark:text-white">Execution</td>
@@ -3117,9 +3136,9 @@ return (
                                         <td className="py-3 text-gray-500 font-bold">24/7 Automated</td>
                                     </tr>
                                     <tr>
-                                        <td className="py-3 font-medium text-gray-900 dark:text-white">Gas Fee</td>
-                                        <td className="py-3 text-gray-500">Relayer</td>
-                                        <td className="py-3 text-gray-500 font-bold">Native POL</td>
+                                        <td className="py-3 font-medium text-gray-900 dark:text-white">Ownership</td>
+                                        <td className="py-3 text-gray-500">Platform Owned</td>
+                                        <td className="py-3 text-gray-500 font-bold">User Owned (Withdraw Anytime)</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -3130,7 +3149,7 @@ return (
                 {/* 4. SECURITY & RECOVERY (Restored Deep Dives) */}
                 <div className="glass-panel p-8 rounded-2xl border border-gray-200 dark:border-terminal-border">
                     <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-6 flex items-center gap-2">
-                        <Lock className="text-orange-500" size={24}/> Non-Custodial Security & Recovery
+                        <Lock className="text-orange-500" size={24}/> Security & Recovery
                     </h3>
                     
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
@@ -3139,15 +3158,15 @@ return (
                                 <Key size={16} className="text-blue-500"/> 1. The Owner Key (You)
                             </h4>
                             <p className="text-xs text-gray-500 leading-relaxed">
-                                Held in your browser wallet (MetaMask/Phantom). This key controls access to the Dashboard and can trigger withdrawals from the Trading Wallet.
+                                Held in your browser wallet (MetaMask/Phantom). This key controls access to the Dashboard and initiates withdrawals.
                             </p>
                         </div>
                         <div className="p-5 bg-gray-50 dark:bg-white/5 rounded-xl border border-gray-200 dark:border-white/5">
                             <h4 className="font-bold text-gray-900 dark:text-white mb-2 text-sm flex items-center gap-2">
-                                <Server size={16} className="text-orange-500"/> 2. The Trading Key (Us)
+                                <Server size={16} className="text-orange-500"/> 2. The Trading Key (Bot)
                             </h4>
                             <p className="text-xs text-gray-500 leading-relaxed">
-                                The server holds an encrypted EOA key for execution. While technically custodial, our backend logic strictly limits this key to <strong>trading only</strong>. Withdrawals are gated by Owner signatures.
+                                The server holds an encrypted EOA key for execution. This key is used strictly for signing trades on the Polymarket CLOB. You can request a withdrawal at any time, which moves funds from this Trading Wallet back to your Owner Key.
                             </p>
                         </div>
                     </div>
