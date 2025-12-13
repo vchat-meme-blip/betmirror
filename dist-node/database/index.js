@@ -119,7 +119,8 @@ export const connectDB = async (uri) => {
         await mongoose.connect(uri, {
             serverSelectionTimeoutMS: 15000, // Wait 15s before giving up
             socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
-            family: 4 // FORCE IPv4 (Fixes issues where container tries IPv6 on networks that don't support it)
+            family: 4, // FORCE IPv4
+            dbName: 'betmirror' // Explicitly set DB name to avoid defaulting to 'test'
         });
         // --- FIX: Drop Legacy Index ---
         try {
@@ -134,7 +135,13 @@ export const connectDB = async (uri) => {
         catch (e) {
             // Ignore
         }
-        console.log(`📦 Connected to MongoDB successfully (${uri.includes('mongodb.net') ? 'Atlas Cloud' : 'Local'})`);
+        // Detailed Connection Logging
+        const dbName = mongoose.connection.name;
+        const dbHost = mongoose.connection.host;
+        console.log(`📦 Connected to MongoDB successfully!`);
+        console.log(`   - Host: ${dbHost}`);
+        console.log(`   - DB Name: ${dbName}`);
+        console.log(`   - Environment: ${uri.includes('mongodb.net') ? 'Atlas Cloud' : 'Local/Self-Hosted'}`);
     }
     catch (error) {
         console.error('❌ MongoDB Connection Error:', error);

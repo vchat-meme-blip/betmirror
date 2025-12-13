@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { ConsoleLogger } from '../utils/logger.util';
+import { ConsoleLogger } from '../utils/logger.util.js';
 async function run() {
     const logger = new ConsoleLogger();
     logger.info('Simulation runner starting...');

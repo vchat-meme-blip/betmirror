@@ -11,15 +11,23 @@ import crypto from 'crypto';
 // Define the correct USDC.e address on Polygon
 const USDC_BRIDGED_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 export class BotEngine {
+    config;
+    registryService;
+    callbacks;
+    isRunning = false;
+    monitor;
+    executor;
+    exchange;
+    runtimeEnv;
+    fundWatcher;
+    activePositions = [];
+    stats = {
+        totalPnl: 0, totalVolume: 0, totalFeesPaid: 0, winRate: 0, tradesCount: 0, allowanceApproved: false
+    };
     constructor(config, registryService, callbacks) {
         this.config = config;
         this.registryService = registryService;
         this.callbacks = callbacks;
-        this.isRunning = false;
-        this.activePositions = [];
-        this.stats = {
-            totalPnl: 0, totalVolume: 0, totalFeesPaid: 0, winRate: 0, tradesCount: 0, allowanceApproved: false
-        };
         if (config.activePositions)
             this.activePositions = config.activePositions;
         if (config.stats)
@@ -69,20 +77,23 @@ export class BotEngine {
                 debug: () => { },
                 success: (m) => { console.log(`✅ ${m}`); this.addLog('success', m); }
             };
+            // Initialize Exchange Adapter (Polymarket Gnosis Safe)
             this.exchange = new PolymarketAdapter({
                 rpcUrl: this.config.rpcUrl,
                 walletConfig: this.config.walletConfig,
                 userId: this.config.userId,
                 l2ApiCredentials: this.config.l2ApiCredentials,
+                // Pass Builder Credentials for Relayer & Attribution
                 builderApiKey: this.config.builderApiKey,
                 builderApiSecret: this.config.builderApiSecret,
                 builderApiPassphrase: this.config.builderApiPassphrase,
                 mongoEncryptionKey: this.config.mongoEncryptionKey
             }, engineLogger);
             await this.exchange.initialize();
+            // Note: We authenticate AFTER checking funding to avoid unnecessary Relayer calls on empty wallets
             const isFunded = await this.checkFunding();
             if (!isFunded) {
-                await this.addLog('warn', '💰 Account Empty (Checking USDC.e). Engine standby. Waiting for deposit...');
+                await this.addLog('warn', '💰 Safe Empty. Engine standby. Waiting for deposit to Safe...');
                 this.startFundWatcher();
                 return;
             }
@@ -103,22 +114,18 @@ export class BotEngine {
             clearInterval(this.fundWatcher);
             this.fundWatcher = undefined;
         }
-        if (this.watchdogTimer) {
-            clearInterval(this.watchdogTimer);
-            this.watchdogTimer = undefined;
-        }
         this.addLog('warn', '🛑 Engine Stopped.').catch(console.error);
     }
     async checkFunding() {
         try {
             if (!this.exchange)
                 return false;
+            // For Gnosis Safe, this checks the Safe address balance via Adapter
             const funderAddr = this.exchange.getFunderAddress();
             if (!funderAddr)
                 return false;
             const balance = await this.exchange.fetchBalance(funderAddr);
-            console.log(`💰 Funding Check for ${funderAddr}: ${balance}`);
-            return balance >= 0.1;
+            return balance >= 0.5; // Minimum $0.50 to start
         }
         catch (e) {
             console.error(e);
@@ -137,7 +144,7 @@ export class BotEngine {
             if (funded) {
                 clearInterval(this.fundWatcher);
                 this.fundWatcher = undefined;
-                await this.addLog('success', '💰 Funds detected. Resuming startup...');
+                await this.addLog('success', '💰 Funds detected in Safe. Initializing trading...');
                 const engineLogger = {
                     info: (m) => { console.log(m); this.addLog('info', m); },
                     warn: (m) => { console.warn(m); this.addLog('warn', m); },
@@ -147,13 +154,13 @@ export class BotEngine {
                 };
                 await this.proceedWithPostFundingSetup(engineLogger);
             }
-        }, 30000);
+        }, 15000);
     }
     async proceedWithPostFundingSetup(logger) {
         try {
             if (!this.exchange)
                 return;
-            await this.exchange.validatePermissions();
+            // This triggers Safe deployment and Proxy approvals via Relayer
             await this.exchange.authenticate();
             this.startServices(logger);
         }
@@ -188,11 +195,13 @@ export class BotEngine {
             logger: logger
         });
         this.stats.allowanceApproved = true;
+        // Fund Manager handles Auto-Cashout
         const fundManager = new FundManagerService(this.exchange, funder, {
             enabled: this.config.autoCashout?.enabled || false,
             maxRetentionAmount: this.config.autoCashout?.maxAmount,
             destinationAddress: this.config.autoCashout?.destinationAddress,
         }, logger, new NotificationService(this.runtimeEnv, logger));
+        // Initial Cashout Check
         try {
             const cashout = await fundManager.checkAndSweepProfits();
             if (cashout && this.callbacks?.onCashout)
@@ -203,6 +212,9 @@ export class BotEngine {
         }
         let feeDistributor;
         try {
+            // FeeDistributor uses the underlying EOA to pay fees/transfer if needed
+            // For Safe, we might need to adjust this in Phase 3 to use Relayer transfers.
+            // Currently, FeeDistributor uses EOA directly.
             const walletService = new EvmWalletService(this.config.rpcUrl, this.config.mongoEncryptionKey);
             if (this.config.walletConfig?.encryptedPrivateKey) {
                 const wallet = await walletService.getWalletInstance(this.config.walletConfig.encryptedPrivateKey);

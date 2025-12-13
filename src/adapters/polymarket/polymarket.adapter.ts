@@ -6,25 +6,18 @@ import {
 import { OrderBook } from '../../domain/market.types.js';
 import { TradeSignal } from '../../domain/trade.types.js';
 import { ClobClient, Chain, OrderType, Side } from '@polymarket/clob-client';
-import { Wallet, JsonRpcProvider, Contract, MaxUint256, formatUnits, parseUnits } from 'ethers';
+import { Wallet, JsonRpcProvider, Contract, formatUnits } from 'ethers';
 import { EvmWalletService } from '../../services/evm-wallet.service.js';
+import { SafeManagerService } from '../../services/safe-manager.service.js';
 import { TradingWalletConfig } from '../../domain/wallet.types.js';
 import { User } from '../../database/index.js';
 import { BuilderConfig } from '@polymarket/builder-signing-sdk';
 import { Logger } from '../../utils/logger.util.js';
+import { TOKENS } from '../../config/env.js';
 import axios from 'axios';
 
-// --- CONSTANTS ---
-const USDC_BRIDGED_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-const POLYMARKET_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
 const HOST_URL = 'https://clob.polymarket.com';
-
-const USDC_ABI = [
-  'function allowance(address owner, address spender) view returns (uint256)',
-  'function approve(address spender, uint256 amount) returns (bool)',
-  'function balanceOf(address owner) view returns (uint256)',
-  'function transfer(address to, uint256 amount) returns (bool)'
-];
+const USDC_ABI = ['function balanceOf(address owner) view returns (uint256)'];
 
 enum SignatureType {
     EOA = 0,
@@ -51,9 +44,11 @@ export class PolymarketAdapter implements IExchangeAdapter {
     private client?: ClobClient;
     private wallet?: Wallet; 
     private walletService?: EvmWalletService;
+    private safeManager?: SafeManagerService;
     private usdcContract?: Contract;
     private provider?: JsonRpcProvider;
-    
+    private safeAddress?: string;
+
     constructor(
         private config: {
             rpcUrl: string;
@@ -69,7 +64,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
     ) {}
 
     async initialize(): Promise<void> {
-        this.logger.info(`[${this.exchangeName}] Initializing Adapter (EOA Mode)...`);
+        this.logger.info(`[${this.exchangeName}] Initializing Adapter...`);
         
         this.walletService = new EvmWalletService(this.config.rpcUrl, this.config.mongoEncryptionKey);
         
@@ -80,17 +75,45 @@ export class PolymarketAdapter implements IExchangeAdapter {
              throw new Error("Missing Encrypted Private Key for Trading Wallet");
         }
 
+        // Initialize Safe Manager
+        const existingSafeAddress = this.config.walletConfig.safeAddress;
+
+        this.safeManager = new SafeManagerService(
+            this.wallet,
+            this.config.builderApiKey,
+            this.config.builderApiSecret,
+            this.config.builderApiPassphrase,
+            this.logger,
+            existingSafeAddress 
+        );
+
+        // Derive/Get Safe Address
+        this.safeAddress = await this.safeManager.getSafeAddress();
+        this.logger.info(`   Smart Bot Address: ${this.safeAddress}`);
+
         this.provider = new JsonRpcProvider(this.config.rpcUrl);
-        this.usdcContract = new Contract(USDC_BRIDGED_POLYGON, USDC_ABI, this.provider);
+        this.usdcContract = new Contract(TOKENS.USDC_BRIDGED, USDC_ABI, this.provider);
     }
 
     private patchWalletForSdk(wallet: Wallet) {
         if (!(wallet as any)._signTypedData) {
             (wallet as any)._signTypedData = async (domain: any, types: any, value: any) => {
-                if (types && types.EIP712Domain) {
-                    delete types.EIP712Domain;
+                // Ethers v6 vs Polymarket SDK Compatibility Patch
+                const sanitizedTypes = { ...types };
+                
+                // 1. Remove EIP712Domain from types (it's implicit in v6)
+                if (sanitizedTypes.EIP712Domain) {
+                    delete sanitizedTypes.EIP712Domain;
                 }
-                return wallet.signTypedData(domain, types, value);
+                
+                // 2. Ensure Domain ChainID is a Number (SDK sometimes passes string "137")
+                const sanitizedDomain = { ...domain };
+                if (sanitizedDomain.chainId) {
+                    sanitizedDomain.chainId = parseInt(String(sanitizedDomain.chainId), 10);
+                }
+
+                // 3. Forward to standard v6 method
+                return wallet.signTypedData(sanitizedDomain, sanitizedTypes, value);
             };
         }
     }
@@ -100,11 +123,16 @@ export class PolymarketAdapter implements IExchangeAdapter {
     }
 
     async authenticate(): Promise<void> {
-        let apiCreds = this.config.l2ApiCredentials;
-        
-        if (!this.wallet) throw new Error("Wallet not initialized");
+        if (!this.wallet || !this.safeManager || !this.safeAddress) throw new Error("Adapter not initialized");
 
-        // 1. L2 Auth
+        // 1. Ensure Safe is Deployed
+        await this.safeManager.deploySafe();
+
+        // 2. Ensure Approvals
+        await this.safeManager.enableApprovals();
+
+        // 3. L2 Auth (API Keys)
+        let apiCreds = this.config.l2ApiCredentials;
         if (!apiCreds || !apiCreds.key) {
             this.logger.info('🤝 Deriving L2 API Keys...');
             await this.deriveAndSaveKeys();
@@ -112,18 +140,14 @@ export class PolymarketAdapter implements IExchangeAdapter {
         } else {
              this.logger.info('🔌 Using existing CLOB Credentials');
         }
-        this.initClobClient(apiCreds);
 
-        // 2. Blockchain Auth (Allowance) - BLOCKING CHECK
-        await this.ensureAllowance();
+        // 4. Initialize Clob Client
+        this.initClobClient(apiCreds);
     }
 
     private initClobClient(apiCreds: any) {
         let builderConfig: BuilderConfig | undefined;
-        
-        // Inject Builder Credentials if available in Env
         if (this.config.builderApiKey && this.config.builderApiSecret && this.config.builderApiPassphrase) {
-            this.logger.info('🏗️ Builder Attribution Enabled');
             builderConfig = new BuilderConfig({ 
                 localBuilderCreds: {
                     key: this.config.builderApiKey,
@@ -136,18 +160,20 @@ export class PolymarketAdapter implements IExchangeAdapter {
         this.client = new ClobClient(
             HOST_URL,
             Chain.POLYGON,
-            this.wallet as any, 
+            this.wallet as any, // Signer is EOA
             apiCreds,
-            SignatureType.EOA, 
-            undefined,
+            SignatureType.POLY_GNOSIS_SAFE, // Funder is Safe
+            this.safeAddress, // Explicitly set funder
             undefined, 
             undefined,
-            builderConfig // Pass builder config here
+            builderConfig
         );
     }
 
     private async deriveAndSaveKeys() {
         try {
+            // Keys must be derived using SignatureType.EOA because the EOA is the signer.
+            // Polymarket associates keys with the signer address, not the proxy address.
             const tempClient = new ClobClient(
                 HOST_URL,
                 Chain.POLYGON,
@@ -175,44 +201,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
         } catch (e: any) {
             this.logger.error(`Handshake Failed: ${e.message}`);
             throw e;
-        }
-    }
-
-    private async ensureAllowance() {
-        if(!this.wallet || !this.usdcContract || !this.provider) return;
-        
-        try {
-            const address = this.wallet.address;
-            const signerContract = this.usdcContract.connect(this.wallet) as Contract;
-            
-            // 1. Check Current Allowance
-            const allowance = await signerContract.allowance(address, POLYMARKET_EXCHANGE);
-            const minRequired = BigInt(1000000 * 100); // $100 USDC allowance minimum
-            
-            if (allowance >= minRequired) return;
-
-            // 2. Check Gas (POL)
-            const polBalance = await this.provider.getBalance(address);
-            // Min 0.01 POL needed for approval tx
-            const minGas = parseUnits("0.01", 18); 
-            
-            if (polBalance < minGas) {
-                const msg = `CRITICAL: Insufficient POL (Gas) to approve USDC. Balance: ${formatUnits(polBalance, 18)}. Need ~0.01 POL.`;
-                this.logger.error(msg);
-                // We do NOT throw here, we let it fail downstream so the bot stays "online" but logs errors, 
-                // but for trade execution this is fatal.
-                return; 
-            }
-
-            this.logger.info('🔓 Approving USDC for Trading (One-time)...');
-            const tx = await signerContract.approve(POLYMARKET_EXCHANGE, MaxUint256);
-            this.logger.info(`   Tx Sent: ${tx.hash} (Waiting for mine...)`);
-            await tx.wait();
-            this.logger.success(`✅ USDC Approved successfully.`);
-
-        } catch(e: any) { 
-            this.logger.error(`Allowance Setup Failed: ${e.message}`);
-            throw new Error("Failed to approve USDC allowance. Cannot trade.");
         }
     }
 
@@ -269,20 +257,28 @@ export class PolymarketAdapter implements IExchangeAdapter {
         } catch (e) { return []; }
     }
 
-    async createOrder(params: OrderParams): Promise<string> {
+    async createOrder(params: OrderParams, retryCount = 0): Promise<string> {
         if (!this.client) throw new Error("Client not authenticated");
 
         try {
+            // 0. DETERMINE MARKET TYPE (NEG RISK vs STANDARD)
+            let negRisk = false;
+            try {
+                // marketId in params is the conditionId
+                const market = await this.client.getMarket(params.marketId);
+                negRisk = market.neg_risk;
+            } catch (e) {
+                // If getMarket fails (common for some old markets), fallback to Data API or assume False
+                this.logger.debug(`[Order] Could not fetch market details for ${params.marketId}, assuming negRisk=false`);
+            }
+
             const side = params.side === 'BUY' ? Side.BUY : Side.SELL;
             
-            // 1. PRICE DISCOVERY & PROTECTION
+            // 1. PRICE DISCOVERY
             let priceToUse: number;
-
-            // BUG FIX: Check strictly for undefined, as 0 is a number but falsy
             if (params.priceLimit !== undefined) {
                 priceToUse = params.priceLimit;
             } else {
-                 // Fallback: Get top of book (Risky for low liquidity)
                  const book = await this.client.getOrderBook(params.tokenId);
                  if (side === Side.BUY) {
                      if (!book.asks || book.asks.length === 0) return "skipped_no_liquidity";
@@ -293,41 +289,37 @@ export class PolymarketAdapter implements IExchangeAdapter {
                  }
             }
             
-            // Round to 2 decimals for FOK compatibility
-            // IMPORTANT: If value is < 0.01 (e.g. 0.005), math.floor(0.5) = 0.
-            // We must enforce min tick size of 0.01 for most markets.
             let price = Math.floor(priceToUse * 100) / 100;
-
-            // SANITY CHECK: Clamps
             if (price >= 1.00) price = 0.99;
             if (price < 0.01) price = 0.01;
 
-            // 2. SIZE CALCULATION (CRITICAL FIX)
-            // We calculate size based on the ACTUAL price we are sending.
-            // This ensures size * price <= sizeUsd.
+            // 2. SIZE CALCULATION
             const rawSize = params.sizeUsd / price;
             let size = Math.floor(rawSize);
 
-            // 3. MINIMUM SIZE ENFORCEMENT
-            if (size < 1) {
-                // If the user really wants to bet, we bump to 1 share IF the cost is within bounds
-                // But since we calc size based on price, size < 1 means we can't afford even 1 share.
-                return "skipped_dust_size";
-            }
+            if (size < 1) return "skipped_dust_size";
 
-            const orderArgs = {
+            // 3. CONSTRUCT ORDER (Aligned with Wagmi Safe Builder Example)
+            // Note: We deliberately allow 'nonce' to be undefined so the SDK handles it
+            // We explicit set taker to zero address
+            const order: any = {
                 tokenID: params.tokenId,
                 price: price,
                 side: side,
                 size: size,
                 feeRateBps: 0,
-                nonce: 0 
+                expiration: 0,
+                taker: "0x0000000000000000000000000000000000000000"
             };
 
-            this.logger.info(`📝 Placing Order: ${params.side} $${(size*price).toFixed(2)} (${size} shares @ ${price})`);
+            this.logger.info(`📝 Placing Order (Safe): ${params.side} $${(size*price).toFixed(2)} (${size} shares @ ${price}) [NegRisk: ${negRisk}]`);
 
-            const signedOrder = await this.client.createOrder(orderArgs);
-            const res = await this.client.postOrder(signedOrder, OrderType.FOK);
+            // Use createAndPostOrder helper which handles signature & posting in one go
+            const res = await this.client.createAndPostOrder(
+                order, 
+                { negRisk }, 
+                OrderType.GTC 
+            );
 
             if (res && res.success) {
                 this.logger.success(`✅ Order Accepted. Tx: ${res.transactionHash || res.orderID || 'OK'}`);
@@ -337,29 +329,25 @@ export class PolymarketAdapter implements IExchangeAdapter {
             throw new Error(res.errorMsg || "Order failed");
 
         } catch (error: any) {
-            // AUTH RETRY
-            if (String(error).includes("403") || String(error).includes("auth")) {
-                this.logger.warn("403 Auth Error during Order. Refreshing keys...");
-                this.config.l2ApiCredentials = undefined;
+            // Check for Auth Errors and Retry ONCE
+            const errStr = String(error);
+            if (retryCount < 1 && (errStr.includes("401") || errStr.includes("403") || errStr.includes("invalid signature") || errStr.includes("auth"))) {
+                this.logger.warn("⚠️ Auth Error during Order. Refreshing keys and retrying...");
+                this.config.l2ApiCredentials = undefined; // Force refresh
                 await this.deriveAndSaveKeys();
                 this.initClobClient(this.config.l2ApiCredentials);
-                // Retry once
-                return this.createOrder(params);
+                return this.createOrder(params, retryCount + 1);
             }
             
             const errorMsg = error.response?.data?.error || error.message;
-            
-            // Helpful errors
             if (errorMsg?.includes("allowance")) {
-                this.logger.error("❌ Trade Failed: Not Enough Allowance. Please deposit ~0.1 POL (Matic) for gas approval.");
-                // Trigger an allowance check for next time
-                this.ensureAllowance().catch(() => {});
+                this.logger.error("❌ Trade Failed: Not Enough Allowance. Retrying approvals...");
+                await this.safeManager?.enableApprovals();
             } else if (errorMsg?.includes("balance")) {
-                this.logger.error("❌ Trade Failed: Insufficient USDC.e Balance.");
+                this.logger.error("❌ Trade Failed: Insufficient USDC.e Balance in Safe.");
             } else {
                 this.logger.error(`Order Error: ${errorMsg}`);
             }
-            
             return "failed";
         }
     }
@@ -373,18 +361,12 @@ export class PolymarketAdapter implements IExchangeAdapter {
     }
 
     async cashout(amount: number, destination: string): Promise<string> {
-        if (!this.walletService || !this.config.walletConfig.encryptedPrivateKey) throw new Error("Wallet not available");
-        
-        const units = parseUnits(amount.toFixed(6), 6);
-        return this.walletService.withdrawFunds(
-            this.config.walletConfig.encryptedPrivateKey,
-            destination,
-            USDC_BRIDGED_POLYGON,
-            units
-        );
+        if (!this.safeManager) throw new Error("Safe Manager not initialized");
+        const amountStr = Math.floor(amount * 1000000).toString();
+        return await this.safeManager.withdrawUSDC(destination, amountStr);
     }
     
     getFunderAddress() {
-        return this.config.walletConfig.address;
+        return this.safeAddress || this.config.walletConfig.address;
     }
 }

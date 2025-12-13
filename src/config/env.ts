@@ -1,6 +1,20 @@
 
 import fs from 'fs';
 import path from 'path';
+import dotenv from 'dotenv';
+
+// 1. Load standard .env
+dotenv.config();
+
+// 2. Explicitly load .env.local if it exists (Vite does this auto, Node does not)
+const localEnvPath = path.resolve(process.cwd(), '.env.local');
+if (fs.existsSync(localEnvPath)) {
+    console.log(`📄 Detected .env.local at ${localEnvPath}. Loading...`);
+    const result = dotenv.config({ path: localEnvPath, override: true });
+    if (result.error) {
+        console.warn("   ⚠️ Error loading .env.local:", result.error);
+    }
+}
 
 // --- CONSTANTS ---
 // Polygon Mainnet Chain ID
@@ -11,6 +25,11 @@ export const TOKENS = {
     POL: '0x0000000000000000000000000000000000000000', // Native Gas Token
     USDC_NATIVE: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', // Circle Standard (NOT USED BY POLYMARKET)
     USDC_BRIDGED: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174' // Polymarket Standard (USDC.e)
+};
+
+export const WS_URLS = {
+    CLOB: 'wss://ws-subscriptions-clob.polymarket.com/ws/market',
+    DATA: 'wss://ws-subscriptions-clob.polymarket.com/ws/data' 
 };
 
 export type RuntimeEnv = {
@@ -28,7 +47,7 @@ export type RuntimeEnv = {
   polymarketApiSecret?: string;
   polymarketApiPassphrase?: string;
   
-  // Builder Program Keys (Attribution)
+  // Builder Program Keys (Attribution & Relayer)
   builderApiKey?: string;
   builderApiSecret?: string;
   builderApiPassphrase?: string;
@@ -110,6 +129,17 @@ export function loadEnv(): RuntimeEnv {
       console.log(`✅ Loaded ${userAddresses.length} unique system wallets.`);
   }
 
+  // --- BUILDER CREDENTIALS DEBUG ---
+  const bKey = process.env.POLY_BUILDER_API_KEY;
+  const bSecret = process.env.POLY_BUILDER_SECRET;
+  const bPass = process.env.POLY_BUILDER_PASSPHRASE;
+
+  if (bKey && bSecret && bPass) {
+      console.log(`🔑 Builder Credentials Loaded: YES (Key: ${bKey.substring(0, 4)}...)`);
+  } else {
+      console.warn(`⚠️ Builder Credentials NOT FOUND in process.env. Check .env or .env.local location.`);
+  }
+
   const defaultMongoUri = 'mongodb+srv://limeikenji_db_user:lT4HIyBhbui8vFQr@cluster0.bwk2i6s.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
 
   const env: RuntimeEnv = {
@@ -135,9 +165,9 @@ export function loadEnv(): RuntimeEnv {
     polymarketApiPassphrase: process.env.POLYMARKET_API_PASSPHRASE,
     
     // Builder Program Keys
-    builderApiKey: process.env.POLY_BUILDER_API_KEY,
-    builderApiSecret: process.env.POLY_BUILDER_SECRET,
-    builderApiPassphrase: process.env.POLY_BUILDER_PASSPHRASE,
+    builderApiKey: bKey,
+    builderApiSecret: bSecret,
+    builderApiPassphrase: bPass,
     builderId: process.env.POLY_BUILDER_ID || 'BetMirror',
     
     registryApiUrl: process.env.REGISTRY_API_URL || 'http://localhost:3000/api',
@@ -148,7 +178,7 @@ export function loadEnv(): RuntimeEnv {
     maxRetentionAmount: process.env.MAX_RETENTION_AMOUNT ? Number(process.env.MAX_RETENTION_AMOUNT) : undefined,
     enableAutoCashout: String(process.env.ENABLE_AUTO_CASHOUT ?? 'false') === 'true',
     
-    // Safety Caps
+    // Safety
     maxTradeAmount: Number(process.env.MAX_TRADE_AMOUNT ?? 100), // Default $100 cap per trade
 
     // Notifications

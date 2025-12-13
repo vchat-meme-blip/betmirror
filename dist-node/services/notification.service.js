@@ -3,10 +3,12 @@
  * Replaces 'twilio' Node SDK with direct fetch calls to prevent Vite build errors.
  */
 export class NotificationService {
+    env;
+    logger;
+    enabled = false;
     constructor(env, logger) {
         this.env = env;
         this.logger = logger;
-        this.enabled = false;
         if (env.enableNotifications && env.twilioAccountSid && env.twilioAuthToken && env.userPhoneNumber) {
             this.enabled = true;
             this.logger.info('📱 Notification Service: ONLINE (Browser Mode)');

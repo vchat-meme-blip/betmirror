@@ -2,6 +2,7 @@ import { RuntimeEnv } from '../config/env.js';
 import { Logger } from '../utils/logger.util.js';
 import { TradeSignal } from '../domain/trade.types.js';
 import { IExchangeAdapter } from '../adapters/interfaces.js';
+import axios from 'axios';
 
 export type TradeMonitorDeps = {
   adapter: IExchangeAdapter;
@@ -11,116 +12,161 @@ export type TradeMonitorDeps = {
   onDetectedTrade: (signal: TradeSignal) => Promise<void>;
 };
 
+interface PolyActivity {
+    id: string;
+    type: string; // "TRADE" | "ORDER_FILLED"
+    timestamp: number;
+    conditionId: string;
+    asset: string;
+    side: string;
+    size: number;
+    price: number;
+    usdcSize: number;
+    outcomeIndex: number;
+    transactionHash: string;
+}
+
 export class TradeMonitorService {
   private readonly deps: TradeMonitorDeps;
-  private timer: any;
-  
-  // MEMORY OPTIMIZATION: Use Map<Hash, Timestamp> for LRU pruning
-  private readonly processedHashes: Map<string, number> = new Map();
-  private readonly lastFetchTime: Map<string, number> = new Map();
   private isPolling = false;
+  private pollInterval?: NodeJS.Timeout;
+  
+  // Set needed for fast lookups in the hot path
+  private targetWallets: Set<string> = new Set();
+  
+  // Deduplication cache (Hash -> Timestamp)
+  private processedHashes: Map<string, number> = new Map();
 
   constructor(deps: TradeMonitorDeps) {
     this.deps = deps;
+    this.updateTargets(deps.userAddresses);
   }
 
-  // --- DYNAMIC CONFIG UPDATE ---
   updateTargets(newTargets: string[]) {
       this.deps.userAddresses = newTargets;
-      this.deps.logger.info(`🎯 Monitor target list updated to ${newTargets.length} wallets.`);
+      this.targetWallets = new Set(newTargets.map(t => t.toLowerCase()));
+      this.deps.logger.info(`🎯 Monitor target list updated to ${this.targetWallets.size} wallets.`);
   }
 
   async start(startCursor?: number): Promise<void> {
-    const { logger, env } = this.deps;
-    logger.info(
-      `Initializing Monitor for ${this.deps.userAddresses.length} target wallets...`,
-    );
+    if (this.isPolling) return;
+    this.isPolling = true;
+    
+    this.deps.logger.info(`🔌 Starting High-Frequency Polling (Data API)...`);
+    
+    // Initial fetch to mark baseline
+    await this.poll();
 
-    // Initialize cursor
-    if (startCursor) {
-        this.deps.userAddresses.forEach(trader => {
-            this.lastFetchTime.set(trader, startCursor);
-        });
-    }
-    
-    // Initial sync
-    await this.tick();
-    
-    // Polling Loop
-    this.timer = setInterval(async () => {
-        if (this.isPolling) return;
-        this.isPolling = true;
-        try {
-            await this.tick();
-        } catch (e: any) {
-             // Silent retry
-        } finally {
-            this.isPolling = false;
-        }
-    }, env.fetchIntervalSeconds * 1000);
+    // Start Loop
+    this.pollInterval = setInterval(() => this.poll(), 2000) as unknown as NodeJS.Timeout; // Check every 2s
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
     this.isPolling = false;
+    if (this.pollInterval) {
+        clearInterval(this.pollInterval);
+        this.pollInterval = undefined;
+    }
+    this.deps.logger.info('Cb Monitor Stopped.');
   }
 
-  private async tick(): Promise<void> {
-    const { env } = this.deps;
-    const now = Math.floor(Date.now() / 1000);
-    const cutoffTime = now - Math.max(env.aggregationWindowSeconds, 600); 
+  private async poll() {
+      if (this.targetWallets.size === 0) return;
 
-    // Prune old hashes
-    if (this.processedHashes.size > 2000) {
-        for (const [hash, ts] of this.processedHashes.entries()) {
-            if (ts < cutoffTime) {
-                this.processedHashes.delete(hash);
-            }
-        }
-    }
-    
-    // Process wallets in parallel chunks
-    const chunkSize = 5; 
-    for (let i = 0; i < this.deps.userAddresses.length; i += chunkSize) {
-        const chunk = this.deps.userAddresses.slice(i, i + chunkSize);
-        await Promise.all(chunk.map(trader => {
-            if (!trader || trader.length < 10) return Promise.resolve();
-            return this.fetchTraderActivities(trader, env, now, cutoffTime);
-        }));
-    }
-  }
-
-  private async fetchTraderActivities(trader: string, env: RuntimeEnv, now: number, cutoffTime: number): Promise<void> {
-    try {
-      // Use Adapter to fetch trades (Decoupled from specific API)
-      const trades = await this.deps.adapter.fetchPublicTrades(trader, 20);
-
-      if (!trades || !Array.isArray(trades)) return;
-
-      for (const signal of trades) {
-        // Validation logic
-        const activityTime = signal.timestamp / 1000; // Convert back to seconds for logic
-        
-        if (activityTime < cutoffTime) continue;
-        
-        // Use a hash of unique properties since adapter might not return raw txHash in generic interface
-        // But assuming signal generation is stable:
-        const uniqueId = `${signal.marketId}-${signal.outcome}-${signal.price}-${signal.timestamp}`; 
-        
-        if (this.processedHashes.has(uniqueId)) continue;
-
-        const lastTime = this.lastFetchTime.get(trader) || 0;
-        if (activityTime <= lastTime) continue;
-
-        this.deps.logger.info(`[SIGNAL] ${signal.side} ${signal.outcome} @ ${signal.price} ($${signal.sizeUsd.toFixed(0)}) from ${trader.slice(0,6)}`);
-
-        this.processedHashes.set(uniqueId, activityTime);
-        this.lastFetchTime.set(trader, Math.max(this.lastFetchTime.get(trader) || 0, activityTime));
-
-        await this.deps.onDetectedTrade(signal);
+      // We poll sequentially or in parallel batches to respect rate limits
+      // Polymarket Data API is robust, but let's be polite.
+      const targets = Array.from(this.targetWallets);
+      
+      for (const user of targets) {
+          await this.checkUserActivity(user);
+          // Small delay between users to spread load if many targets
+          if (targets.length > 5) await new Promise(r => setTimeout(r, 100)); 
       }
-    } catch (err) {
-       // Ignore
-    }
+      
+      this.pruneCache();
+  }
+
+  private async checkUserActivity(user: string) {
+      try {
+          // Fetch last 5 activities to catch recent trades
+          const url = `https://data-api.polymarket.com/activity?user=${user}&limit=5`;
+          const res = await axios.get<PolyActivity[]>(url, { timeout: 3000 });
+          
+          if (!res.data || !Array.isArray(res.data)) return;
+
+          // Filter for Trades only
+          const trades = res.data.filter(a => a.type === 'TRADE' || a.type === 'ORDER_FILLED');
+
+          // Sort by time ascending to process in order
+          trades.sort((a, b) => a.timestamp - b.timestamp);
+
+          for (const trade of trades) {
+              await this.processTrade(user, trade);
+          }
+      } catch (e) {
+          // Silent fail on network error, will retry next tick
+      }
+  }
+
+  private async processTrade(user: string, activity: PolyActivity) {
+      const txHash = activity.transactionHash;
+      
+      // 1. Deduplication
+      if (this.processedHashes.has(txHash)) return;
+      
+      // 2. Age Check (Ignore trades older than 5 mins to prevent processing old history on restart)
+      const now = Date.now();
+      // Activity timestamp is in ms usually, but sometimes seconds. API is inconsistent.
+      // Usually Data API returns ms.
+      const tradeTime = activity.timestamp > 10000000000 ? activity.timestamp : activity.timestamp * 1000;
+      
+      if (now - tradeTime > 5 * 60 * 1000) {
+          // Mark as processed so we don't check age again
+          this.processedHashes.set(txHash, now);
+          return;
+      }
+
+      // 3. Mark Processed
+      this.processedHashes.set(txHash, now);
+
+      // 4. Normalize Signal
+      const outcomeLabel = activity.outcomeIndex === 0 ? "YES" : "NO";
+      
+      // Data API "side" is from the taker's perspective.
+      // If type is "TRADE", it usually means they took liquidity.
+      const side = activity.side.toUpperCase() as 'BUY' | 'SELL';
+      
+      const sizeUsd = activity.usdcSize || (activity.size * activity.price);
+      
+      this.deps.logger.info(`🚨 [SIGNAL] ${user.slice(0,6)}... ${side} ${outcomeLabel} @ ${activity.price} ($${sizeUsd.toFixed(2)})`);
+
+      const signal: TradeSignal = {
+          trader: user,
+          marketId: activity.conditionId,
+          tokenId: activity.asset,
+          outcome: outcomeLabel as 'YES' | 'NO',
+          side: side,
+          sizeUsd: sizeUsd,
+          price: activity.price,
+          timestamp: tradeTime
+      };
+
+      // 5. Trigger Execution
+      this.deps.onDetectedTrade(signal).catch(err => {
+          this.deps.logger.error(`Execution Trigger Failed`, err);
+      });
+  }
+
+  private pruneCache() {
+      const now = Date.now();
+      const TTL = 10 * 60 * 1000; // 10 mins
+      
+      if (this.processedHashes.size > 2000) {
+          for (const [key, ts] of this.processedHashes.entries()) {
+              if (now - ts > TTL) {
+                  this.processedHashes.delete(key);
+              }
+          }
+      }
   }
 }

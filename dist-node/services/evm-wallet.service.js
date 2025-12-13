@@ -11,6 +11,8 @@ const USDC_ABI = [
  * Ensures strict compatibility with Polymarket CLOB signature requirements.
  */
 export class EvmWalletService {
+    encryptionKey;
+    provider;
     constructor(rpcUrl, encryptionKey) {
         this.provider = new JsonRpcProvider(rpcUrl);
         this.encryptionKey = encryptionKey;

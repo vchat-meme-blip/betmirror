@@ -3,6 +3,11 @@ const USDC_ABI = [
     'function transfer(address to, uint256 amount) returns (bool)',
 ];
 export class FeeDistributorService {
+    wallet;
+    env;
+    logger;
+    registryService;
+    usdcContract;
     constructor(wallet, env, logger, registryService) {
         this.wallet = wallet;
         this.env = env;

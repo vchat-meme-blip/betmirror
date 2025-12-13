@@ -1,7 +1,7 @@
 import 'dotenv/config';
-import { loadEnv } from '../config/env';
-import { createPolymarketClient } from '../infrastructure/clob-client.factory';
-import { ConsoleLogger } from '../utils/logger.util';
+import { loadEnv } from '../config/env.js';
+import { createPolymarketClient } from '../infrastructure/clob-client.factory.js';
+import { ConsoleLogger } from '../utils/logger.util.js';
 async function run() {
     const logger = new ConsoleLogger();
     const env = loadEnv();

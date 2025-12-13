@@ -4,8 +4,8 @@ import axios from 'axios';
  * Used when no direct DB access is available (e.g. Browser or Headless CLI).
  */
 export class AlphaRegistryService {
+    apiUrl = '/api';
     constructor(apiUrl) {
-        this.apiUrl = '/api';
         if (apiUrl)
             this.apiUrl = apiUrl;
     }

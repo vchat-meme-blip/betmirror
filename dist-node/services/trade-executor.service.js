@@ -1,12 +1,13 @@
 import { computeProportionalSizing } from '../config/copy-strategy.js';
 import { httpGet } from '../utils/http.js';
 export class TradeExecutorService {
+    deps;
+    balanceCache = new Map();
+    CACHE_TTL = 5 * 60 * 1000; // 5 Minutes Cache for Whales
+    // NEW: Local deduction tracker to prevent race conditions
+    pendingSpend = 0;
+    lastBalanceFetch = 0;
     constructor(deps) {
-        this.balanceCache = new Map();
-        this.CACHE_TTL = 5 * 60 * 1000; // 5 Minutes Cache for Whales
-        // NEW: Local deduction tracker to prevent race conditions
-        this.pendingSpend = 0;
-        this.lastBalanceFetch = 0;
         this.deps = deps;
     }
     async executeManualExit(position, currentPrice) {

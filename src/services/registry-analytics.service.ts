@@ -25,6 +25,7 @@ export class RegistryAnalyticsService {
         try {
             const wallets = await Registry.find({});
             for (const wallet of wallets) {
+                // Ensure we access address correctly. The model is typed as IRegistry which extends TraderProfile.
                 await this.analyzeWallet(wallet.address);
                 // Rate limit politeness
                 await new Promise(r => setTimeout(r, 1000)); 

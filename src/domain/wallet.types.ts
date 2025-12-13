@@ -1,5 +1,5 @@
 
-export type WalletType = 'TRADING_EOA';
+export type WalletType = 'TRADING_EOA' | 'GNOSIS_SAFE';
 
 export interface L2ApiCredentials {
     key: string;        // Client expects 'key'
@@ -8,7 +8,7 @@ export interface L2ApiCredentials {
 }
 
 export interface TradingWalletConfig {
-  address: string;
+  address: string; // The EOA Signer Address
   type: WalletType;
   
   // Encrypted Private Key (Server-Side Custody / Burner Wallet)
@@ -20,6 +20,10 @@ export interface TradingWalletConfig {
 
   // L2 Auth (Trading) Credentials
   l2ApiCredentials?: L2ApiCredentials;
+
+  // Gnosis Safe Fields (Type 2)
+  safeAddress?: string; // The deployed Safe Address (Funder)
+  isSafeDeployed?: boolean; 
 }
 
 export interface WalletBalance {

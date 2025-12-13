@@ -1,6 +1,6 @@
 
-import { OrderBook } from '../domain/market.types';
-import { TradeSignal } from '../domain/trade.types';
+import { OrderBook } from '../domain/market.types.js';
+import { TradeSignal } from '../domain/trade.types.js';
 
 export type OrderSide = 'BUY' | 'SELL';
 

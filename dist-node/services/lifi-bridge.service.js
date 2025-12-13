@@ -1,7 +1,7 @@
 import { createConfig, getRoutes, executeRoute, Solana, EVM } from '@lifi/sdk';
 import { createWalletClient, custom } from 'viem';
 import axios from 'axios';
-import { web3Service } from './web3.service';
+import { web3Service } from './web3.service.js';
 // --- GLOBAL CONFIGURATION ---
 // Use private RPCs to avoid public rate limits (403/429 Errors)
 const privateSolanaRpc = process.env.SOLANA_RPC_URL || 'https://little-thrilling-layer.solana-mainnet.quiknode.pro/378fe82ae3cb5d38e4ac79c202990ad508e1c4c6';
@@ -115,10 +115,8 @@ createConfig({
     }
 });
 export class LiFiBridgeService {
-    constructor() {
-        this.history = [];
-        this.userId = '';
-    }
+    history = [];
+    userId = '';
     setUserId(userId) {
         this.userId = userId;
     }

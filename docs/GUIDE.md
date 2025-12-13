@@ -10,10 +10,10 @@ Welcome to the institutional-grade prediction market terminal. This guide covers
 Now that you have connected your wallet and initialized your **Trading Wallet**, here is your roadmap to profit.
 
 ### 1. Fund Your Bot
-Your Trading Wallet lives on the **Polygon** network. You need **USDC.e** to trade and a small amount of **POL** (Matic) for gas.
-*   **Option A (Direct):** If you already have funds on Polygon, send them to the address shown in the Dashboard (top left card).
+Your Trading Wallet (Gnosis Safe) lives on the **Polygon** network. You primarily need **USDC.e** to trade.
+*   **Option A (Direct):** If you already have funds on Polygon, send them to the **Smart Bot** address shown in the Dashboard (top left card).
 *   **Option B (Bridge):** Go to the **Bridge** tab. Select your source chain (Base, Solana, Ethereum, Arbitrum) and transfer funds. Our Li.Fi integration handles the swapping and bridging automatically.
-*   **Gas:** Since we use standard EOA wallets for maximum speed, you **DO** need a small amount of POL (Matic). $1 worth of POL is enough for thousands of trades.
+*   **Gas:** Bet Mirror uses the **Polymarket Relayer** to pay for gas fees on your behalf. You do **NOT** need to hold POL (Matic) to trade, though having a small amount for emergency manual withdrawals is optional.
 
 ### 2. Select Traders (Marketplace)
 Go to the **Marketplace** tab.
@@ -39,24 +39,24 @@ Click the **START ENGINE** button in the header.
 
 ## 🧠 Technical Deep Dive: Polymarket CLOB
 
-Bet Mirror is not a derivative platform. We interact directly with the **Polymarket Central Limit Order Book (CLOB)**.
+Bet Mirror is not a derivative platform. We interact directly with the **Polymarket Central Limit Order Book (CLOB)** via their Relayer architecture.
 
 ### How it works
 1.  **Signal Detection:** We monitor the `Activity` endpoints of target wallets in real-time.
 2.  **Order Construction:** When a target buys `YES` on "Bitcoin > 100k", your bot constructs an identical order.
 3.  **Attribution:** We inject specific **Builder Headers** (`POLY_BUILDER_API_KEY`) into the API request. This identifies your trade as coming from "Bet Mirror" infrastructure, allowing us to participate in the **Polymarket Builder Program**.
-4.  **Execution:** The order is cryptographically signed by your dedicated Trading Key and submitted to the Relayer.
-5.  **Settlement:** The trade settles on the CTF Exchange contract on Polygon.
+4.  **Execution:** The order is cryptographically signed by your dedicated **EOA Signer** and submitted to the **Polymarket Relayer**.
+5.  **Settlement:** The trade is executed by your **Gnosis Safe** proxy on the CTF Exchange contract on Polygon.
 
 ### Architecture Comparison
 
-We utilize standard EOAs (Externally Owned Accounts) to ensure 100% compatibility with Polymarket's high-frequency trading requirements.
+We utilize a Hybrid Safe Model to ensure 100% compatibility with Polymarket's high-frequency trading requirements while maintaining security.
 
-| Feature | Polymarket Native | Bet Mirror Pro | Why we chose this |
+| Feature | Standard EOA Bot | Bet Mirror Pro (Safe) | Why we chose this |
 | :--- | :--- | :--- | :--- |
-| **Wallet Type** | Gnosis Safe / Proxy | **Dedicated EOA** | EOAs are faster and natively supported by the CLOB API without complex signature verification wrappers (EIP-1271). |
-| **Signing** | User Signs (Metamask) | **Server Signs** | Allows 24/7 server-side execution without the user needing to be online to sign every trade. |
-| **Gas** | Relayer (Gasless) | **Native Gas (POL)** | While it requires a tiny deposit of POL, it removes dependency on third-party Paymasters, increasing reliability during network congestion. |
+| **Wallet Type** | Standard EOA | **Gnosis Safe Proxy** | Safes are the industry standard for smart accounts. They hold the funds. |
+| **Signing** | Direct Key Sign | **EOA Owner Sign** | We generate an encrypted EOA that *owns* the Safe. This EOA signs instructions, but funds sit in the Safe. |
+| **Gas** | User Pays (POL) | **Relayer (Gasless)** | We use the Polymarket Relayer to submit transactions. This creates a gasless experience for the user. |
 | **Liquidity** | CLOB | **CLOB** | We access the exact same liquidity depth as the main site. No side pools. |
 
 ---
@@ -64,14 +64,14 @@ We utilize standard EOAs (Externally Owned Accounts) to ensure 100% compatibilit
 ## 🛡️ Security & Recovery
 
 ### Dedicated Wallet Model
-*   **Isolation:** We create a specific wallet just for your bot. This limits risk. Even if the bot key were compromised, your Main Wallet (MetaMask) remains safe.
-*   **Encryption:** Your bot's private key is encrypted in our database using **AES-256**. It is only decrypted in server memory for the split-second required to sign an order.
+*   **Isolation:** We create a specific wallet configuration just for your bot. This limits risk. Even if the bot key were compromised, your Main Wallet (MetaMask) remains safe.
+*   **Encryption:** Your bot's private key (Signer) is encrypted in our database using **AES-256**. It is only decrypted in server memory for the split-second required to sign an order.
 
 ### Emergency Recovery
 To withdraw funds:
 1.  Use the **Withdraw** button on the Dashboard.
-2.  This triggers the server to send your entire USDC balance back to your Main Wallet.
-3.  **Manual Recovery:** Since this is a standard Ethereum address, platform admins can export keys in a worst-case disaster recovery scenario to help you recover funds.
+2.  This triggers the server to instruct the Relayer to move funds from your Safe back to your Main Wallet.
+3.  **Manual Recovery:** Since this is a standard Gnosis Safe, you can always recover funds by interacting with the Safe contracts directly if the platform goes offline, provided you have the Signer key (exportable via admin request).
 
 ---
 

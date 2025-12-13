@@ -11,11 +11,9 @@ export const USDC_ABI = [
     'function decimals() view returns (uint8)'
 ];
 export class Web3Service {
-    constructor() {
-        this.provider = null;
-        this.signer = null;
-        this.viemClient = null;
-    }
+    provider = null;
+    signer = null;
+    viemClient = null;
     async connect() {
         if (!window.ethereum) {
             throw new Error("No wallet found. Please install MetaMask, Rabbit, or Coinbase Wallet.");

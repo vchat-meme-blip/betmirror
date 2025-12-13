@@ -4,12 +4,14 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import 'dotenv/config';
 import mongoose from 'mongoose';
+import { ethers } from 'ethers';
 import { BotEngine } from './bot-engine.js';
 import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog, DepositLog } from '../database/index.js';
 import { loadEnv } from '../config/env.js';
 import { DbRegistryService } from '../services/db-registry.service.js';
 import { registryAnalytics } from '../services/registry-analytics.service.js';
 import { EvmWalletService } from '../services/evm-wallet.service.js';
+import { SafeManagerService } from '../services/safe-manager.service.js';
 import axios from 'axios';
 // ESM compatibility
 const __filename = fileURLToPath(import.meta.url);
@@ -19,10 +21,17 @@ const PORT = process.env.PORT || 3000;
 const ENV = loadEnv();
 // Service Singletons
 const dbRegistryService = new DbRegistryService();
-// Initialize Wallet Service with Encryption Key
 const evmWalletService = new EvmWalletService(ENV.rpcUrl, ENV.mongoEncryptionKey);
 // In-Memory Bot Instances (Runtime State)
 const ACTIVE_BOTS = new Map();
+// Simple Logger for Server context
+const serverLogger = {
+    info: (msg) => console.log(`[SERVER] ${msg}`),
+    warn: (msg) => console.warn(`[SERVER WARN] ${msg}`),
+    error: (msg, err) => console.error(`[SERVER ERROR] ${msg}`, err),
+    debug: (msg) => console.debug(`[SERVER DEBUG] ${msg}`),
+    success: (msg) => console.log(`[SERVER SUCCESS] ${msg}`)
+};
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 // --- STATIC FILES (For Production) ---
@@ -77,7 +86,6 @@ async function startUserBot(userId, config) {
     engine.start().catch(err => console.error(`[Bot Error] ${normId}:`, err.message));
 }
 // 0. Health Check
-// Updated to check DB status explicitly
 app.get('/health', (req, res) => {
     const dbState = mongoose.connection.readyState;
     const dbStatusMap = { 0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting' };
@@ -98,26 +106,46 @@ app.post('/api/wallet/status', async (req, res) => {
     }
     const normId = userId.toLowerCase();
     try {
+        console.log(`[STATUS CHECK] Querying user: ${normId}`);
         const user = await User.findOne({ address: normId });
-        // If user has a wallet, return it (regardless of type for now, though we prefer TRADING_EOA)
+        // If user has a wallet, return it
         if (!user || !user.tradingWallet) {
+            console.log(`[STATUS CHECK] User ${normId} needs activation.`);
             res.json({ status: 'NEEDS_ACTIVATION' });
         }
         else {
+            let safeAddr = user.tradingWallet.safeAddress || null;
+            // SAFETY FIX: Only generate safeAddress if missing. 
+            // Do not overwrite existing safeAddress as it might have been correctly derived by client.
+            if (user.tradingWallet.address && !safeAddr) {
+                try {
+                    // Determine Safe Address deterministically from Signer using SDK config
+                    const newSafeAddr = await SafeManagerService.computeAddress(user.tradingWallet.address);
+                    safeAddr = newSafeAddr;
+                    user.tradingWallet.safeAddress = safeAddr;
+                    user.tradingWallet.type = 'GNOSIS_SAFE';
+                    await user.save();
+                    console.log(`[STATUS CHECK] Generated missing Safe address: ${safeAddr}`);
+                }
+                catch (err) {
+                    console.warn("Failed to compute safe address", err);
+                }
+            }
+            console.log(`[STATUS CHECK] Active. Proxy(Safe): ${safeAddr} | Signer: ${user.tradingWallet.address}`);
             res.json({
                 status: 'ACTIVE',
-                address: user.tradingWallet.address,
+                address: user.tradingWallet.address, // EOA (Signer)
+                safeAddress: safeAddr, // Gnosis (Funder)
                 type: user.tradingWallet.type
             });
         }
     }
     catch (e) {
-        console.error(e);
-        res.status(500).json({ error: 'DB Error' });
+        console.error("[STATUS CHECK ERROR]", e);
+        res.status(500).json({ error: 'DB Error: ' + e.message });
     }
 });
-// 2. Activate Trading Wallet (EOA)
-// UPDATED: Now checks for existing wallet to prevent overwrite (Safe Restoration)
+// 2. Activate Trading Wallet (EOA + Safe Calculation)
 app.post('/api/wallet/activate', async (req, res) => {
     console.log(`[ACTIVATION REQUEST] Received payload for user: ${req.body?.userId}`);
     const { userId } = req.body;
@@ -130,21 +158,41 @@ app.post('/api/wallet/activate', async (req, res) => {
         // 1. Check if user already exists with a wallet
         let user = await User.findOne({ address: normId });
         if (user && user.tradingWallet && user.tradingWallet.address) {
-            console.log(`[ACTIVATION] User ${normId} already has wallet: ${user.tradingWallet.address}. Returning existing.`);
-            // IDEMPOTENCY: Return existing wallet, do not overwrite keys!
-            res.json({ success: true, address: user.tradingWallet.address, restored: true });
+            console.log(`[ACTIVATION] User ${normId} already has wallet. Returning existing.`);
+            // Ensure Safe address is present
+            let safeAddr = user.tradingWallet.safeAddress;
+            if (!safeAddr) {
+                safeAddr = await SafeManagerService.computeAddress(user.tradingWallet.address);
+                user.tradingWallet.safeAddress = safeAddr;
+                user.tradingWallet.type = 'GNOSIS_SAFE';
+                await user.save();
+            }
+            res.json({
+                success: true,
+                address: user.tradingWallet.address,
+                safeAddress: safeAddr,
+                restored: true
+            });
             return;
         }
-        // 2. Generate NEW Trading EOA only if none exists
+        // 2. Generate NEW Trading EOA
         console.log(`[ACTIVATION] Generating NEW keys for ${normId}...`);
         const walletConfig = await evmWalletService.createTradingWallet(normId);
+        // 3. Compute Safe Address immediately
+        const safeAddr = await SafeManagerService.computeAddress(walletConfig.address);
         const configToSave = {
             ...walletConfig,
-            type: 'TRADING_EOA'
+            type: 'GNOSIS_SAFE', // Default to Safe now
+            safeAddress: safeAddr,
+            isSafeDeployed: false // Will be deployed by BotEngine on first run
         };
         await User.findOneAndUpdate({ address: normId }, { tradingWallet: configToSave }, { upsert: true, new: true });
-        console.log(`[ACTIVATION SUCCESS] Trading Wallet Created: ${configToSave.address} (Owner: ${normId})`);
-        res.json({ success: true, address: configToSave.address });
+        console.log(`[ACTIVATION SUCCESS] EOA: ${configToSave.address} | Safe: ${safeAddr}`);
+        res.json({
+            success: true,
+            address: configToSave.address,
+            safeAddress: safeAddr
+        });
     }
     catch (e) {
         console.error("[ACTIVATION DB ERROR]", e);
@@ -273,6 +321,10 @@ app.post('/api/bot/start', async (req, res) => {
             // PASS ENV VARS
             l2ApiCredentials: l2Creds,
             mongoEncryptionKey: ENV.mongoEncryptionKey,
+            // PASS BUILDER CREDENTIALS FOR RELAYER & ATTRIBUTION
+            builderApiKey: ENV.builderApiKey,
+            builderApiSecret: ENV.builderApiSecret,
+            builderApiPassphrase: ENV.builderApiPassphrase,
             startCursor: Math.floor(Date.now() / 1000)
         };
         await startUserBot(normId, config);
@@ -487,9 +539,9 @@ app.post('/api/deposit/record', async (req, res) => {
         res.json({ success: true, exists: true });
     }
 });
-// 11. Withdraw Funds (New Endpoint for EOA)
+// 11. Withdraw Funds (Enhanced for Safe & Rescue)
 app.post('/api/wallet/withdraw', async (req, res) => {
-    const { userId, tokenType, toAddress } = req.body;
+    const { userId, tokenType, toAddress, forceEoa } = req.body;
     const normId = userId.toLowerCase();
     try {
         const user = await User.findOne({ address: normId });
@@ -497,10 +549,67 @@ app.post('/api/wallet/withdraw', async (req, res) => {
             res.status(400).json({ error: 'Wallet not configured' });
             return;
         }
-        let tokenAddress = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // USDC.e
-        if (tokenType === 'POL')
-            tokenAddress = '0x0000000000000000000000000000000000000000';
-        const txHash = await evmWalletService.withdrawFunds(user.tradingWallet.encryptedPrivateKey, toAddress || normId, tokenAddress);
+        const walletConfig = user.tradingWallet;
+        let txHash = '';
+        // Provider for balance checks (using env RPC or default)
+        const provider = new ethers.JsonRpcProvider(ENV.rpcUrl);
+        const USDC_ABI = ['function balanceOf(address owner) view returns (uint256)'];
+        const usdcContract = new ethers.Contract('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', USDC_ABI, provider);
+        // Use stored Safe Address if available, otherwise compute it (fallback)
+        let safeAddr = walletConfig.safeAddress;
+        if (!safeAddr) {
+            safeAddr = await SafeManagerService.computeAddress(walletConfig.address);
+        }
+        // Case A: Withdraw from SAFE (Type 2 - Gasless via Relayer)
+        // Standard flow unless user forces EOA rescue
+        if (!forceEoa) {
+            if (tokenType !== 'USDC.e') {
+                // For now, allow Safe to withdraw only USDC.e
+                // If user wants to withdraw POL, they likely mean from EOA (since Safe uses Relayer)
+                // But if they explicitly asked for POL, we might fall through to EOA logic?
+                // Let's assume Safe withdrawals are primarily USDC.
+                // If tokenType is POL, maybe check Safe balance? Safe usually doesn't hold POL.
+            }
+            // 1. Check Safe Balance
+            let safeBalance = 0n;
+            try {
+                safeBalance = await usdcContract.balanceOf(safeAddr);
+            }
+            catch (e) { }
+            // 2. Check EOA Balance (for Stuck Funds logic)
+            let eoaBalance = 0n;
+            try {
+                eoaBalance = await usdcContract.balanceOf(walletConfig.address);
+            }
+            catch (e) { }
+            console.log(`[WITHDRAW] Check: Safe=${safeBalance} | EOA=${eoaBalance}`);
+            if (safeBalance > 0n) {
+                // Normal Safe Withdrawal
+                serverLogger.info(`[WITHDRAW] Initiating Safe Withdrawal from ${safeAddr} (Proxy)`);
+                const signer = await evmWalletService.getWalletInstance(walletConfig.encryptedPrivateKey);
+                const safeManager = new SafeManagerService(signer, ENV.builderApiKey, ENV.builderApiSecret, ENV.builderApiPassphrase, serverLogger, safeAddr // Pass the correct Safe Address
+                );
+                txHash = await safeManager.withdrawUSDC(toAddress || normId, safeBalance.toString());
+            }
+            else if (eoaBalance > 0n) {
+                // AUTO RESCUE: Safe is empty, but EOA has funds
+                serverLogger.warn(`[WITHDRAW] Safe empty, but found ${eoaBalance} USDC in EOA Signer. Executing Auto-Rescue.`);
+                txHash = await evmWalletService.withdrawFunds(walletConfig.encryptedPrivateKey, toAddress || normId, '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174' // USDC.e
+                );
+            }
+            else {
+                // Both empty
+                return res.status(400).json({ error: "Insufficient funds in both Safe and Trading Wallet." });
+            }
+        }
+        else {
+            // Case B: Forced EOA Withdrawal (Rescue Button or specific request)
+            serverLogger.info(`[WITHDRAW] Forced EOA/Signer Withdrawal for ${normId}`);
+            let tokenAddress = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // USDC.e
+            if (tokenType === 'POL')
+                tokenAddress = '0x0000000000000000000000000000000000000000';
+            txHash = await evmWalletService.withdrawFunds(walletConfig.encryptedPrivateKey, toAddress || normId, tokenAddress);
+        }
         res.json({ success: true, txHash });
     }
     catch (e) {
@@ -517,7 +626,8 @@ async function restoreBots() {
     try {
         // Debug: Check total users first
         const totalUsers = await User.countDocuments();
-        console.log(`Diagnostic: Total Users in DB: ${totalUsers}`);
+        const dbName = mongoose.connection.name;
+        console.log(`Diagnostic: DB [${dbName}] contains ${totalUsers} users.`);
         const activeUsers = await User.find({ isBotRunning: true, activeBotConfig: { $exists: true } });
         console.log(`Found ${activeUsers.length} active bots to restore (isBotRunning=true).`);
         for (const user of activeUsers) {
@@ -532,7 +642,11 @@ async function restoreBots() {
                     activePositions: user.activePositions,
                     startCursor: lastTime,
                     l2ApiCredentials: l2Creds,
-                    mongoEncryptionKey: ENV.mongoEncryptionKey
+                    mongoEncryptionKey: ENV.mongoEncryptionKey,
+                    // PASS BUILDER CREDENTIALS ON RESTORE
+                    builderApiKey: ENV.builderApiKey,
+                    builderApiSecret: ENV.builderApiSecret,
+                    builderApiPassphrase: ENV.builderApiPassphrase
                 };
                 try {
                     await startUserBot(user.address, config);
@@ -548,6 +662,53 @@ async function restoreBots() {
         console.error("Restore failed:", e);
     }
 }
+// --- REGISTRY SEEDER ---
+async function seedRegistry() {
+    const systemWallets = ENV.userAddresses;
+    if (!systemWallets || systemWallets.length === 0)
+        return;
+    console.log(`🌱 Seeding Registry with ${systemWallets.length} system wallets from wallets.txt...`);
+    for (const address of systemWallets) {
+        if (!address || !address.startsWith('0x'))
+            continue;
+        const normalized = address.toLowerCase();
+        try {
+            const exists = await Registry.findOne({ address: { $regex: new RegExp(`^${normalized}$`, "i") } });
+            if (!exists) {
+                await Registry.create({
+                    address: normalized,
+                    listedBy: 'SYSTEM',
+                    listedAt: new Date().toISOString(),
+                    isSystem: true,
+                    tags: ['OFFICIAL', 'WHALE'],
+                    winRate: 0,
+                    totalPnl: 0,
+                    tradesLast30d: 0,
+                    followers: 0,
+                    copyCount: 0,
+                    copyProfitGenerated: 0
+                });
+                console.log(`   + Added ${normalized.slice(0, 8)}...`);
+            }
+            else if (!exists.isSystem) {
+                // Upgrade existing to system if matched
+                exists.isSystem = true;
+                // Add OFFICIAL tag if not present
+                if (!exists.tags?.includes('OFFICIAL')) {
+                    exists.tags = [...(exists.tags || []), 'OFFICIAL'];
+                }
+                await exists.save();
+                console.log(`   ^ Upgraded ${normalized.slice(0, 8)}... to Official`);
+            }
+        }
+        catch (e) {
+            console.warn(`Failed to seed ${normalized}:`, e);
+        }
+    }
+    // Run analytics immediately after seeding to populate stats
+    // This ensures they show up with real data in the UI immediately
+    await registryAnalytics.updateAllRegistryStats();
+}
 // --- BOOTSTRAP ---
 // 1. Start HTTP Server immediately (Health Check requirement)
 const server = app.listen(Number(PORT), '0.0.0.0', () => {
@@ -557,7 +718,8 @@ const server = app.listen(Number(PORT), '0.0.0.0', () => {
 connectDB(ENV.mongoUri)
     .then(async () => {
     console.log("✅ DB Connected. Initializing background services...");
-    registryAnalytics.updateAllRegistryStats();
+    await seedRegistry(); // Seed wallets.txt into DB
+    // registryAnalytics.updateAllRegistryStats(); // Called inside seedRegistry now
     restoreBots();
 })
     .catch((err) => {

@@ -19,7 +19,7 @@ export class AiAgentService {
     size: number,
     price: number,
     riskProfile: RiskProfile = 'balanced',
-    apiKey?: string // Optional Override
+    apiKey?: string
   ): Promise<AnalysisResult> {
     
     // Use provided key, or fall back to process.env
@@ -70,15 +70,11 @@ export class AiAgentService {
       const text = response.text;
       if (!text) throw new Error("No response from AI");
 
-      // Gemini sometimes wraps JSON in markdown blocks like ```json ... ```
       const cleanText = text.replace(/```json\n?|```/g, '').trim();
       
       return JSON.parse(cleanText) as AnalysisResult;
     } catch (error) {
       console.error("AI Analysis failed:", error);
-      // Fail safe: If AI fails (e.g. quota, network), we default to blocking the trade in Conservative mode, but allowing in others if critical
-      // However, if the error is specifically about auth/key despite our check, we might want to fail open or closed depending on preference.
-      // Current logic: Fail open on degen, closed on others.
       const fallbackDecision = riskProfile === 'degen';
       return { 
         shouldCopy: fallbackDecision, 

@@ -10,6 +10,8 @@ export class DbRegistryService {
             const profile = await Registry.findOne({
                 address: { $regex: new RegExp(`^${walletAddress}$`, "i") }
             });
+            // Directly access properties. Mongoose types are tricky with Documents vs Interfaces.
+            // profile is a HydratedDocument<IRegistry> which should have the fields.
             return profile ? profile.listedBy : null;
         }
         catch (e) {

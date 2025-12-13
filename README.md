@@ -3,9 +3,9 @@
 
 ![Bet Mirror Header](./docs/assets/header.png)
 
-**Institutional-grade Polymarket Copy Trading Terminal. Features Dedicated Trading Wallets, AI Risk Analysis (Gemini), and Cross-Chain funding via Li.Fi.**
+**Institutional-grade Polymarket Copy Trading Terminal. Features Dedicated Gnosis Safes, AI Risk Analysis (Gemini), and Cross-Chain funding via Li.Fi.**
 
-**Bet Mirror Pro** is an enterprise-grade trading terminal designed to democratize algorithmic prediction market trading. Unlike traditional bots that require you to keep your browser open, Bet Mirror uses a **Hybrid Cloud Architecture**. It generates a **Dedicated Trading Wallet** (EOA) for every user, secured by AES-256 encryption. This allows the cloud engine to execute trades 24/7 based on **AI Risk Analysis** and **Copy Trading signals**, while ensuring your main savings wallet remains untouched. The platform includes a built-in "Alpha Registry" marketplace, rewarding top traders with a 1% protocol fee from every copier.
+**Bet Mirror Pro** is an enterprise-grade trading terminal designed to democratize algorithmic prediction market trading. Unlike traditional bots that require you to keep your browser open, Bet Mirror uses a **Hybrid Cloud Architecture**. It deploys a **Gnosis Safe** (Smart Wallet) for every user, controlled by an encrypted EOA signer. This allows the cloud engine to execute **Gasless Trades** 24/7 via the Polymarket Relayer based on **AI Risk Analysis** and **Copy Trading signals**, while ensuring your main savings wallet remains untouched. The platform includes a built-in "Alpha Registry" marketplace, rewarding top traders with a 1% protocol fee from every copier.
 
 Developed by **PolyCafe**.
 
@@ -23,9 +23,9 @@ Bet Mirror Pro transforms complex algorithmic trading into a simple 3-step proce
 
 ### 1. The Smart Onboarding
 - **Connect:** User connects their standard Main Wallet (Metamask, Phantom, Rainbow).
-- **Generate:** The system automatically generates a dedicated **Trading Wallet** (EOA) on the server.
-- **Security:** The private key is immediately encrypted using **AES-256** and stored in the database. It is only decrypted in memory when a trade needs to be signed.
-- **Isolation:** This isolates your trading capital from your main savings. Even if the bot were compromised, your Main Wallet remains safe.
+- **Deploy:** The system automatically derives and deploys a dedicated **Gnosis Safe** on Polygon.
+- **Security:** An encrypted EOA key acts as the controller. It is stored using **AES-256**.
+- **Isolation:** Funds sit in the Safe, distinct from your main savings.
 
 ### 2. The Cloud Engine (Server-Side)
 - **Persistence:** Once the bot is started, it runs on our Node.js cloud cluster backed by **MongoDB**.
@@ -55,7 +55,7 @@ The Alpha Marketplace is powered by a dedicated **Registry Analytics Service**.
 This platform is a registered **Polymarket Builder**. Every trade executed by the bot is cryptographically stamped with **Attribution Headers**.
 
 **To configure your Builder Keys (For Platform Admins):**
-Add the following to your `.env` file to enable stamping:
+Add the following to your `.env` file to enable stamping and relayer access:
 
 ```env
 POLY_BUILDER_API_KEY=your_builder_key
@@ -120,22 +120,24 @@ graph TD
 
     subgraph "Blockchain & Execution"
         LiFi["🌉 Li.Fi Protocol"]
-        TradingWallet["🔐 Trading Wallet (EOA)"]
+        Safe["🔐 Gnosis Safe (Funder)"]
+        Relayer["⚡ Polymarket Relayer"]
         CLOB["⚡ Polymarket CLOB"]
     end
 
     %% Flows
     User -->|"1. Connect & Auth"| Browser
     Browser -->|"2. Bridge Funds"| LiFi
-    LiFi -.->|"USDC Deposit"| TradingWallet
+    LiFi -.->|"USDC Deposit"| Safe
     
     Browser -->|"3. Request Activation"| API
-    API -->|"4. Generate & Encrypt Key"| DB
+    API -->|"4. Deploy Safe & Encrypt Signer"| DB
     
     API -->|"5. Risk Analysis"| Gemini
     
-    API -->|"6. Sign Trade (Encrypted Key)"| TradingWallet
-    TradingWallet -->|"7. Execute Order"| CLOB
+    API -->|"6. Sign Trade (EOA Key)"| API
+    API -->|"7. Submit to Relayer"| Relayer
+    Relayer -->|"8. Execute via Safe"| CLOB
 ```
 
 ---
@@ -155,7 +157,7 @@ graph TD
 *   **Frontend:** React, Vite, TailwindCSS, Lucide Icons.
 *   **Backend:** Node.js, Express, TypeScript.
 *   **Database:** MongoDB (Mongoose ODM).
-*   **Web3:** Viem, Ethers.js.
+*   **Web3:** Viem, Ethers.js, @polymarket/builder-relayer-client.
 *   **AI:** Google GenAI SDK (Gemini 2.5).
 
 ---
@@ -233,7 +235,8 @@ If you see `MongooseServerSelectionError` in your cloud logs (Sliplane, Railway,
 | Component | Responsibility | Access Level |
 | :--- | :--- | :--- |
 | **Main Wallet** | Held by User (Phantom/Metamask) | **Fund Source**. Used to deposit and receive profits. Safely isolated. |
-| **Trading Key** | Held by Server (Encrypted DB) | **Execution**. Used to sign trades. Encrypted at rest. |
+| **Gnosis Safe** | On-Chain Contract | **Funder**. Holds trading capital. Controlled by the Trading Key. |
+| **Trading Key** | Held by Server (Encrypted DB) | **Execution**. Used to sign orders and Relayer requests. |
 | **Database** | MongoDB Atlas | Stores Config, History, and Encrypted Keys. |
 
 ---

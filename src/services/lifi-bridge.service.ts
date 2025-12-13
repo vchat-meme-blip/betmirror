@@ -2,7 +2,7 @@
 import { createConfig, getRoutes, executeRoute, Solana, EVM, Route } from '@lifi/sdk';
 import { createWalletClient, custom } from 'viem';
 import axios from 'axios';
-import { web3Service } from './web3.service';
+import { web3Service } from './web3.service.js';
 
 // --- GLOBAL CONFIGURATION ---
 // Use private RPCs to avoid public rate limits (403/429 Errors)

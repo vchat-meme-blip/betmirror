@@ -4,10 +4,12 @@ import { createConfig } from '@lifi/sdk';
  * Responsible for finding routes to fund the Polygon Proxy Wallet from other chains.
  */
 export class LiFiService {
+    env;
+    logger;
+    isInitialized = false;
     constructor(env, logger) {
         this.env = env;
         this.logger = logger;
-        this.isInitialized = false;
         this.initialize();
     }
     initialize() {

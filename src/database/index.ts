@@ -1,11 +1,11 @@
 
 import mongoose, { Schema, Document, Model } from 'mongoose';
-import { TraderProfile } from '../domain/alpha.types';
-import { TradingWalletConfig } from '../domain/wallet.types';
-import { ActivePosition, TradeHistoryEntry } from '../domain/trade.types';
-import { UserStats } from '../domain/user.types';
-import { BotConfig } from '../server/bot-engine';
-import { BridgeTransactionRecord } from '../services/lifi-bridge.service';
+import { TraderProfile } from '../domain/alpha.types.js';
+import { TradingWalletConfig } from '../domain/wallet.types.js';
+import { ActivePosition, TradeHistoryEntry } from '../domain/trade.types.js';
+import { UserStats } from '../domain/user.types.js';
+import { BotConfig } from '../server/bot-engine.js';
+import { BridgeTransactionRecord } from '../services/lifi-bridge.service.js';
 
 // --- Interfaces ---
 
@@ -203,7 +203,8 @@ export const connectDB = async (uri: string) => {
     await mongoose.connect(uri, {
       serverSelectionTimeoutMS: 15000, // Wait 15s before giving up
       socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
-      family: 4 // FORCE IPv4 (Fixes issues where container tries IPv6 on networks that don't support it)
+      family: 4, // FORCE IPv4
+      dbName: 'betmirror' // Explicitly set DB name to avoid defaulting to 'test'
     });
 
     // --- FIX: Drop Legacy Index ---

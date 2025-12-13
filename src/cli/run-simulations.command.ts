@@ -1,5 +1,6 @@
+
 import 'dotenv/config';
-import { ConsoleLogger } from '../utils/logger.util';
+import { ConsoleLogger } from '../utils/logger.util.js';
 
 async function run(): Promise<void> {
   const logger = new ConsoleLogger();
@@ -11,4 +12,3 @@ run().catch((err) => {
   console.error(err);
   process.exit(1);
 });
-

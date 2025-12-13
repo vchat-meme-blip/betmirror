@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import axios from 'axios';
@@ -11,7 +10,8 @@ CheckCircle2, ArrowDownCircle, ArrowUpCircle, Brain, AlertCircle, Trophy, Globe,
 Info, HelpCircle, ChevronRight, Rocket, Gauge, MessageSquare, Star, ArrowRightLeft, LifeBuoy,
 Sun, Moon, Loader2, Timer, Fuel, Check, BarChart3, ChevronDown, MousePointerClick,
 Zap as ZapIcon, FileText, Twitter, Github, LockKeyhole, BadgeCheck, Search, BookOpen, ArrowRightCircle, AreaChart,
-Volume2, VolumeX, Menu, ArrowUpDown, Clipboard, Wallet2, ArrowDown, Sliders, Bell
+Volume2, VolumeX, Menu, ArrowUpDown, Clipboard, Wallet2, ArrowDown, Sliders, Bell, ShieldAlert,
+Wrench
 } from 'lucide-react';
 import { web3Service, USDC_POLYGON, USDC_BRIDGED_POLYGON, USDC_ABI } from './src/services/web3.service';
 import { lifiService, BridgeTransactionRecord } from './src/services/lifi-bridge.service';
@@ -58,7 +58,7 @@ enableNotifications: boolean;
 userPhoneNumber: string;
 enableAutoCashout: boolean;
 maxRetentionAmount: number;
-maxTradeAmount: number; // NEW: Safety Cap
+maxTradeAmount: number; 
 coldWalletAddress: string;
 enableSounds: boolean; 
 }
@@ -66,7 +66,7 @@ enableSounds: boolean;
 interface WalletBalances {
     native: string;
     usdc: string;
-    usdcBridged?: string; // Added support for legacy bridged USDC
+    usdcBridged?: string; 
     usdcNative?: string;
 }
 
@@ -130,7 +130,8 @@ const DepositModal = ({
     balances,
     onDeposit,
     isDepositing,
-    onBridgeRedirect
+    onBridgeRedirect,
+    targetAddress 
 }: {
     isOpen: boolean;
     onClose: () => void;
@@ -138,20 +139,20 @@ const DepositModal = ({
     onDeposit: (amount: string, tokenType: 'USDC.e' | 'USDC' | 'POL') => void;
     isDepositing: boolean;
     onBridgeRedirect: () => void;
+    targetAddress: string;
 }) => {
     const [amount, setAmount] = useState('');
     const [assetTab, setAssetTab] = useState<'USDC' | 'POL'>('USDC');
     const [selectedUsdcType, setSelectedUsdcType] = useState<'USDC.e' | 'USDC'>('USDC.e');
 
-    // Auto-select the USDC type that has balance
     useEffect(() => {
         if (isOpen) {
             const bridgedBal = parseFloat(balances.usdcBridged || '0');
             const nativeBal = parseFloat(balances.usdcNative || '0');
             if (nativeBal > bridgedBal && nativeBal > 0) {
-                setSelectedUsdcType('USDC'); // Prefer Native if user has more of it
+                setSelectedUsdcType('USDC'); 
             } else {
-                setSelectedUsdcType('USDC.e'); // Default or if Bridged is higher
+                setSelectedUsdcType('USDC.e'); 
             }
         }
     }, [isOpen, balances]);
@@ -181,7 +182,10 @@ const DepositModal = ({
                         <ArrowDown size={24}/>
                     </div>
                     <h3 className="text-xl font-bold text-gray-900 dark:text-white">Deposit Funds</h3>
-                    <p className="text-xs text-gray-500 mt-1">Main Wallet (You) <span className="mx-1">→</span> Trading Wallet (Bot)</p>
+                    <p className="text-xs text-gray-500 mt-1">Main Wallet (You) <span className="mx-1">→</span> Safe Wallet (Bot)</p>
+                    <div className="mt-2 text-[10px] bg-blue-50 dark:bg-blue-900/10 px-2 py-1 rounded inline-block text-blue-500">
+                        Target: {targetAddress ? `${targetAddress.slice(0,6)}...${targetAddress.slice(-4)}` : '...'}
+                    </div>
                 </div>
 
                 {/* Asset Tabs */}
@@ -290,7 +294,8 @@ const DepositModal = ({
 const WithdrawalModal = ({ 
     isOpen, 
     onClose, 
-    balances, 
+    balances,
+    signerBalances, 
     onWithdraw, 
     isWithdrawing,
     successTx 
@@ -298,11 +303,17 @@ const WithdrawalModal = ({
     isOpen: boolean; 
     onClose: () => void; 
     balances: WalletBalances; 
-    onWithdraw: (tokenType: 'USDC' | 'USDC.e' | 'POL') => void;
+    signerBalances: WalletBalances;
+    onWithdraw: (tokenType: 'USDC' | 'USDC.e' | 'POL', isRescue?: boolean, targetSafe?: string) => void;
     isWithdrawing: boolean;
     successTx?: string | null;
 }) => {
+    const [isRescueMode, setIsRescueMode] = useState(false);
+    const [customSafeAddress, setCustomSafeAddress] = useState('');
+
     if (!isOpen) return null;
+
+    const hasStuckFunds = parseFloat(signerBalances.usdcBridged || '0') > 0.5;
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
@@ -316,7 +327,7 @@ const WithdrawalModal = ({
                         </div>
                         <h3 className="text-2xl font-bold text-gray-900 dark:text-white">Withdrawal Sent!</h3>
                         <p className="text-sm text-gray-500 px-4">
-                            Your funds are on the way. The server has executed the transfer from your Trading Wallet.
+                            Your funds are on the way. The server has executed the transfer from the Safe.
                         </p>
                         
                         <div className="p-3 bg-gray-50 dark:bg-black/40 rounded-xl border border-gray-200 dark:border-gray-800 text-[10px] font-mono text-gray-600 dark:text-gray-400 break-all mx-2">
@@ -343,76 +354,115 @@ const WithdrawalModal = ({
                     </div>
                 ) : (
                     <>
-                        <div className="text-center mb-6">
+                        <div className="text-center mb-4">
                             <div className="w-12 h-12 bg-red-100 dark:bg-red-900/20 rounded-full flex items-center justify-center mx-auto mb-3 text-red-600 dark:text-red-500">
                                 <LogOut size={24}/>
                             </div>
                             <h3 className="text-xl font-bold text-gray-900 dark:text-white">Withdraw Funds</h3>
-                            <p className="text-xs text-gray-500 mt-1">Move funds from Trading Wallet to Main Wallet.</p>
+                            <p className="text-xs text-gray-500 mt-1">Move funds from Safe Wallet to Main Wallet.</p>
+                        </div>
+                        
+                        {/* Toggle Rescue Mode */}
+                        <div className="flex justify-center mb-6">
+                            <button 
+                                onClick={() => setIsRescueMode(!isRescueMode)}
+                                className="text-[10px] text-gray-400 hover:text-blue-500 flex items-center gap-1 underline"
+                            >
+                                <Wrench size={10}/> {isRescueMode ? "Hide Advanced Tools" : "Lost access to an old Safe?"}
+                            </button>
                         </div>
 
-                        <div className="space-y-3">
-                            {/* Bridged USDC Option (USDC.e) - Primary for Polymarket */}
-                            <div className="p-4 bg-green-50 dark:bg-green-900/10 rounded-xl border border-green-200 dark:border-green-900/30 flex justify-between items-center">
-                                <div>
-                                    <div className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                                        USDC.e (Bridged) <span className="bg-green-200 dark:bg-green-900 text-green-800 dark:text-green-300 text-[8px] px-1.5 py-0.5 rounded">ACTIVE</span>
+                        {/* Rescue Mode Input */}
+                        {isRescueMode && (
+                            <div className="mb-6 p-4 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl animate-in slide-in-from-top-2">
+                                <label className="text-[10px] font-bold text-gray-500 uppercase mb-2 block">
+                                    Target Safe Address (Rescue)
+                                </label>
+                                <input 
+                                    type="text" 
+                                    placeholder="0x..." 
+                                    value={customSafeAddress}
+                                    onChange={(e) => setCustomSafeAddress(e.target.value)}
+                                    className="w-full bg-white dark:bg-black/20 border border-gray-200 dark:border-gray-700 rounded-lg p-2 text-xs font-mono text-gray-900 dark:text-white mb-2"
+                                />
+                                <button 
+                                    onClick={() => onWithdraw('USDC.e', false, customSafeAddress)}
+                                    disabled={!customSafeAddress || isWithdrawing}
+                                    className="w-full py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg"
+                                >
+                                    ATTEMPT RECOVERY FROM OLD SAFE
+                                </button>
+                                <p className="text-[10px] text-gray-500 mt-2 italic">
+                                    *Only works if your current Signer key is the owner of the target Safe.
+                                </p>
+                            </div>
+                        )}
+
+                        {!isRescueMode && (
+                            <div className="space-y-3">
+                                {/* Bridged USDC Option (USDC.e) - Primary for Polymarket */}
+                                <div className="p-4 bg-green-50 dark:bg-green-900/10 rounded-xl border border-green-200 dark:border-green-900/30 flex justify-between items-center">
+                                    <div>
+                                        <div className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                                            USDC.e (Bridged) <span className="bg-green-200 dark:bg-green-900 text-green-800 dark:text-green-300 text-[8px] px-1.5 py-0.5 rounded">ACTIVE</span>
+                                        </div>
+                                        <div className="text-xs text-gray-500">Polymarket Trading Funds</div>
                                     </div>
-                                    <div className="text-xs text-gray-500">Polymarket Trading Funds</div>
+                                    <div className="text-right">
+                                        <div className="font-mono font-bold text-gray-900 dark:text-white">${balances.usdcBridged || '0.00'}</div>
+                                        <button 
+                                            onClick={() => onWithdraw('USDC.e')}
+                                            disabled={isWithdrawing || parseFloat(balances.usdcBridged || '0') <= 0}
+                                            className="text-[10px] text-green-600 hover:underline disabled:opacity-50 disabled:no-underline font-bold mt-1"
+                                        >
+                                            WITHDRAW ALL
+                                        </button>
+                                    </div>
                                 </div>
-                                <div className="text-right">
-                                    <div className="font-mono font-bold text-gray-900 dark:text-white">${balances.usdcBridged || '0.00'}</div>
-                                    <button 
-                                        onClick={() => onWithdraw('USDC.e')}
-                                        disabled={isWithdrawing || parseFloat(balances.usdcBridged || '0') <= 0}
-                                        className="text-[10px] text-green-600 hover:underline disabled:opacity-50 disabled:no-underline font-bold mt-1"
-                                    >
-                                        WITHDRAW ALL
-                                    </button>
-                                </div>
-                            </div>
+                                
+                                {/* Stuck Funds Rescue Section */}
+                                {hasStuckFunds && (
+                                    <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800/50 rounded-xl animate-pulse">
+                                        <div className="flex items-start gap-3">
+                                            <ShieldAlert size={20} className="text-yellow-600 dark:text-yellow-500 mt-0.5" />
+                                            <div className="flex-1">
+                                                <h4 className="text-sm font-bold text-yellow-800 dark:text-yellow-200">Funds Stuck in Signer?</h4>
+                                                <p className="text-xs text-yellow-700 dark:text-yellow-400 mt-1 leading-relaxed">
+                                                    We detected <strong>${signerBalances.usdcBridged}</strong> in your activation wallet (Signer).
+                                                </p>
+                                                <button 
+                                                    onClick={() => onWithdraw('USDC.e', true)}
+                                                    disabled={isWithdrawing}
+                                                    className="mt-2 w-full py-2 bg-yellow-200 dark:bg-yellow-800 hover:bg-yellow-300 dark:hover:bg-yellow-700 text-yellow-900 dark:text-yellow-100 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-2"
+                                                >
+                                                    RESCUE FROM SIGNER
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
 
-                            {/* Native USDC Option - Secondary */}
-                            <div className="p-4 bg-gray-50 dark:bg-black/40 rounded-xl border border-gray-200 dark:border-white/10 flex justify-between items-center">
-                                <div>
-                                    <div className="font-bold text-gray-900 dark:text-white">USDC (Native)</div>
-                                    <div className="text-xs text-gray-500">Circle Standard (0x3c49...)</div>
-                                </div>
-                                <div className="text-right">
-                                    <div className="font-mono font-bold text-gray-900 dark:text-white">${balances.usdcNative || '0.00'}</div>
-                                    <button 
-                                        onClick={() => onWithdraw('USDC')}
-                                        disabled={isWithdrawing || parseFloat(balances.usdcNative || '0') <= 0}
-                                        className="text-[10px] text-blue-600 hover:underline disabled:opacity-50 disabled:no-underline font-bold mt-1"
-                                    >
-                                        WITHDRAW ALL
-                                    </button>
+                                {/* POL Option (Gas) - Mostly for EOA but Safe might have some */}
+                                <div className="p-4 bg-gray-50 dark:bg-black/40 rounded-xl border border-gray-200 dark:border-white/10 flex justify-between items-center">
+                                    <div>
+                                        <div className="font-bold text-gray-900 dark:text-white">POL (Gas)</div>
+                                        <div className="text-xs text-gray-500">Network Token</div>
+                                    </div>
+                                    <div className="text-right">
+                                        <div className="font-mono font-bold text-gray-900 dark:text-white">{balances.native}</div>
+                                        {/* Safe Withdrawal for Native not implemented in Manager yet */}
+                                        <span className="text-[10px] text-gray-400 cursor-not-allowed font-bold mt-1">
+                                            GAS ONLY
+                                        </span>
+                                    </div>
                                 </div>
                             </div>
-                            
-                            {/* POL Option */}
-                            <div className="p-4 bg-gray-50 dark:bg-black/40 rounded-xl border border-gray-200 dark:border-white/10 flex justify-between items-center">
-                                <div>
-                                    <div className="font-bold text-gray-900 dark:text-white">POL (Gas)</div>
-                                    <div className="text-xs text-gray-500">Network Token</div>
-                                </div>
-                                <div className="text-right">
-                                    <div className="font-mono font-bold text-gray-900 dark:text-white">{balances.native}</div>
-                                    <button 
-                                        onClick={() => onWithdraw('POL')}
-                                        disabled={isWithdrawing || parseFloat(balances.native) <= 0}
-                                        className="text-[10px] text-blue-600 hover:underline disabled:opacity-50 disabled:no-underline font-bold mt-1"
-                                    >
-                                        WITHDRAW ALL
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
+                        )}
                         
                         {isWithdrawing && (
                             <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 flex items-center gap-3">
                                 <Loader2 className="animate-spin text-blue-600" size={20}/>
-                                <span className="text-xs text-blue-800 dark:text-blue-200 font-bold">Processing Withdrawal via Server...</span>
+                                <span className="text-xs text-blue-800 dark:text-blue-200 font-bold">Processing Withdrawal via Relayer...</span>
                             </div>
                         )}
                     </>
@@ -423,6 +473,7 @@ const WithdrawalModal = ({
 };
 
 const TraderDetailsModal = ({ trader, onClose }: { trader: TraderProfile, onClose: () => void }) => {
+    // ... existing modal code ...
     const [trades, setTrades] = useState<PolyTrade[]>([]);
     const [loading, setLoading] = useState(true);
 
@@ -534,6 +585,7 @@ const TraderDetailsModal = ({ trader, onClose }: { trader: TraderProfile, onClos
 };
 
 const FeedbackWidget = ({ userId }: { userId: string }) => {
+    // ... existing feedback widget ...
     const [isOpen, setIsOpen] = useState(false);
     const [rating, setRating] = useState(5);
     const [comment, setComment] = useState('');
@@ -614,160 +666,47 @@ const FeedbackWidget = ({ userId }: { userId: string }) => {
 };
 
 const BridgeStepper = ({ status }: { status: string }) => {
-    let step = 1;
-    if (status.includes("Approving") || status.includes("Swapping")) step = 2;
-    if (status.includes("Bridging")) step = 3;
-    if (status.includes("Receive") || status.includes("Complete")) step = 4;
+    const isError = status.toLowerCase().includes('failed');
+    
+    let activeStep = 0;
+    if (status.includes('Approving') || status.includes('Allowance')) activeStep = 0;
+    else if (status.includes('Swapping')) activeStep = 1;
+    else if (status.includes('Bridging') || status.includes('Cross-Chain')) activeStep = 2;
+    else if (status.includes('Complete') || status.includes('Success')) activeStep = 3;
+    
+    const steps = ['Approve', 'Swap', 'Bridge', 'Done'];
 
     return (
-        <div className="w-full py-4">
-            <div className="flex justify-between items-center mb-2">
-                {['Sign', 'Approve', 'Bridge', 'Finish'].map((label, idx) => {
-                    const currentStep = idx + 1;
-                    const isCompleted = step > currentStep;
-                    const isActive = step === currentStep;
-                    return (
-                        <div key={label} className="flex flex-col items-center gap-1 relative z-10">
-                            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-500 ${
-                                isCompleted ? 'bg-green-500 text-white' : 
-                                isActive ? 'bg-blue-600 text-white scale-110 shadow-lg shadow-blue-500/30' : 
-                                'bg-gray-200 dark:bg-gray-800 text-gray-400'
-                            }`}>
-                                {isCompleted ? <Check size={14}/> : currentStep}
-                            </div>
-                            <span className={`text-[10px] font-bold ${isActive ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400'}`}>{label}</span>
-                        </div>
-                    )
-                })}
-                <div className="absolute top-7 left-0 w-full h-0.5 bg-gray-200 dark:bg-gray-800 -z-0 hidden"></div> 
-            </div>
-            <div className="text-center mt-4 p-2 bg-blue-50 dark:bg-blue-900/10 rounded-lg border border-blue-100 dark:border-blue-500/20">
-                <span className="text-xs font-mono text-blue-600 dark:text-blue-400 animate-pulse flex items-center justify-center gap-2">
-                    {step < 4 && <Loader2 size={12} className="animate-spin"/>}
-                    {status || "Initializing..."}
+        <div className="w-full space-y-4 p-4 bg-gray-50 dark:bg-white/5 rounded-xl border border-gray-200 dark:border-white/10">
+            <div className="flex justify-between items-center">
+                <span className="text-xs font-bold text-gray-500 uppercase tracking-widest">Status</span>
+                <span className={`text-xs font-mono font-bold ${isError ? 'text-red-500' : 'text-blue-500'}`}>
+                    {status || 'Initializing...'}
                 </span>
             </div>
-        </div>
-    );
-};
-
-const ActivationView = ({ 
-    needsActivation, 
-    handleActivate, 
-    isActivating, 
-    chainId, 
-    userAddress, 
-    theme, 
-    toggleTheme 
-}: any) => {
-    const [recoveryMode, setRecoveryMode] = useState(false);
-    const [computedAddress, setComputedAddress] = useState<string>('');
-    const [checking, setChecking] = useState(false);
-    const [showSafetyGuide, setShowSafetyGuide] = useState(false);
-
-    // In new architecture, we just prompt the user to initialize/restore.
-    // We can optionally check server if they already have an address but just no session.
-    useEffect(() => {
-        const checkServer = async () => {
-            setChecking(true);
-            try {
-                const res = await axios.post('/api/wallet/status', { userId: userAddress });
-                if (res.data.status === 'ACTIVE' || res.data.address) {
-                    setRecoveryMode(true);
-                    setComputedAddress(res.data.address);
-                } else {
-                    setRecoveryMode(false);
-                }
-            } catch(e) {
-                console.error(e);
-            } finally {
-                setChecking(false);
-            }
-        };
-        if(userAddress) checkServer();
-    }, [userAddress]);
-
-    return (
-        <div className="min-h-screen bg-white dark:bg-[#050505] flex flex-col items-center justify-center text-gray-900 dark:text-white p-4 transition-colors duration-200">
-            <div className="absolute top-6 right-6">
-                <button onClick={toggleTheme} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-white/10 text-gray-600 dark:text-gray-400 transition-colors">
-                {theme === 'light' ? <Moon size={20}/> : <Sun size={20}/>}
-                </button>
-            </div>
-
-            <div className="max-w-xl w-full bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-xl p-8 space-y-6 relative overflow-hidden shadow-2xl">
-                <div className="absolute top-0 right-0 p-8 opacity-5 text-blue-600">
-                    <Shield size={120} />
-                </div>
+            
+            <div className="relative flex justify-between items-center px-2">
+                <div className="absolute left-0 top-[5px] w-full h-0.5 bg-gray-200 dark:bg-gray-700 z-0"></div>
                 
-                <div className="flex items-center gap-4">
-                    <div className={`p-4 rounded-xl border ${recoveryMode ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-500/30' : 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-500/30'}`}>
-                        {recoveryMode ? <RefreshCw size={32} className="text-green-600 dark:text-green-400" /> : <Zap size={32} className="text-blue-600 dark:text-blue-400" />}
-                    </div>
-                    <div>
-                        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
-                            {recoveryMode ? 'Restore Connection' : 'Initialize Trading Wallet'}
-                        </h2>
-                        <p className="text-gray-500">
-                            {recoveryMode ? 'Reconnect to your existing bot.' : 'Create your dedicated Trading Wallet.'}
-                        </p>
-                    </div>
-                </div>
-                {checking && (
-                    <div className="flex items-center gap-2 text-xs text-blue-500 animate-pulse bg-blue-50 dark:bg-blue-900/10 p-3 rounded">
-                        <Loader2 size={12} className="animate-spin"/> Checking account status...
-                    </div>
-                )}
-
-                {computedAddress && (
-                    <div className={`p-4 rounded-lg border animate-in fade-in zoom-in duration-300 ${recoveryMode ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-500/20' : 'bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/10'}`}>
-                        <div className="flex justify-between items-center mb-2">
-                            <span className={`text-xs font-bold uppercase tracking-wider flex items-center gap-1 ${recoveryMode ? 'text-green-800 dark:text-green-400' : 'text-gray-500'}`}>
-                                {recoveryMode ? <><CheckCircle2 size={12}/> Existing Wallet Found</> : "Your Future Trading Wallet"}
+                {steps.map((label, idx) => {
+                    const isCompleted = idx < activeStep;
+                    const isCurrent = idx === activeStep;
+                    
+                    return (
+                        <div key={idx} className="relative z-10 flex flex-col items-center gap-2">
+                            <div className={`w-3 h-3 rounded-full border-2 transition-all ${
+                                isCompleted ? 'bg-green-500 border-green-500' :
+                                isCurrent ? 'bg-blue-500 border-blue-500 animate-pulse' :
+                                'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600'
+                            }`} />
+                            <span className={`text-[8px] font-bold uppercase tracking-wider ${
+                                isCompleted || isCurrent ? 'text-gray-900 dark:text-white' : 'text-gray-400'
+                            }`}>
+                                {label}
                             </span>
-                            {recoveryMode && <span className="bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200 text-[10px] px-2 py-0.5 rounded font-mono font-bold">READY</span>}
                         </div>
-                        <div className="flex justify-between text-sm items-center">
-                            <span className="text-gray-600 dark:text-gray-300 font-mono text-xs bg-white dark:bg-black/20 px-2 py-1 rounded select-all">{computedAddress}</span>
-                        </div>
-                    </div>
-                )}
-                <div className="space-y-4">
-                    <div className="flex items-start gap-3 p-3 bg-gray-50 dark:bg-white/5 rounded-lg border border-gray-200 dark:border-white/5">
-                        <CheckCircle2 size={16} className="text-green-500 mt-1" />
-                        <div>
-                            <span className="text-sm font-bold text-gray-900 dark:text-white">Dedicated Trading Wallet</span>
-                            <p className="text-xs text-gray-500">The server manages a dedicated EOA for trading, ensuring compatibility with all markets.</p>
-                        </div>
-                    </div>
-                    <div className="flex items-start gap-3 p-3 bg-gray-50 dark:bg-white/5 rounded-lg border border-gray-200 dark:border-white/5">
-                        <CheckCircle2 size={16} className="text-green-500 mt-1" />
-                        <div>
-                            <span className="text-sm font-bold text-gray-900 dark:text-white">Non-Custodial Logic</span>
-                            <p className="text-xs text-gray-500">While the server holds the trading key, you control withdrawals to your main wallet.</p>
-                        </div>
-                    </div>
-                </div>
-                
-                <button 
-                    onClick={handleActivate}
-                    disabled={isActivating || checking}
-                    className={`w-full py-3 px-2 sm:py-4 text-white font-bold rounded-xl hover:opacity-90 transition-all flex items-center justify-center gap-2 sm:gap-3 shadow-lg text-sm sm:text-base ${
-                        recoveryMode 
-                        ? 'bg-gradient-to-r from-green-600 to-green-500 shadow-green-500/20' 
-                        : 'bg-gradient-to-r from-blue-600 to-blue-500 shadow-blue-500/20'
-                    } disabled:opacity-50 disabled:cursor-not-allowed`}
-                >
-                    {isActivating ? (
-                        <RefreshCw className="animate-spin flex-shrink-0" size={18} />
-                    ) : (
-                        recoveryMode ? <RefreshCw className="flex-shrink-0" size={18}/> : <Rocket className="flex-shrink-0" size={18} />
-                    )}
-                    <span className="whitespace-nowrap overflow-hidden text-ellipsis">
-                        {isActivating ? 'PROCESSING...' : (recoveryMode ? 'RESTORE CONNECTION' : 'CREATE TRADING WALLET')}
-                    </span>
-                </button>
-                
+                    );
+                })}
             </div>
         </div>
     );
@@ -783,7 +722,7 @@ return (
 
 const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, theme: string, toggleTheme: () => void }) => (
     <div className="min-h-screen bg-gray-50 dark:bg-[#050505] font-sans transition-colors duration-300 flex flex-col relative overflow-x-hidden">
-        
+        {/* ... existing landing code ... */}
         <HeroBackground />
 
         <div className="absolute top-0 left-0 w-full p-6 flex justify-between items-center z-50 max-w-7xl mx-auto left-0 right-0">
@@ -929,7 +868,7 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                         </div>
                         <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">1. Connect & Deploy</h3>
                         <p className="text-gray-500 text-sm leading-relaxed">
-                            Link your wallet. We instantly deploy a dedicated <strong>Trading Wallet</strong> (EOA) on the server. This is your high-speed execution engine.
+                            Link your wallet. We instantly deploy a dedicated **Gnosis Safe** (Smart Wallet) on the server. This is your high-speed execution engine.
                         </p>
                     </div>
 
@@ -969,7 +908,7 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                         <a href="https://docs.betmirror.bet" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
                             <BookOpen size={16}/>
                         </a>
-                        <a href="https://github.com/vchat-meme-blip/betmirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
+                        <a href="https://github.com/vmbbz/betmirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
                             <Github size={16}/>
                         </a>
                         <a href="https://x.com/bet_mirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
@@ -987,6 +926,129 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
     </div>
 );
 
+const ActivationView = ({ 
+    needsActivation, 
+    handleActivate, 
+    isActivating, 
+    chainId, 
+    userAddress, 
+    theme, 
+    toggleTheme 
+}: any) => {
+    const [recoveryMode, setRecoveryMode] = useState(false);
+    const [computedAddress, setComputedAddress] = useState<string>('');
+    const [checking, setChecking] = useState(false);
+    const [showSafetyGuide, setShowSafetyGuide] = useState(false);
+
+    // In new architecture, we just prompt the user to initialize/restore.
+    // We can optionally check server if they already have an address but just no session.
+    useEffect(() => {
+        const checkServer = async () => {
+            setChecking(true);
+            try {
+                const res = await axios.post('/api/wallet/status', { userId: userAddress });
+                if (res.data.status === 'ACTIVE' || res.data.address) {
+                    setRecoveryMode(true);
+                    // PRIORITIZE SAFE ADDRESS (Funds live there)
+                    setComputedAddress(res.data.safeAddress || res.data.address);
+                } else {
+                    setRecoveryMode(false);
+                }
+            } catch(e) {
+                console.error(e);
+            } finally {
+                setChecking(false);
+            }
+        };
+        if(userAddress) checkServer();
+    }, [userAddress]);
+
+    return (
+        <div className="min-h-screen bg-white dark:bg-[#050505] flex flex-col items-center justify-center text-gray-900 dark:text-white p-4 transition-colors duration-200">
+            <div className="absolute top-6 right-6">
+                <button onClick={toggleTheme} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-white/10 text-gray-600 dark:text-gray-400 transition-colors">
+                {theme === 'light' ? <Moon size={20}/> : <Sun size={20}/>}
+                </button>
+            </div>
+
+            <div className="max-w-xl w-full bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-xl p-8 space-y-6 relative overflow-hidden shadow-2xl">
+                <div className="absolute top-0 right-0 p-8 opacity-5 text-blue-600">
+                    <Shield size={120} />
+                </div>
+                
+                <div className="flex items-center gap-4">
+                    <div className={`p-4 rounded-xl border ${recoveryMode ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-500/30' : 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-500/30'}`}>
+                        {recoveryMode ? <RefreshCw size={32} className="text-green-600 dark:text-green-400" /> : <Zap size={32} className="text-blue-600 dark:text-blue-400" />}
+                    </div>
+                    <div>
+                        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
+                            {recoveryMode ? 'Restore Connection' : 'Initialize Trading Wallet'}
+                        </h2>
+                        <p className="text-gray-500">
+                            {recoveryMode ? 'Reconnect to your existing bot.' : 'Create your dedicated Trading Wallet.'}
+                        </p>
+                    </div>
+                </div>
+                {checking && (
+                    <div className="flex items-center gap-2 text-xs text-blue-500 animate-pulse bg-blue-50 dark:bg-blue-900/10 p-3 rounded">
+                        <Loader2 size={12} className="animate-spin"/> Checking account status...
+                    </div>
+                )}
+
+                {computedAddress && (
+                    <div className={`p-4 rounded-lg border animate-in fade-in zoom-in duration-300 ${recoveryMode ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-500/20' : 'bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/10'}`}>
+                        <div className="flex justify-between items-center mb-2">
+                            <span className={`text-xs font-bold uppercase tracking-wider flex items-center gap-1 ${recoveryMode ? 'text-green-800 dark:text-green-400' : 'text-gray-500'}`}>
+                                {recoveryMode ? <><CheckCircle2 size={12}/> Existing Wallet Found</> : "Your Future Trading Wallet"}
+                            </span>
+                            {recoveryMode && <span className="bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200 text-[10px] px-2 py-0.5 rounded font-mono font-bold">READY</span>}
+                        </div>
+                        <div className="flex justify-between text-sm items-center">
+                            <span className="text-gray-600 dark:text-gray-300 font-mono text-xs bg-white dark:bg-black/20 px-2 py-1 rounded select-all">{computedAddress}</span>
+                        </div>
+                    </div>
+                )}
+                <div className="space-y-4">
+                    <div className="flex items-start gap-3 p-3 bg-gray-50 dark:bg-white/5 rounded-lg border border-gray-200 dark:border-white/5">
+                        <CheckCircle2 size={16} className="text-green-500 mt-1" />
+                        <div>
+                            <span className="text-sm font-bold text-gray-900 dark:text-white">Dedicated Gnosis Safe</span>
+                            <p className="text-xs text-gray-500">The server manages a dedicated Safe for trading, ensuring compatibility with all markets.</p>
+                        </div>
+                    </div>
+                    <div className="flex items-start gap-3 p-3 bg-gray-50 dark:bg-white/5 rounded-lg border border-gray-200 dark:border-white/5">
+                        <CheckCircle2 size={16} className="text-green-500 mt-1" />
+                        <div>
+                            <span className="text-sm font-bold text-gray-900 dark:text-white">Non-Custodial Logic</span>
+                            <p className="text-xs text-gray-500">While the server holds the signer key, you control withdrawals to your main wallet.</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <button 
+                    onClick={handleActivate}
+                    disabled={isActivating || checking}
+                    className={`w-full py-3 px-2 sm:py-4 text-white font-bold rounded-xl hover:opacity-90 transition-all flex items-center justify-center gap-2 sm:gap-3 shadow-lg text-sm sm:text-base ${
+                        recoveryMode 
+                        ? 'bg-gradient-to-r from-green-600 to-green-500 shadow-green-500/20' 
+                        : 'bg-gradient-to-r from-blue-600 to-blue-500 shadow-blue-500/20'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                    {isActivating ? (
+                        <RefreshCw className="animate-spin flex-shrink-0" size={18} />
+                    ) : (
+                        recoveryMode ? <RefreshCw className="flex-shrink-0" size={18}/> : <Rocket className="flex-shrink-0" size={18} />
+                    )}
+                    <span className="whitespace-nowrap overflow-hidden text-ellipsis">
+                        {isActivating ? 'PROCESSING...' : (recoveryMode ? 'RESTORE CONNECTION' : 'CREATE TRADING WALLET')}
+                    </span>
+                </button>
+                
+            </div>
+        </div>
+    );
+};
+
 const App = () => {
 // --- STATE: Web3 & Session ---
 const [isConnected, setIsConnected] = useState(false);
@@ -995,10 +1057,15 @@ const [userAddress, setUserAddress] = useState<string>('');
 const [chainId, setChainId] = useState<number>(137);
 
 const [proxyAddress, setProxyAddress] = useState<string>('');
+// NEW: Track Signer Address separately for rescue missions
+const [signerAddress, setSignerAddress] = useState<string>('');
 
 // --- STATE: Balances ---
 const [mainWalletBal, setMainWalletBal] = useState<WalletBalances>({ native: '0.00', usdc: '0.00', usdcNative: '0.00', usdcBridged: '0.00' });
+// This is now SAFE balances
 const [proxyWalletBal, setProxyWalletBal] = useState<WalletBalances>({ native: '0.00', usdc: '0.00', usdcNative: '0.00', usdcBridged: '0.00' });
+// NEW: This is EOA balances (for rescue)
+const [signerWalletBal, setSignerWalletBal] = useState<WalletBalances>({ native: '0.00', usdc: '0.00', usdcNative: '0.00', usdcBridged: '0.00' });
 
 // --- STATE: UI & Data ---
 const [activeTab, setActiveTab] = useState<'dashboard' | 'marketplace' | 'history' | 'vault' | 'bridge' | 'system' | 'help'>('dashboard');
@@ -1318,32 +1385,40 @@ const fetchBalances = async () => {
         // CRITICAL FIX: Always use a dedicated Polygon RPC provider for the proxy wallet check.
         // This isolates the proxy check from the user's browser wallet network state, preventing 
         // "wrong balance" issues when the user is on Ethereum Mainnet or Base.
-        if (proxyAddress && proxyAddress !== userAddress) {
-            // Force Polygon Public RPC for consistent reads
-            const polygonProvider = new JsonRpcProvider('https://polygon-rpc.com');
-            
-            // Helper to safely fetch balance without crashing all
-            const safeBalance = async (call: () => Promise<bigint>): Promise<bigint> => {
-                try { return await call(); } catch(e) { 
-                     console.warn("Proxy balance fetch failed:", e);
-                     return BigInt(0); 
-                }
-            };
+        
+        const polygonProvider = new JsonRpcProvider('https://polygon-rpc.com');
+        const safeBalance = async (call: () => Promise<bigint>): Promise<bigint> => {
+            try { return await call(); } catch(e) { return BigInt(0); }
+        };
 
-            // Execute sequentially or parallel but ensuring isolation
+        // A. Safe Balance (Primary)
+        if (proxyAddress && proxyAddress !== userAddress) {
             const polyBal = await safeBalance(() => polygonProvider.getBalance(proxyAddress));
             const usdcBridgedBal = await safeBalance(() => new Contract(USDC_BRIDGED_POLYGON, USDC_ABI, polygonProvider).balanceOf(proxyAddress));
             const usdcNativeBal = await safeBalance(() => new Contract(USDC_POLYGON, USDC_ABI, polygonProvider).balanceOf(proxyAddress));
             
-            // console.log(`[Proxy Sync] POL: ${formatUnits(polyBal, 18)} | USDC.e: ${formatUnits(usdcBridgedBal, 6)}`);
-
             setProxyWalletBal({
-                native: parseFloat(formatUnits(polyBal, 18)).toFixed(4), // Use toFixed(4) to avoid slicing issues on small decimals
+                native: parseFloat(formatUnits(polyBal, 18)).toFixed(4),
                 usdc: parseFloat(formatUnits(usdcBridgedBal, 6)).toFixed(2),
                 usdcNative: parseFloat(formatUnits(usdcNativeBal, 6)).toFixed(2),
                 usdcBridged: parseFloat(formatUnits(usdcBridgedBal, 6)).toFixed(2)
             });
         }
+
+        // B. Signer Balance (Rescue Check)
+        if (signerAddress && signerAddress !== userAddress) {
+            const polyBal = await safeBalance(() => polygonProvider.getBalance(signerAddress));
+            const usdcBridgedBal = await safeBalance(() => new Contract(USDC_BRIDGED_POLYGON, USDC_ABI, polygonProvider).balanceOf(signerAddress));
+            const usdcNativeBal = await safeBalance(() => new Contract(USDC_POLYGON, USDC_ABI, polygonProvider).balanceOf(signerAddress));
+            
+            setSignerWalletBal({
+                native: parseFloat(formatUnits(polyBal, 18)).toFixed(4),
+                usdc: parseFloat(formatUnits(usdcBridgedBal, 6)).toFixed(2),
+                usdcNative: parseFloat(formatUnits(usdcNativeBal, 6)).toFixed(2),
+                usdcBridged: parseFloat(formatUnits(usdcBridgedBal, 6)).toFixed(2)
+            });
+        }
+
     } catch (e) {
         console.warn("Balance fetch error:", e);
     }
@@ -1381,7 +1456,9 @@ const handleConnect = async () => {
             setNeedsActivation(true);
             setIsConnected(true);
         } else {
-            setProxyAddress(res.data.address);
+            // CRITICAL FIX: Prefer Safe Address (Funder) over EOA Signer address for display and balance checks
+            setProxyAddress(res.data.safeAddress || res.data.address);
+            setSignerAddress(res.data.address); // Track the EOA separately
             setNeedsActivation(false);
             setIsConnected(true);
         }
@@ -1399,10 +1476,12 @@ const handleInitializeWallet = async () => {
             userId: userAddress
         });
 
-        setProxyAddress(res.data.address);
+        // Use safeAddress if returned, otherwise fallback to EOA address
+        setProxyAddress(res.data.safeAddress || res.data.address);
+        setSignerAddress(res.data.address);
         setNeedsActivation(false);
         
-        alert("✅ Trading Wallet Created!\n\nDeposit POL (Gas) and USDC.e (Trading) to start.");
+        alert("✅ Trading Wallet Created!\n\nDeposit USDC.e (Trading) to start. Gas is paid by Relayer!");
 
     } catch (e: any) {
         console.error(e);
@@ -1582,22 +1661,24 @@ const openWithdrawModal = async () => {
     fetchBalances();
 };
 
-const handleWithdraw = async (tokenType: 'USDC' | 'USDC.e' | 'POL') => {
-    if(!confirm(`Are you sure you want to withdraw ALL ${tokenType}?`)) return;
+const handleWithdraw = async (tokenType: 'USDC' | 'USDC.e' | 'POL', isRescue: boolean = false, targetSafe?: string) => {
+    if(!confirm(`Are you sure you want to withdraw ${targetSafe ? 'RESCUE' : (isRescue ? 'RESCUE' : 'ALL')} ${tokenType}?`)) return;
     setIsWithdrawing(true);
 
     try {
         const res = await axios.post('/api/wallet/withdraw', {
             userId: userAddress,
             tokenType: tokenType,
-            toAddress: userAddress // Send back to owner
+            toAddress: userAddress, // Send back to owner
+            forceEoa: isRescue, // Force EOA withdrawal if rescue mode
+            targetSafeAddress: targetSafe // Optional: Target specific Safe
         });
         
         if (res.data.success) {
             if (config.enableSounds) playSound('cashout');
             setWithdrawalTxHash(res.data.txHash);
         } else {
-             throw new Error(res.data.error || 'Unknown error');
+                throw new Error(res.data.error || 'Unknown error');
         }
 
     } catch (e: any) {
@@ -1919,7 +2000,7 @@ return (
                                         >
                                             <Copy size={12}/>
                                         </button>
-                                        <Tooltip text="This is your dedicated EOA trading wallet managed by the server. It executes your trades on Polymarket CLOB." />
+                                        <Tooltip text="This is your dedicated Gnosis Safe trading wallet managed by the server. It executes your trades on Polymarket CLOB." />
                                     </div>
                                     <button 
                                         onClick={fetchBalances} 
@@ -3097,7 +3178,7 @@ return (
                         </h3>
                         <div className="space-y-6 text-sm text-gray-600 dark:text-gray-400">
                             <p className="leading-relaxed">
-                                Bet Mirror uses the <strong>Dedicated Trading Wallet (EOA)</strong> model. Unlike slower Smart Accounts, our engine creates a dedicated, high-speed Ethereum wallet for every user. This ensures 100% compatibility with Polymarket's CLOB signature requirements.
+                                Bet Mirror uses a <strong>Dedicated EOA Signer</strong> to control a <strong>Gnosis Safe</strong>. Unlike slower native Smart Accounts, this hybrid model ensures 100% compatibility with Polymarket's CLOB signature requirements while maintaining smart wallet benefits like gasless trading.
                             </p>
                             <div className="space-y-3">
                                 <div className="flex gap-3">
@@ -3128,7 +3209,7 @@ return (
                                     <tr>
                                         <td className="py-3 font-medium text-gray-900 dark:text-white">Wallet Type</td>
                                         <td className="py-3 text-gray-500">Shared / Custodial</td>
-                                        <td className="py-3 text-gray-500 font-bold">Dedicated EOA per User</td>
+                                        <td className="py-3 text-gray-500 font-bold">Gnosis Safe (Smart Account)</td>
                                     </tr>
                                     <tr>
                                         <td className="py-3 font-medium text-gray-900 dark:text-white">Execution</td>
@@ -3166,7 +3247,7 @@ return (
                                 <Server size={16} className="text-orange-500"/> 2. The Trading Key (Bot)
                             </h4>
                             <p className="text-xs text-gray-500 leading-relaxed">
-                                The server holds an encrypted EOA key for execution. This key is used strictly for signing trades on the Polymarket CLOB. You can request a withdrawal at any time, which moves funds from this Trading Wallet back to your Owner Key.
+                                The server holds an encrypted EOA key (Signer) that controls your Gnosis Safe. This key is used strictly for signing trades on the Polymarket CLOB. You can request a withdrawal at any time, which moves funds from this Safe back to your Owner Key.
                             </p>
                         </div>
                     </div>
@@ -3189,6 +3270,7 @@ return (
         onDeposit={handleDeposit}
         isDepositing={isDepositing}
         onBridgeRedirect={() => { setIsDepositModalOpen(false); setActiveTab('bridge'); }}
+        targetAddress={proxyAddress} // Use the proxy address (which should be safe address)
     />
 
     {/* Withdrawal Modal */}
@@ -3196,6 +3278,7 @@ return (
         isOpen={isWithdrawModalOpen}
         onClose={() => { setIsWithdrawModalOpen(false); setWithdrawalTxHash(null); }}
         balances={proxyWalletBal}
+        signerBalances={signerWalletBal} // Pass the signer balances
         onWithdraw={handleWithdraw}
         isWithdrawing={isWithdrawing}
         successTx={withdrawalTxHash}

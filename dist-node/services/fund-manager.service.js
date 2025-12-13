@@ -1,13 +1,18 @@
 export class FundManagerService {
+    adapter;
+    funderAddress;
+    config;
+    logger;
+    notifier;
+    // OPTIMIZATION: Throttle balance checks to avoid RPC Limits
+    lastCheckTime = 0;
+    THROTTLE_MS = 60 * 60 * 1000; // Check max once per hour unless forced
     constructor(adapter, funderAddress, config, logger, notifier) {
         this.adapter = adapter;
         this.funderAddress = funderAddress;
         this.config = config;
         this.logger = logger;
         this.notifier = notifier;
-        // OPTIMIZATION: Throttle balance checks to avoid RPC Limits
-        this.lastCheckTime = 0;
-        this.THROTTLE_MS = 60 * 60 * 1000; // Check max once per hour unless forced
     }
     async checkAndSweepProfits(force = false) {
         if (!this.config.enabled || !this.config.destinationAddress || !this.config.maxRetentionAmount) {
