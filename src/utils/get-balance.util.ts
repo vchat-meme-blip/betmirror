@@ -1,14 +1,14 @@
 
-import { Contract, formatUnits, formatEther } from 'ethers';
-import type { Wallet, AbstractSigner, Provider } from 'ethers';
+import { Contract, formatUnits, formatEther, Wallet } from 'ethers';
+import type { AbstractSigner } from 'ethers'; // v5 type? AbstractSigner exists in v5 but usually just Signer is fine.
 
 const USDC_ABI = ['function balanceOf(address owner) view returns (uint256)'];
 
 /**
- * Gets USDC balance. Supports both Ethers Wallet and AbstractSigner (like ZeroDev).
+ * Gets USDC balance.
  */
 export async function getUsdBalanceApprox(
-  signer: Wallet | AbstractSigner | any,
+  signer: Wallet | any,
   usdcContractAddress: string,
 ): Promise<number> {
   const provider = signer.provider;
@@ -16,8 +16,8 @@ export async function getUsdBalanceApprox(
     throw new Error('Wallet/Signer provider is required');
   }
   
-  // Safely resolve address: Check property first, then fallback to async method
-  const address = signer.address || (await signer.getAddress());
+  // Safely resolve address
+  const address = await signer.getAddress();
 
   const usdcContract = new Contract(usdcContractAddress, USDC_ABI, provider);
   const balance = await usdcContract.balanceOf(address);
@@ -25,16 +25,15 @@ export async function getUsdBalanceApprox(
 }
 
 /**
- * Gets Native Token (POL/ETH) balance. Supports both Ethers Wallet and AbstractSigner.
+ * Gets Native Token (POL/ETH) balance.
  */
-export async function getPolBalance(signer: Wallet | AbstractSigner | any): Promise<number> {
+export async function getPolBalance(signer: Wallet | any): Promise<number> {
   const provider = signer.provider;
   if (!provider) {
     throw new Error('Wallet/Signer provider is required');
   }
   
-  // Safely resolve address
-  const address = signer.address || (await signer.getAddress());
+  const address = await signer.getAddress();
   
   const balance = await provider.getBalance(address);
   return parseFloat(formatEther(balance));

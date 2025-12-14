@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import axios from 'axios';
@@ -18,7 +19,7 @@ import { lifiService, BridgeTransactionRecord } from './src/services/lifi-bridge
 import { TradeHistoryEntry } from './src/domain/trade.types';
 import { TraderProfile, CashoutRecord, BuilderVolumeData } from './src/domain/alpha.types';
 import { UserStats } from './src/domain/user.types';
-import { parseUnits, formatUnits, Contract, BrowserProvider, JsonRpcProvider, Provider } from 'ethers';
+import { Contract, BrowserProvider, JsonRpcProvider, formatUnits } from 'ethers';
 
 // Constants & Assets
 const CHAIN_ICONS: Record<number, string> = {
@@ -170,7 +171,7 @@ const DepositModal = ({
     };
 
     const activeBalanceNum = parseFloat(getActiveBalance());
-    const isLowBalance = activeBalanceNum < 0.5;
+    const isLowBalance = activeBalanceNum < 0.05;
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
@@ -374,7 +375,7 @@ const WithdrawalModal = ({
 
                         {/* Rescue Mode Input */}
                         {isRescueMode && (
-                            <div className="mb-6 p-4 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl animate-in slide-in-from-top-2">
+                            <div className="mb-6 p-4 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-gray-700 rounded-xl animate-in slide-in-from-top-2">
                                 <label className="text-[10px] font-bold text-gray-500 uppercase mb-2 block">
                                     Target Safe Address (Rescue)
                                 </label>
@@ -450,10 +451,13 @@ const WithdrawalModal = ({
                                     </div>
                                     <div className="text-right">
                                         <div className="font-mono font-bold text-gray-900 dark:text-white">{balances.native}</div>
-                                        {/* Safe Withdrawal for Native not implemented in Manager yet */}
-                                        <span className="text-[10px] text-gray-400 cursor-not-allowed font-bold mt-1">
-                                            GAS ONLY
-                                        </span>
+                                        <button 
+                                            onClick={() => onWithdraw('POL')}
+                                            disabled={isWithdrawing || parseFloat(balances.native) <= 0}
+                                            className="text-[10px] text-blue-600 hover:underline disabled:opacity-50 disabled:no-underline font-bold mt-1"
+                                        >
+                                            WITHDRAW
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -902,16 +906,16 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                     </div>
                     
                     <div className="flex gap-6">
-                        <a href="/pitchdeck.pdf" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors flex items-center gap-2 text-xs font-medium">
+                        <a href="/pitchdeck.pdf" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors flex items-center gap-2 text-xs font-medium">
                             <FileText size={16}/> Pitch Deck
                         </a>
-                        <a href="https://docs.betmirror.bet" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
+                        <a href="https://docs.betmirror.bet" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
                             <BookOpen size={16}/>
                         </a>
-                        <a href="https://github.com/vmbbz/betmirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
+                        <a href="https://github.com/vchat-meme-blip/betmirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
                             <Github size={16}/>
                         </a>
-                        <a href="https://x.com/bet_mirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors">
+                        <a href="https://x.com/bet_mirror" target="_blank" className="text-gray-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
                             <Twitter size={16}/>
                         </a>
                     </div>
@@ -1121,10 +1125,10 @@ const [config, setConfig] = useState<AppConfig>({
     enableNotifications: false,
     userPhoneNumber: '',
     enableAutoCashout: false,
-    maxRetentionAmount: 50,
-    maxTradeAmount: 100, // DEFAULT CAP
+    maxRetentionAmount: 0,
+    maxTradeAmount: 100, 
     coldWalletAddress: '',
-    enableSounds: true
+    enableSounds: true 
 });
 
 // --- REFS for Debouncing ---
@@ -1387,8 +1391,8 @@ const fetchBalances = async () => {
         // "wrong balance" issues when the user is on Ethereum Mainnet or Base.
         
         const polygonProvider = new JsonRpcProvider('https://polygon-rpc.com');
-        const safeBalance = async (call: () => Promise<bigint>): Promise<bigint> => {
-            try { return await call(); } catch(e) { return BigInt(0); }
+        const safeBalance = async (call: () => Promise<any>): Promise<any> => {
+            try { return await call(); } catch(e) { return 0n; }
         };
 
         // A. Safe Balance (Primary)
@@ -2406,7 +2410,7 @@ return (
                                         <div className="flex bg-gray-200 dark:bg-white/5 p-1 rounded-lg">
                                             <button 
                                                 onClick={() => setDestToken('USDC')} 
-                                                className={`px-3 py-1 text-[10px] font-bold rounded transition-all ${destToken === 'USDC' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-white' : 'text-gray-500'}`}
+                                                className={`px-3 py-1 text-[10px] font-bold rounded transition-all ${destToken === 'USDC' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500'}`}
                                             >
                                                 USDC.e (Trade)
                                             </button>
@@ -3178,7 +3182,7 @@ return (
                         </h3>
                         <div className="space-y-6 text-sm text-gray-600 dark:text-gray-400">
                             <p className="leading-relaxed">
-                                Bet Mirror uses a <strong>Dedicated EOA Signer</strong> to control a <strong>Gnosis Safe</strong>. Unlike slower native Smart Accounts, this hybrid model ensures 100% compatibility with Polymarket's CLOB signature requirements while maintaining smart wallet benefits like gasless trading.
+                                Bet Mirror uses the <strong>Dedicated Trading Wallet (EOA)</strong> model. Unlike slower Smart Accounts, our engine creates a dedicated, high-speed Ethereum wallet for every user. This ensures 100% compatibility with Polymarket's CLOB signature requirements.
                             </p>
                             <div className="space-y-3">
                                 <div className="flex gap-3">
@@ -3209,7 +3213,7 @@ return (
                                     <tr>
                                         <td className="py-3 font-medium text-gray-900 dark:text-white">Wallet Type</td>
                                         <td className="py-3 text-gray-500">Shared / Custodial</td>
-                                        <td className="py-3 text-gray-500 font-bold">Gnosis Safe (Smart Account)</td>
+                                        <td className="py-3 text-gray-500 font-bold">Dedicated EOA per User</td>
                                     </tr>
                                     <tr>
                                         <td className="py-3 font-medium text-gray-900 dark:text-white">Execution</td>
@@ -3247,7 +3251,7 @@ return (
                                 <Server size={16} className="text-orange-500"/> 2. The Trading Key (Bot)
                             </h4>
                             <p className="text-xs text-gray-500 leading-relaxed">
-                                The server holds an encrypted EOA key (Signer) that controls your Gnosis Safe. This key is used strictly for signing trades on the Polymarket CLOB. You can request a withdrawal at any time, which moves funds from this Safe back to your Owner Key.
+                                The server holds an encrypted EOA key for execution. This key is used strictly for signing trades on the Polymarket CLOB. You can request a withdrawal at any time, which moves funds from this Trading Wallet back to your Owner Key.
                             </p>
                         </div>
                     </div>
@@ -3270,7 +3274,7 @@ return (
         onDeposit={handleDeposit}
         isDepositing={isDepositing}
         onBridgeRedirect={() => { setIsDepositModalOpen(false); setActiveTab('bridge'); }}
-        targetAddress={proxyAddress} // Use the proxy address (which should be safe address)
+        targetAddress={proxyAddress || userAddress}
     />
 
     {/* Withdrawal Modal */}
@@ -3278,7 +3282,7 @@ return (
         isOpen={isWithdrawModalOpen}
         onClose={() => { setIsWithdrawModalOpen(false); setWithdrawalTxHash(null); }}
         balances={proxyWalletBal}
-        signerBalances={signerWalletBal} // Pass the signer balances
+        signerBalances={signerWalletBal}
         onWithdraw={handleWithdraw}
         isWithdrawing={isWithdrawing}
         successTx={withdrawalTxHash}

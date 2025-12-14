@@ -1,5 +1,6 @@
 
-import { Wallet, JsonRpcProvider, Contract, parseUnits, formatUnits } from 'ethers';
+import { Wallet, JsonRpcProvider, Contract, parseEther, parseUnits } from 'ethers';
+import { Wallet as WalletV5, providers as providersV5 } from 'ethers-v5';
 import crypto from 'crypto';
 
 // Basic standard ABI for ERC20
@@ -10,14 +11,15 @@ const USDC_ABI = [
 
 /**
  * Service to manage Dedicated Trading Wallets (EOAs).
- * Replaces the complex ZeroDev Smart Account logic with standard EVM wallet operations.
- * Ensures strict compatibility with Polymarket CLOB signature requirements.
+ * Includes Shim for Ethers v6 compatibility with Polymarket SDK (v5).
  */
 export class EvmWalletService {
   private encryptionKey: string;
   private provider: JsonRpcProvider;
+  private rpcUrl: string;
 
   constructor(rpcUrl: string, encryptionKey: string) {
+    this.rpcUrl = rpcUrl;
     this.provider = new JsonRpcProvider(rpcUrl);
     this.encryptionKey = encryptionKey;
   }
@@ -38,11 +40,32 @@ export class EvmWalletService {
   }
 
   /**
-   * Decrypts the private key and returns a connected Wallet instance.
+   * Decrypts the private key and returns a connected Wallet instance (Ethers V6).
    */
   async getWalletInstance(encryptedPrivateKey: string): Promise<Wallet> {
     const privateKey = this.decrypt(encryptedPrivateKey);
-    return new Wallet(privateKey, this.provider);
+    const wallet = new Wallet(privateKey, this.provider);
+
+    // --- COMPATIBILITY SHIM START (Legacy Support) ---
+    if (typeof (wallet as any)._signTypedData === 'undefined' && typeof (wallet as any).signTypedData === 'function') {
+        (wallet as any)._signTypedData = async (domain: any, types: any, value: any) => {
+            const { EIP712Domain, ...cleanTypes } = types;
+            return await (wallet as any).signTypedData(domain, cleanTypes, value);
+        };
+    }
+    // --- COMPATIBILITY SHIM END ---
+
+    return wallet;
+  }
+
+  /**
+   * Returns an Ethers V5 Wallet instance.
+   * REQUIRED for Polymarket SDKs to function correctly without hacks.
+   */
+  async getWalletInstanceV5(encryptedPrivateKey: string): Promise<WalletV5> {
+      const privateKey = this.decrypt(encryptedPrivateKey);
+      const provider = new providersV5.JsonRpcProvider(this.rpcUrl);
+      return new WalletV5(privateKey, provider);
   }
 
   /**
@@ -53,21 +76,27 @@ export class EvmWalletService {
       encryptedPrivateKey: string, 
       toAddress: string, 
       tokenAddress: string,
-      amount?: bigint // If undefined, withdraws max
+      amount?: string // If undefined, withdraws max
   ): Promise<string> {
       const wallet = await this.getWalletInstance(encryptedPrivateKey);
       const isNative = tokenAddress === '0x0000000000000000000000000000000000000000';
 
       if (isNative) {
           // Native Withdrawal (POL)
-          // Leave some gas behind if withdrawing native
           const balance = await this.provider.getBalance(wallet.address);
-          const gasPrice = (await this.provider.getFeeData()).gasPrice || parseUnits('30', 'gwei');
+          
+          // Ethers v6 FeeData
+          const feeData = await this.provider.getFeeData();
+          // Fallback to 30 gwei if null
+          const gasPrice = feeData.gasPrice ?? 30000000000n; 
           const gasLimit = 21000n;
           const cost = gasPrice * gasLimit;
           
-          let valueToSend = amount || (balance - cost);
-          if (valueToSend <= 0n) throw new Error("Insufficient native balance for gas");
+          let valueToSend = amount ? parseEther(amount) : balance - cost;
+          
+          if (valueToSend <= 0n) {
+               throw new Error("Insufficient native balance for gas");
+          }
 
           const tx = await wallet.sendTransaction({
               to: toAddress,
@@ -80,7 +109,7 @@ export class EvmWalletService {
           // ERC20 Withdrawal (USDC)
           const contract = new Contract(tokenAddress, USDC_ABI, wallet);
           const balance = await contract.balanceOf(wallet.address);
-          const valueToSend = amount || balance;
+          const valueToSend = amount ? parseUnits(amount, 6) : balance;
 
           if (valueToSend <= 0n) throw new Error("Insufficient token balance");
 
@@ -94,7 +123,6 @@ export class EvmWalletService {
   
   private encrypt(text: string): string {
     const iv = crypto.randomBytes(16);
-    // Ensure key is 32 bytes
     const key = crypto.scryptSync(this.encryptionKey, 'salt', 32);
     const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
     let encrypted = cipher.update(text);

@@ -17,6 +17,7 @@
     "start:cli": "npm run build:backend && node --experimental-specifier-resolution=node dist-node/app/main.js",
     "generate:wallet": "node --loader ts-node/esm --experimental-specifier-resolution=node src/cli/generate-wallet.ts",
     "db:wipe": "node --loader ts-node/esm --experimental-specifier-resolution=node src/cli/wipe-db.ts",
+    "rescue": "node --loader ts-node/esm --experimental-specifier-resolution=node src/cli/rescue-funds.ts",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
@@ -36,7 +37,8 @@
     "clsx": "^2.1.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "ethers": "^6.11.1",
+    "ethers": "^6.13.2",
+    "ethers-v5": "npm:ethers@5.7.2",
     "express": "^4.18.2",
     "lucide-react": "^0.344.0",
     "mongoose": "^8.9.5",

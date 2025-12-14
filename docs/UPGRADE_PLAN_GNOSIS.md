@@ -1,6 +1,9 @@
 
 # 🏛️ Upgrade Plan: Gnosis Safe & Builder Attribution
 
+> **STATUS: COMPLETED / LIVE**
+> This upgrade was successfully deployed in v2.3.0.
+
 **Version:** 3.0.0-beta
 **Objective:** Transition Bet Mirror Pro from Standard EOA Trading to Gnosis Safe (Smart Wallet) Trading.
 **Goal:** Enable gasless trading, institutional-grade security, and full Polymarket Builder Program attribution.
@@ -120,13 +123,13 @@ We have existing users with funds in EOA wallets.
 
 ## 5. Execution Checklist
 
-- [ ] **Step 1:** Install npm dependencies.
-- [ ] **Step 2:** Define new types in `wallet.types.ts`.
-- [ ] **Step 3:** Implement `src/services/safe-manager.service.ts`.
-- [ ] **Step 4:** Refactor `PolymarketAdapter` to support Dual-Client (Relay + CLOB).
-- [ ] **Step 5:** Update `BotEngine` startup sequence.
-- [ ] **Step 6:** Update Frontend (Dashboard) to display "Safe Address" instead of EOA.
-- [ ] **Step 7:** Update Bridge Service to target Safe Address.
+- [x] **Step 1:** Install npm dependencies.
+- [x] **Step 2:** Define new types in `wallet.types.ts`.
+- [x] **Step 3:** Implement `src/services/safe-manager.service.ts`.
+- [x] **Step 4:** Refactor `PolymarketAdapter` to support Dual-Client (Relay + CLOB).
+- [x] **Step 5:** Update `BotEngine` startup sequence.
+- [x] **Step 6:** Update Frontend (Dashboard) to display "Safe Address" instead of EOA.
+- [x] **Step 7:** Update Bridge Service to target Safe Address.
 
 ---
 

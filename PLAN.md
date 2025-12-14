@@ -27,34 +27,36 @@ This document outlines the migration path from the current **Custodial SaaS Mode
     - Bot listens for incoming transfers on the Proxy Wallet to auto-update balances.
 
 ### Technical Tasks
-- [ ] Implement `src/services/lifi.service.ts` (See stub).
-- [ ] Update Frontend `handleDeposit` to use LiFi instead of direct Ethers tx.
-- [ ] Add `liFiConfig` to `RuntimeEnv`.
+- [x] Implement `src/services/lifi.service.ts`.
+- [x] Update Frontend `handleDeposit` to use LiFi instead of direct Ethers tx.
+- [x] Add `liFiConfig` to `RuntimeEnv`.
 
 ---
 
-## Phase 3: Account Abstraction (The "Trustless" Leap)
-**Goal:** Remove server custody of funds. Server only holds "Trading Permissions".
+## Phase 3: Account Abstraction & Gasless Trading (COMPLETED)
+**Goal:** Remove user gas liability and integrate with Polymarket Builder Program.
 
 ### Architecture
-1.  **Smart Accounts (Kernel / Safe):**
-    - Instead of `Wallet.createRandom()`, we use an AA SDK (e.g., ZeroDev or Alchemy Account Kit).
-    - The "Proxy Wallet" becomes a deployed Smart Contract.
-2.  **Session Keys:**
-    - User signs a session key off-chain.
-    - Permissions: `Target: PolymarketExchange`, `Function: createOrder()`, `Limit: Only USDC`.
-    - Server stores this Session Key, NOT the Admin Key.
-3.  **Gas Abstraction (Paymaster):**
-    - Users pay fees in USDC. The Paymaster handles MATIC gas fees invisibly.
+1.  **Gnosis Safe (Smart Wallet):**
+    - Instead of a raw EOA holding funds, we deploy a Gnosis Safe Proxy.
+    - The Safe holds the USDC and positions.
+2.  **Relayer Execution:**
+    - The server holds an encrypted EOA "Signer".
+    - The Signer signs a meta-transaction.
+    - The **Polymarket Relayer** submits the transaction and pays the gas.
+3.  **Authentication:**
+    - We use `SignatureType.POLY_GNOSIS_SAFE` (2) for CLOB orders.
+    - This allows high-frequency trading via the Safe without on-chain signatures for every order.
 
 ### Technical Tasks
-- [ ] Install AA SDK (ZeroDev/Permissionless.js).
-- [ ] Refactor `BotEngine` to sign UserOps instead of Ethers Transactions.
-- [ ] Create `SessionManager` on backend to track expiration of keys.
+- [x] Integrate `@polymarket/builder-relayer-client`.
+- [x] Refactor `BotEngine` to use `SafeManagerService`.
+- [x] Implement `withdrawNative` and `withdrawUSDC` via Relayer.
+- [x] Build "Rescue Tools" for on-chain emergency recovery.
 
 ---
 
-## Phase 4: Decentralized Registry
+## Phase 4: Decentralized Registry (Future)
 **Goal:** Move `registry.json` to an on-chain Smart Contract.
 - Listers call `Registry.register(wallet)`.
 - Copiers call `Registry.payFee()` (handled by bot).

@@ -1,25 +1,25 @@
 
 # 🗺️ Phase 4 Roadmap: The Path to Trustless Automation
 
-**Current Status:** Phase 3 (Account Abstraction) is Live.
+**Current Status:** Phase 3 (Gnosis Safe / Gasless Trading) is Live.
 **Next Milestone:** Phase 4 (Decentralized Revenue & Real-Time Data).
 
 ---
 
-## 1. On-Chain Fee Enforcement (Smart Contract Modules)
+## 1. On-Chain Fee Enforcement (Safe Modules)
 
 ### The Problem
-Currently, the Bot Server (Session Key) holds "Sudo" (Admin) permissions on the User's Smart Account. This is necessary to allow the server to execute the `USDC.transfer` function to pay the 1% fee to the Lister/Platform.
+Currently, the Bot Server (Signer EOA) holds full control permissions on the User's Safe. This is necessary to allow the server to execute the `USDC.transfer` function to pay the 1% fee to the Lister/Platform.
 *   **Risk:** While the server code *claims* it won't drain funds, the *key permission* technically allows it. This relies on "Soft Trust".
 
-### The Solution: Validation Modules
-We will deploy a custom **ZeroDev Validation Module**.
+### The Solution: Gnosis Safe Guards/Modules
+We will deploy a custom **Zodiac Module** or **Safe Guard**.
 
 **How it works:**
 1.  **Hardcoded Rule:** The module logic is deployed on-chain (Polygon).
 2.  **Rule:** "Allow `createOrder` (Trade) on Polymarket CTF Exchange."
 3.  **Hook:** "On `OrderFilled` (Profit Realization), automatically divert 1% of output USDC to `ListerAddress` and `PlatformAddress`."
-4.  **Result:** The Server Session Key can be downgraded to **Trade-Only** scope. It loses the ability to transfer funds, making the system trustless. The fee happens automatically via smart contract logic.
+4.  **Result:** The Server Key can be downgraded to **Trade-Only** scope. It loses the ability to execute arbitrary transfers, making the system trustless. The fee happens automatically via smart contract logic.
 
 ---
 

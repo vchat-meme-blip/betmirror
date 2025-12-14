@@ -1,4 +1,3 @@
-
 import { Wallet, JsonRpcProvider } from 'ethers';
 import { ClobClient, Chain } from '@polymarket/clob-client';
 import type { ApiKeyCreds } from '@polymarket/clob-client';
@@ -42,11 +41,10 @@ export async function createPolymarketClient(
       builderConfig = new BuilderConfig({ localBuilderCreds: builderCreds });
   }
 
-  // Casting wallet as any to bypass type mismatch between ethers v6 Wallet and ClobClient (v5) expectation
   const client = new ClobClient(
     'https://clob.polymarket.com',
     Chain.POLYGON,
-    wallet as any,
+    wallet as any, // Cast to any to bypass strict type check between ethers versions
     creds,
     undefined, // SignatureType
     undefined, // funderAddress

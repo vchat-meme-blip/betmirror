@@ -2,7 +2,7 @@
 # 🏛️ Bet Mirror Pro | Technical Architecture
 
 > **Enterprise-Grade Trading Infrastructure**
-> A hybrid cloud architecture leveraging Dedicated Trading Wallets, MongoDB for robust state persistence, and AI for risk analysis.
+> A hybrid cloud architecture leveraging Dedicated Gnosis Safes, MongoDB for robust state persistence, and AI for risk analysis.
 
 ---
 
@@ -12,8 +12,8 @@ Bet Mirror Pro solves the complexity of programmatic trading on Polymarket's CLO
 
 ### Core Components
 1.  **Frontend (React/Vite):** The command center. Users connect wallets, bridge funds, and configure risk profiles.
-2.  **Trading Wallets (EOA):** Dedicated Ethereum addresses generated for specific trading sessions.
-3.  **Bot Server (Node.js):** A high-frequency engine that monitors the blockchain and executes trades.
+2.  **Trading Wallets (Gnosis Safe):** Dedicated Smart Contracts (Proxy Wallets) deployed on Polygon. They hold the funds and positions.
+3.  **Bot Server (Node.js):** A high-frequency engine that monitors the blockchain and executes trades by signing instructions for the Safes.
 4.  **Database (MongoDB Atlas):** Persistent storage for user state, trade history, and **AES-256 Encrypted** keys.
 
 ---
@@ -27,44 +27,45 @@ graph TD
     API["API Server (Node.js)"]
     DB[("MongoDB Atlas")]
     Poly["Polymarket CLOB"]
+    Relayer["Polymarket Relayer"]
     LiFi["Li.Fi Protocol"]
 
     User -->|"1. Connects"| Web
     Web -->|"2. Request Activation"| API
-    API -->|"3. Generate & Encrypt Key"| DB
+    API -->|"3. Deploy Safe & Encrypt Signer"| DB
     
     subgraph "L2 Authentication Handshake"
-        API -->|"4. Decrypt Key internally"| API
-        API -->|"5. Sign 'DeriveApiKey'"| Poly
+        API -->|"4. Decrypt Signer internally"| API
+        API -->|"5. Sign Headers"| Poly
         Poly -->|"6. Return L2 Creds"| API
-        API -->|"7. Persist L2 Creds"| DB
     end
 
     subgraph "Trading Loop"
-        API -->|"8. Monitor Signals"| Poly
-        API -->|"9. AI Analysis (Gemini)"| API
-        API -->|"10. Sign Order (EOA Key)"| API
-        API -->|"11. Submit to CLOB"| Poly
+        API -->|"7. Monitor Signals"| Poly
+        API -->|"8. AI Analysis (Gemini)"| API
+        API -->|"9. Sign Trade (EOA Key)"| API
+        API -->|"10. Send to Relayer"| Relayer
+        Relayer -->|"11. Execute on Safe"| Poly
     end
 ```
 
 ---
 
-## 3. The Security Hierarchy
+## 3. The Security Hierarchy (Hybrid Model)
 
-To interact with Polymarket's CLOB efficiently, we use a dedicated wallet model.
+To interact with Polymarket's CLOB efficiently while maintaining security and attribution, we use a **Hybrid Safe Model**.
 
-| Key Type | Location | Storage | Permission Scope |
+| Key Type | Location | Storage | Function |
 | :--- | :--- | :--- | :--- |
 | **Main Wallet** | User's Device | MetaMask/Phantom | **Fund Source.** Used to deposit to and receive withdrawals from the bot. |
-| **Trading Key** | Bot Server | **Encrypted (AES-256)** | **Execution.** Used to sign trades and L2 Auth headers. Generated specifically for the bot. |
-| **L2 API Key** | Bot Server | Database | **Messenger.** An HTTP/WS access token used to talk to the Polymarket Matching Engine. |
+| **Signer EOA** | Bot Server | **Encrypted (AES-256)** | **Controller.** The EOA that has authority to sign transactions for the Safe. It holds *no funds*, only gas (optional, as Relayer pays gas). |
+| **Gnosis Safe** | Blockchain | Smart Contract | **Vault.** Holds the USDC.e capital and open positions. The Signer controls this vault. |
 
-### Why EOAs instead of Smart Accounts?
-We previously utilized ZeroDev Smart Accounts. However, Polymarket's CLOB has strict signature validation requirements that favor standard EOAs (Externally Owned Accounts) for high-frequency trading.
-*   **Speed:** EOAs do not require on-chain validation for signatures.
-*   **Compatibility:** 100% compatible with Polymarket's `createOrder` endpoints.
-*   **Security:** We maintain security by isolating trading funds from the user's main savings.
+### Why Gnosis Safe + Relayer?
+We previously explored standard EOAs and ZeroDev. We settled on the **Polymarket Relayer + Safe** architecture for three reasons:
+*   **Gasless Experience:** The Polymarket Relayer pays the MATIC gas fees for all trades and transfers.
+*   **Builder Attribution:** Transactions sent via the Relayer allow us to inject Builder ID headers, ensuring proper volume attribution.
+*   **Institutional Standard:** Gnosis Safe is the gold standard for on-chain asset custody.
 
 ---
 
@@ -73,14 +74,14 @@ We previously utilized ZeroDev Smart Accounts. However, Polymarket's CLOB has st
 We use a production-grade **MongoDB** cluster.
 
 ### Database Schema Strategy
-*   **Users Collection:** Stores `TradingWalletConfig`, `EncryptedPrivateKey`, `BotConfig`, and `L2ApiCredentials`.
+*   **Users Collection:** Stores `TradingWalletConfig` (Signer Address + Safe Address), `EncryptedPrivateKey`, and `BotConfig`.
 *   **Trades Collection:** Immutable log of every action with `AIReasoning`.
-*   **Registry Collection:** Tracks `CopyCount` and `ProfitGenerated`.
+*   **Registry Collection:** Tracks `CopyCount` and `ProfitGenerated` for the marketplace.
 
 ### Auto-Recovery
 1.  **Server Restart:** When the Node.js process restarts, memory is wiped.
 2.  **Rehydration:** The server queries MongoDB for all users with `isBotRunning: true`.
-3.  **Resume:** The bot decrypts the keys into memory and resumes monitoring immediately.
+3.  **Resume:** The bot decrypts the keys into memory, re-initializes the `SafeManager`, and resumes monitoring immediately.
 
 ---
 
@@ -89,6 +90,7 @@ We use a production-grade **MongoDB** cluster.
 *   **Frontend:** React 19, Vite, TailwindCSS, Lucide Icons.
 *   **Backend:** Node.js, Express, TypeScript.
 *   **Database:** MongoDB Atlas.
-*   **Blockchain:** Ethers.js v6.
+*   **Blockchain:** Viem & Ethers.js.
+*   **Execution:** `@polymarket/builder-relayer-client` & `@polymarket/clob-client`.
 *   **Bridge:** Li.Fi SDK.
 *   **AI:** Google Gemini 2.5 Flash.

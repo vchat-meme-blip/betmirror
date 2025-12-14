@@ -7,9 +7,8 @@ import { BotLog } from '../database/index.js';
 import { PolymarketAdapter } from '../adapters/polymarket/polymarket.adapter.js';
 import { FeeDistributorService } from '../services/fee-distributor.service.js';
 import { EvmWalletService } from '../services/evm-wallet.service.js';
+import { TOKENS } from '../config/env.js';
 import crypto from 'crypto';
-// Define the correct USDC.e address on Polygon
-const USDC_BRIDGED_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 export class BotEngine {
     config;
     registryService;
@@ -124,8 +123,13 @@ export class BotEngine {
             const funderAddr = this.exchange.getFunderAddress();
             if (!funderAddr)
                 return false;
-            const balance = await this.exchange.fetchBalance(funderAddr);
-            return balance >= 0.5; // Minimum $0.50 to start
+            // Check USDC Balance (Primary funding for trading)
+            const balanceUSDC = await this.exchange.fetchBalance(funderAddr);
+            // Allow start if we have open positions (we need to monitor them even if balance is low)
+            if (this.activePositions.length > 0)
+                return true;
+            // Otherwise ensure minimum funding
+            return balanceUSDC >= 0.05; // Minimum $0.50 to start
         }
         catch (e) {
             console.error(e);
@@ -176,7 +180,7 @@ export class BotEngine {
         this.runtimeEnv = {
             tradeMultiplier: this.config.multiplier,
             maxTradeAmount: this.config.maxTradeAmount || 100,
-            usdcContractAddress: USDC_BRIDGED_POLYGON,
+            usdcContractAddress: TOKENS.USDC_BRIDGED,
             adminRevenueWallet: process.env.ADMIN_REVENUE_WALLET,
             enableNotifications: this.config.enableNotifications,
             userPhoneNumber: this.config.userPhoneNumber,

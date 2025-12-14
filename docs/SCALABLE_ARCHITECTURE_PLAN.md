@@ -1,12 +1,12 @@
 
 # 🏛️ Scalable Trading Architecture Plan
 
-**Objective:** Upgrade the Bet Mirror backend to support multiple prediction markets (Polymarket, Kalshi, PredictBase) while fixing current Polymarket authentication issues.
+**Objective:** Upgrade the Bet Mirror backend to support multiple prediction markets (Polymarket, Kalshi, PredictBase) while maintaining robust authentication.
 
 ## 1. The Core Problem (RESOLVED)
-The previous architecture struggled with Polymarket's strict EIP-1271 signature validation for Smart Accounts.
-*   **Resolution:** We have implemented a **Hybrid Authentication Model**.
-*   **Mechanism:** We use the `Session Private Key` (EOA) to sign standard messages/orders, while using the `Smart Account Address` as the "Funder". This satisfies Polymarket's requirements while maintaining the non-custodial security of ZeroDev.
+The previous architecture used simple EOAs which required users to manage GAS (MATIC) and limited our ability to perform advanced operations.
+*   **Resolution:** We have implemented a **Gnosis Safe + Relayer Model**.
+*   **Mechanism:** We use the `Signer` (EOA) to sign standard messages/orders, while using the `Safe Address` as the "Funder". The Polymarket Relayer handles gas abstraction.
 
 ## 2. Performance Upgrades (COMPLETED)
 
@@ -24,13 +24,13 @@ To handle high-frequency signals and ensure 24/7 reliability, we have applied th
 *   **Problem:** Checking the blockchain balance every few seconds burns through RPC credits and can trigger IP bans.
 *   **Fix:** Implemented **Throttling**. The Auto-Cashout logic now only runs once per hour (or upon specific trigger events), reducing RPC load by 99%.
 
-## 3. The Solution: Exchange Adapter Pattern (NEXT PHASE)
+## 3. The Solution: Exchange Adapter Pattern
 
-We will abstract the specific logic of each exchange into **Adapters**. The `BotEngine` will no longer know it is trading on Polymarket; it will trade via a generic interface.
+We have abstracted the specific logic of each exchange into **Adapters**. The `BotEngine` does not care *how* a trade is executed, only that it *is* executed.
 
 ### A. The Interface (`IExchangeAdapter`)
 
-Every market integration must implement this contract:
+Every market integration implements this contract:
 
 ```typescript
 export interface IExchangeAdapter {
@@ -58,12 +58,12 @@ export interface IExchangeAdapter {
 
 ### B. Polymarket Implementation (`PolymarketAdapter`)
 
-This adapter will encapsulate the specific EOA/Session Key logic we identified as the fix.
+This adapter encapsulates the Gnosis Safe logic.
 
-*   **Signer:** Uses `ethers.Wallet` (EOA) initialized with the **Session Private Key**.
-*   **Funder:** Uses the **Smart Account Address** (Proxy) as the `funderAddress`.
-*   **Auth:** Performs the `createOrDeriveApiKey` handshake using SignatureType 0 (EOA).
-*   **Gas:** Manages the ZeroDev Paymaster headers internally.
+*   **Signer:** Uses `ethers.Wallet` (EOA) initialized with the **Encrypted Private Key**.
+*   **Funder:** Uses the **Gnosis Safe Address** as the `funderAddress` in the CLOB Client.
+*   **Auth:** Performs the `createOrDeriveApiKey` handshake using `SignatureType.POLY_GNOSIS_SAFE`.
+*   **Gas:** Uses `SafeManagerService` to route withdrawals via the Relayer.
 
 ### C. Future Scaling (Kalshi Example)
 

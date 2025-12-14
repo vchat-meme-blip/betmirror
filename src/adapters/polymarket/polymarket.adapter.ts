@@ -6,7 +6,8 @@ import {
 import { OrderBook } from '../../domain/market.types.js';
 import { TradeSignal } from '../../domain/trade.types.js';
 import { ClobClient, Chain, OrderType, Side } from '@polymarket/clob-client';
-import { Wallet, JsonRpcProvider, Contract, formatUnits } from 'ethers';
+import { Wallet as WalletV6, JsonRpcProvider, Contract, formatUnits } from 'ethers';
+import { Wallet as WalletV5 } from 'ethers-v5'; // V5 for SDK
 import { EvmWalletService } from '../../services/evm-wallet.service.js';
 import { SafeManagerService } from '../../services/safe-manager.service.js';
 import { TradingWalletConfig } from '../../domain/wallet.types.js';
@@ -42,7 +43,8 @@ export class PolymarketAdapter implements IExchangeAdapter {
     readonly exchangeName = 'Polymarket';
     
     private client?: ClobClient;
-    private wallet?: Wallet; 
+    private wallet?: WalletV6; 
+    private walletV5?: WalletV5; // Dedicated V5 wallet for SDK
     private walletService?: EvmWalletService;
     private safeManager?: SafeManagerService;
     private usdcContract?: Contract;
@@ -64,19 +66,31 @@ export class PolymarketAdapter implements IExchangeAdapter {
     ) {}
 
     async initialize(): Promise<void> {
-        this.logger.info(`[${this.exchangeName}] Initializing Adapter...`);
+        this.logger.info(`[${this.exchangeName}] Initializing Adapter (Ethers v6/v5 Hybrid)...`);
         
         this.walletService = new EvmWalletService(this.config.rpcUrl, this.config.mongoEncryptionKey);
         
         if (this.config.walletConfig.encryptedPrivateKey) {
+             // V6 for general operations
              this.wallet = await this.walletService.getWalletInstance(this.config.walletConfig.encryptedPrivateKey);
-             this.patchWalletForSdk(this.wallet);
+             // V5 for SDK stability
+             this.walletV5 = await this.walletService.getWalletInstanceV5(this.config.walletConfig.encryptedPrivateKey);
         } else {
              throw new Error("Missing Encrypted Private Key for Trading Wallet");
         }
 
         // Initialize Safe Manager
-        const existingSafeAddress = this.config.walletConfig.safeAddress;
+        // Check for safe address in config, or compute it now
+        let safeAddressToUse = this.config.walletConfig.safeAddress;
+        
+        if (!safeAddressToUse) {
+            this.logger.warn(`   ⚠️ Safe address missing in config. Computing...`);
+            safeAddressToUse = await SafeManagerService.computeAddress(this.config.walletConfig.address);
+        }
+
+        if (!safeAddressToUse) {
+             throw new Error("Failed to resolve Safe Address.");
+        }
 
         this.safeManager = new SafeManagerService(
             this.wallet,
@@ -84,38 +98,14 @@ export class PolymarketAdapter implements IExchangeAdapter {
             this.config.builderApiSecret,
             this.config.builderApiPassphrase,
             this.logger,
-            existingSafeAddress 
+            safeAddressToUse 
         );
 
-        // Derive/Get Safe Address
-        this.safeAddress = await this.safeManager.getSafeAddress();
+        this.safeAddress = this.safeManager.getSafeAddress();
         this.logger.info(`   Smart Bot Address: ${this.safeAddress}`);
 
         this.provider = new JsonRpcProvider(this.config.rpcUrl);
         this.usdcContract = new Contract(TOKENS.USDC_BRIDGED, USDC_ABI, this.provider);
-    }
-
-    private patchWalletForSdk(wallet: Wallet) {
-        if (!(wallet as any)._signTypedData) {
-            (wallet as any)._signTypedData = async (domain: any, types: any, value: any) => {
-                // Ethers v6 vs Polymarket SDK Compatibility Patch
-                const sanitizedTypes = { ...types };
-                
-                // 1. Remove EIP712Domain from types (it's implicit in v6)
-                if (sanitizedTypes.EIP712Domain) {
-                    delete sanitizedTypes.EIP712Domain;
-                }
-                
-                // 2. Ensure Domain ChainID is a Number (SDK sometimes passes string "137")
-                const sanitizedDomain = { ...domain };
-                if (sanitizedDomain.chainId) {
-                    sanitizedDomain.chainId = parseInt(String(sanitizedDomain.chainId), 10);
-                }
-
-                // 3. Forward to standard v6 method
-                return wallet.signTypedData(sanitizedDomain, sanitizedTypes, value);
-            };
-        }
     }
 
     async validatePermissions(): Promise<boolean> {
@@ -160,10 +150,10 @@ export class PolymarketAdapter implements IExchangeAdapter {
         this.client = new ClobClient(
             HOST_URL,
             Chain.POLYGON,
-            this.wallet as any, // Signer is EOA
+            this.walletV5 as any, 
             apiCreds,
             SignatureType.POLY_GNOSIS_SAFE, // Funder is Safe
-            this.safeAddress, // Explicitly set funder
+            this.safeAddress, // Explicitly set funder (Maker)
             undefined, 
             undefined,
             builderConfig
@@ -173,11 +163,10 @@ export class PolymarketAdapter implements IExchangeAdapter {
     private async deriveAndSaveKeys() {
         try {
             // Keys must be derived using SignatureType.EOA because the EOA is the signer.
-            // Polymarket associates keys with the signer address, not the proxy address.
             const tempClient = new ClobClient(
                 HOST_URL,
                 Chain.POLYGON,
-                this.wallet as any,
+                this.walletV5 as any, 
                 undefined,
                 SignatureType.EOA,
                 undefined
@@ -261,64 +250,91 @@ export class PolymarketAdapter implements IExchangeAdapter {
         if (!this.client) throw new Error("Client not authenticated");
 
         try {
-            // 0. DETERMINE MARKET TYPE (NEG RISK vs STANDARD)
+            // 1. FETCH MARKET CONFIG (Tick Size & Min Size)
+            // Default values usually safe for binary markets, but we try to fetch real ones
             let negRisk = false;
+            let minOrderSize = 5; 
+            let tickSize = 0.01;
+
             try {
-                // marketId in params is the conditionId
+                // Get market details to check for Neg Risk and specific constraints
                 const market = await this.client.getMarket(params.marketId);
                 negRisk = market.neg_risk;
+                
+                // Parse Order constraints if available
+                if (market.minimum_order_size) minOrderSize = Number(market.minimum_order_size);
+                if (market.minimum_tick_size) tickSize = Number(market.minimum_tick_size);
             } catch (e) {
-                // If getMarket fails (common for some old markets), fallback to Data API or assume False
-                this.logger.debug(`[Order] Could not fetch market details for ${params.marketId}, assuming negRisk=false`);
+                this.logger.debug(`[Order] Market info fetch fallback for ${params.marketId}`);
             }
 
             const side = params.side === 'BUY' ? Side.BUY : Side.SELL;
             
-            // 1. PRICE DISCOVERY
-            let priceToUse: number;
-            if (params.priceLimit !== undefined) {
-                priceToUse = params.priceLimit;
-            } else {
+            // 2. PRICE DETERMINATION & TICK ROUNDING
+            let rawPrice = params.priceLimit;
+
+            // If no limit provided, take Market Price (hit the book)
+            if (rawPrice === undefined) {
                  const book = await this.client.getOrderBook(params.tokenId);
                  if (side === Side.BUY) {
                      if (!book.asks || book.asks.length === 0) return "skipped_no_liquidity";
-                     priceToUse = Number(book.asks[0].price);
+                     rawPrice = Number(book.asks[0].price); // Buy at lowest ask
                  } else {
                      if (!book.bids || book.bids.length === 0) return "skipped_no_liquidity";
-                     priceToUse = Number(book.bids[0].price);
+                     rawPrice = Number(book.bids[0].price); // Sell at highest bid
                  }
             }
+
+            // SAFETY: Clamp Price to valid ranges (0.01 - 0.99 usually)
+            // We use tickSize to determine the floor/ceil
+            if (rawPrice >= 0.99) rawPrice = 0.99;
+            if (rawPrice <= 0.01) rawPrice = 0.01;
+
+            // ROUND TO TICK SIZE
+            // This is critical. If tick is 0.01, price 0.543 becomes 0.54.
+            // If we send 0.543, CLOB rejects it.
+            const inverseTick = Math.round(1 / tickSize);
+            const roundedPrice = Math.floor(rawPrice * inverseTick) / inverseTick;
             
-            let price = Math.floor(priceToUse * 100) / 100;
-            if (price >= 1.00) price = 0.99;
-            if (price < 0.01) price = 0.01;
+            // 3. SIZE CALCULATION (SHARES)
+            // Polymarket orders are in SHARES, not USD.
+            // shares = sizeUsd / price
+            const rawShares = params.sizeUsd / roundedPrice;
+            
+            // We must floor the shares to avoid fractional share errors if the market doesn't support them well,
+            // though Polymarket supports partials, integers are safer for "min size" checks.
+            const shares = Math.floor(rawShares);
 
-            // 2. SIZE CALCULATION
-            const rawSize = params.sizeUsd / price;
-            let size = Math.floor(rawSize);
+            // 4. MINIMUM SIZE CHECK
+            // If our calculated share count is below the market minimum (usually 5 shares), the API will reject it.
+            if (shares < minOrderSize) {
+                this.logger.warn(`⚠️ Order Rejected: Size (${shares}) < Minimum (${minOrderSize} shares). Req: $${params.sizeUsd.toFixed(2)} @ ${roundedPrice}`);
+                return `skipped_min_size_limit`; 
+            }
 
-            if (size < 1) return "skipped_dust_size";
-
-            // 3. CONSTRUCT ORDER (Aligned with Wagmi Safe Builder Example)
-            // Note: We deliberately allow 'nonce' to be undefined so the SDK handles it
-            // We explicit set taker to zero address
+            // 5. CONSTRUCT ORDER
             const order: any = {
                 tokenID: params.tokenId,
-                price: price,
+                price: roundedPrice,
                 side: side,
-                size: size,
+                size: shares,
                 feeRateBps: 0,
-                expiration: 0,
-                taker: "0x0000000000000000000000000000000000000000"
+                taker: "0x0000000000000000000000000000000000000000" // Standard taker address
             };
 
-            this.logger.info(`📝 Placing Order (Safe): ${params.side} $${(size*price).toFixed(2)} (${size} shares @ ${price}) [NegRisk: ${negRisk}]`);
+            this.logger.info(`📝 Placing Order (Safe): ${params.side} ${shares} shares @ $${roundedPrice.toFixed(2)} (Total: $${(shares*roundedPrice).toFixed(2)})`);
 
-            // Use createAndPostOrder helper which handles signature & posting in one go
+            // 6. POST ORDER (FOK - Fill Or Kill)
+            // We use FOK so we don't end up with open orders that clog the account
             const res = await this.client.createAndPostOrder(
                 order, 
-                { negRisk }, 
-                OrderType.GTC 
+                { 
+                    negRisk,
+                    // Ensure tickSize is passed as a number or string based on SDK requirements
+                    // Casting to any to bypass strict type checks in some SDK versions that have mismatched types
+                    tickSize: tickSize as any 
+                }, 
+                OrderType.FOK as any
             );
 
             if (res && res.success) {
@@ -326,25 +342,32 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 return res.orderID || res.transactionHash || "filled";
             }
             
-            throw new Error(res.errorMsg || "Order failed");
+            throw new Error(res.errorMsg || "Order failed response");
 
         } catch (error: any) {
-            // Check for Auth Errors and Retry ONCE
             const errStr = String(error);
-            if (retryCount < 1 && (errStr.includes("401") || errStr.includes("403") || errStr.includes("invalid signature") || errStr.includes("auth"))) {
-                this.logger.warn("⚠️ Auth Error during Order. Refreshing keys and retrying...");
-                this.config.l2ApiCredentials = undefined; // Force refresh
+
+            // Auth Retry Logic (Token Expiry)
+            if (retryCount < 1 && (errStr.includes("401") || errStr.includes("403") || errStr.includes("invalid signature"))) {
+                this.logger.warn("⚠️ Auth Error. Refreshing keys and retrying...");
+                this.config.l2ApiCredentials = undefined; 
                 await this.deriveAndSaveKeys();
                 this.initClobClient(this.config.l2ApiCredentials);
                 return this.createOrder(params, retryCount + 1);
             }
             
             const errorMsg = error.response?.data?.error || error.message;
+            
+            // Map common errors to readable logs
             if (errorMsg?.includes("allowance")) {
-                this.logger.error("❌ Trade Failed: Not Enough Allowance. Retrying approvals...");
+                this.logger.error("❌ Failed: Insufficient Allowance. Retrying approvals...");
                 await this.safeManager?.enableApprovals();
             } else if (errorMsg?.includes("balance")) {
-                this.logger.error("❌ Trade Failed: Insufficient USDC.e Balance in Safe.");
+                this.logger.error("❌ Failed: Insufficient USDC Balance.");
+                return "insufficient_funds";
+            } else if (errorMsg?.includes("minimum")) {
+                 this.logger.error(`❌ Failed: Below Min Size (CLOB Rejection).`);
+                 return "skipped_min_size_limit";
             } else {
                 this.logger.error(`Order Error: ${errorMsg}`);
             }

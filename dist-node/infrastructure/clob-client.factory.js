@@ -22,8 +22,8 @@ export async function createPolymarketClient(input) {
         };
         builderConfig = new BuilderConfig({ localBuilderCreds: builderCreds });
     }
-    // Casting wallet as any to bypass type mismatch between ethers v6 Wallet and ClobClient (v5) expectation
-    const client = new ClobClient('https://clob.polymarket.com', Chain.POLYGON, wallet, creds, undefined, // SignatureType
+    const client = new ClobClient('https://clob.polymarket.com', Chain.POLYGON, wallet, // Cast to any to bypass strict type check between ethers versions
+    creds, undefined, // SignatureType
     undefined, // funderAddress
     undefined, // ...
     undefined, // ...

@@ -4,10 +4,10 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import 'dotenv/config';
 import mongoose from 'mongoose';
-import { ethers } from 'ethers';
+import { ethers, JsonRpcProvider } from 'ethers';
 import { BotEngine } from './bot-engine.js';
 import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog, DepositLog } from '../database/index.js';
-import { loadEnv } from '../config/env.js';
+import { loadEnv, TOKENS } from '../config/env.js';
 import { DbRegistryService } from '../services/db-registry.service.js';
 import { registryAnalytics } from '../services/registry-analytics.service.js';
 import { EvmWalletService } from '../services/evm-wallet.service.js';
@@ -115,17 +115,16 @@ app.post('/api/wallet/status', async (req, res) => {
         }
         else {
             let safeAddr = user.tradingWallet.safeAddress || null;
-            // SAFETY FIX: Only generate safeAddress if missing. 
-            // Do not overwrite existing safeAddress as it might have been correctly derived by client.
+            // REPAIR LOGIC: Only compute if missing from DB.
             if (user.tradingWallet.address && !safeAddr) {
                 try {
-                    // Determine Safe Address deterministically from Signer using SDK config
+                    // Lock it in now
                     const newSafeAddr = await SafeManagerService.computeAddress(user.tradingWallet.address);
                     safeAddr = newSafeAddr;
                     user.tradingWallet.safeAddress = safeAddr;
                     user.tradingWallet.type = 'GNOSIS_SAFE';
                     await user.save();
-                    console.log(`[STATUS CHECK] Generated missing Safe address: ${safeAddr}`);
+                    console.log(`[STATUS CHECK] Repaired missing Safe address: ${safeAddr}`);
                 }
                 catch (err) {
                     console.warn("Failed to compute safe address", err);
@@ -158,7 +157,7 @@ app.post('/api/wallet/activate', async (req, res) => {
         // 1. Check if user already exists with a wallet
         let user = await User.findOne({ address: normId });
         if (user && user.tradingWallet && user.tradingWallet.address) {
-            console.log(`[ACTIVATION] User ${normId} already has wallet. Returning existing.`);
+            console.log(`[ACTIVATION] User ${normId} already has wallet.`);
             // Ensure Safe address is present
             let safeAddr = user.tradingWallet.safeAddress;
             if (!safeAddr) {
@@ -178,13 +177,14 @@ app.post('/api/wallet/activate', async (req, res) => {
         // 2. Generate NEW Trading EOA
         console.log(`[ACTIVATION] Generating NEW keys for ${normId}...`);
         const walletConfig = await evmWalletService.createTradingWallet(normId);
-        // 3. Compute Safe Address immediately
+        // 3. Compute Safe Address IMMEDIATELY and STORE IT
+        // This makes the pair (Signer <-> Safe) permanent.
         const safeAddr = await SafeManagerService.computeAddress(walletConfig.address);
         const configToSave = {
             ...walletConfig,
-            type: 'GNOSIS_SAFE', // Default to Safe now
-            safeAddress: safeAddr,
-            isSafeDeployed: false // Will be deployed by BotEngine on first run
+            type: 'GNOSIS_SAFE',
+            safeAddress: safeAddr, // <--- Source of Truth
+            isSafeDeployed: false
         };
         await User.findOneAndUpdate({ address: normId }, { tradingWallet: configToSave }, { upsert: true, new: true });
         console.log(`[ACTIVATION SUCCESS] EOA: ${configToSave.address} | Safe: ${safeAddr}`);
@@ -473,6 +473,8 @@ app.post('/api/registry', async (req, res) => {
             address,
             listedBy: listedBy.toLowerCase(),
             listedAt: new Date().toISOString(),
+            isSystem: false,
+            tags: [],
             winRate: 0, totalPnl: 0, tradesLast30d: 0, followers: 0, copyCount: 0, copyProfitGenerated: 0
         });
         registryAnalytics.analyzeWallet(address);
@@ -539,9 +541,9 @@ app.post('/api/deposit/record', async (req, res) => {
         res.json({ success: true, exists: true });
     }
 });
-// 11. Withdraw Funds (Enhanced for Safe & Rescue)
+// 11. Withdraw Funds (Safe Aware)
 app.post('/api/wallet/withdraw', async (req, res) => {
-    const { userId, tokenType, toAddress, forceEoa } = req.body;
+    const { userId, tokenType, toAddress, forceEoa, targetSafeAddress } = req.body;
     const normId = userId.toLowerCase();
     try {
         const user = await User.findOne({ address: normId });
@@ -551,63 +553,87 @@ app.post('/api/wallet/withdraw', async (req, res) => {
         }
         const walletConfig = user.tradingWallet;
         let txHash = '';
-        // Provider for balance checks (using env RPC or default)
-        const provider = new ethers.JsonRpcProvider(ENV.rpcUrl);
+        // Provider for balance checks
+        const provider = new JsonRpcProvider(ENV.rpcUrl);
         const USDC_ABI = ['function balanceOf(address owner) view returns (uint256)'];
-        const usdcContract = new ethers.Contract('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', USDC_ABI, provider);
-        // Use stored Safe Address if available, otherwise compute it (fallback)
-        let safeAddr = walletConfig.safeAddress;
+        const usdcContract = new ethers.Contract(TOKENS.USDC_BRIDGED, USDC_ABI, provider);
+        // 1. DETERMINE SAFE ADDRESS FROM DB (Source of Truth)
+        // If targetSafeAddress is provided (Emergency mode), use it. Otherwise use DB.
+        let safeAddr = targetSafeAddress || walletConfig.safeAddress;
         if (!safeAddr) {
+            // Fallback calculation only if DB is empty (should not happen after activation)
             safeAddr = await SafeManagerService.computeAddress(walletConfig.address);
         }
-        // Case A: Withdraw from SAFE (Type 2 - Gasless via Relayer)
-        // Standard flow unless user forces EOA rescue
+        // Case A: Withdraw from SAFE (Type 2 - Gasless via Relayer or Rescue)
         if (!forceEoa) {
-            if (tokenType !== 'USDC.e') {
-                // For now, allow Safe to withdraw only USDC.e
-                // If user wants to withdraw POL, they likely mean from EOA (since Safe uses Relayer)
-                // But if they explicitly asked for POL, we might fall through to EOA logic?
-                // Let's assume Safe withdrawals are primarily USDC.
-                // If tokenType is POL, maybe check Safe balance? Safe usually doesn't hold POL.
-            }
-            // 1. Check Safe Balance
-            let safeBalance = 0n;
-            try {
-                safeBalance = await usdcContract.balanceOf(safeAddr);
-            }
-            catch (e) { }
-            // 2. Check EOA Balance (for Stuck Funds logic)
-            let eoaBalance = 0n;
-            try {
-                eoaBalance = await usdcContract.balanceOf(walletConfig.address);
-            }
-            catch (e) { }
-            console.log(`[WITHDRAW] Check: Safe=${safeBalance} | EOA=${eoaBalance}`);
-            if (safeBalance > 0n) {
-                // Normal Safe Withdrawal
-                serverLogger.info(`[WITHDRAW] Initiating Safe Withdrawal from ${safeAddr} (Proxy)`);
-                const signer = await evmWalletService.getWalletInstance(walletConfig.encryptedPrivateKey);
-                const safeManager = new SafeManagerService(signer, ENV.builderApiKey, ENV.builderApiSecret, ENV.builderApiPassphrase, serverLogger, safeAddr // Pass the correct Safe Address
-                );
-                txHash = await safeManager.withdrawUSDC(toAddress || normId, safeBalance.toString());
-            }
-            else if (eoaBalance > 0n) {
-                // AUTO RESCUE: Safe is empty, but EOA has funds
-                serverLogger.warn(`[WITHDRAW] Safe empty, but found ${eoaBalance} USDC in EOA Signer. Executing Auto-Rescue.`);
-                txHash = await evmWalletService.withdrawFunds(walletConfig.encryptedPrivateKey, toAddress || normId, '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174' // USDC.e
-                );
+            // 1. Check Balance based on Type
+            let balanceToWithdraw = 0n;
+            if (tokenType === 'POL') {
+                balanceToWithdraw = await provider.getBalance(safeAddr);
             }
             else {
-                // Both empty
-                return res.status(400).json({ error: "Insufficient funds in both Safe and Trading Wallet." });
+                // Default to USDC.e
+                try {
+                    balanceToWithdraw = await usdcContract.balanceOf(safeAddr);
+                }
+                catch (e) { }
+            }
+            // Check EOA Balance (for Stuck Funds logic - usually USDC but good to be consistent)
+            let eoaBalance = 0n;
+            if (!targetSafeAddress) {
+                try {
+                    if (tokenType === 'POL') {
+                        eoaBalance = await provider.getBalance(walletConfig.address);
+                    }
+                    else {
+                        eoaBalance = await usdcContract.balanceOf(walletConfig.address);
+                    }
+                }
+                catch (e) { }
+            }
+            console.log(`[WITHDRAW] Target Safe: ${safeAddr} | Balance: ${balanceToWithdraw.toString()} (${tokenType || 'USDC'})`);
+            if (balanceToWithdraw > 0n) {
+                const signer = await evmWalletService.getWalletInstance(walletConfig.encryptedPrivateKey);
+                // INITIALIZE MANAGER WITH KNOWN ADDRESS
+                const safeManager = new SafeManagerService(signer, ENV.builderApiKey, ENV.builderApiSecret, ENV.builderApiPassphrase, serverLogger, safeAddr);
+                // Attempt withdrawal using the specific safe instance
+                if (tokenType === 'POL') {
+                    txHash = await safeManager.withdrawNative(toAddress || normId, balanceToWithdraw.toString());
+                }
+                else {
+                    txHash = await safeManager.withdrawUSDC(toAddress || normId, balanceToWithdraw.toString());
+                }
+            }
+            else if (eoaBalance > 0n && !targetSafeAddress) {
+                // AUTO RESCUE: Safe is empty, but EOA has funds
+                serverLogger.warn(`[WITHDRAW] Safe empty, but found ${eoaBalance.toString()} ${tokenType || 'USDC'} in EOA Signer. Executing Auto-Rescue.`);
+                let tokenAddr = TOKENS.USDC_BRIDGED;
+                if (tokenType === 'POL')
+                    tokenAddr = TOKENS.POL;
+                // For POL rescue from EOA, we need to leave some gas
+                let amountStr = undefined;
+                if (tokenType === 'POL') {
+                    // Leave 0.05 POL for gas
+                    const reserve = ethers.parseEther("0.05");
+                    if (eoaBalance > reserve) {
+                        amountStr = ethers.formatEther(eoaBalance - reserve);
+                    }
+                    else {
+                        throw new Error("Insufficient POL in EOA to cover gas for rescue.");
+                    }
+                }
+                txHash = await evmWalletService.withdrawFunds(walletConfig.encryptedPrivateKey, toAddress || normId, tokenAddr, amountStr);
+            }
+            else {
+                return res.status(400).json({ error: `Insufficient ${tokenType || 'USDC'} funds in Safe (and EOA).` });
             }
         }
         else {
-            // Case B: Forced EOA Withdrawal (Rescue Button or specific request)
+            // Case B: Forced EOA Withdrawal
             serverLogger.info(`[WITHDRAW] Forced EOA/Signer Withdrawal for ${normId}`);
-            let tokenAddress = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // USDC.e
+            let tokenAddress = TOKENS.USDC_BRIDGED;
             if (tokenType === 'POL')
-                tokenAddress = '0x0000000000000000000000000000000000000000';
+                tokenAddress = TOKENS.POL;
             txHash = await evmWalletService.withdrawFunds(walletConfig.encryptedPrivateKey, toAddress || normId, tokenAddress);
         }
         res.json({ success: true, txHash });
@@ -706,25 +732,21 @@ async function seedRegistry() {
         }
     }
     // Run analytics immediately after seeding to populate stats
-    // This ensures they show up with real data in the UI immediately
     await registryAnalytics.updateAllRegistryStats();
 }
 // --- BOOTSTRAP ---
-// 1. Start HTTP Server immediately (Health Check requirement)
+// 1. Start HTTP Server immediately
 const server = app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`🌍 Bet Mirror Cloud Server running on port ${PORT}`);
 });
-// 2. Connect to DB asynchronously (Non-blocking)
+// 2. Connect to DB asynchronously
 connectDB(ENV.mongoUri)
     .then(async () => {
     console.log("✅ DB Connected. Initializing background services...");
     await seedRegistry(); // Seed wallets.txt into DB
-    // registryAnalytics.updateAllRegistryStats(); // Called inside seedRegistry now
     restoreBots();
 })
     .catch((err) => {
-    // Log critical failure but keep server alive for debug/health endpoints
     console.error("❌ CRITICAL: DB Connection Failed. Server running in degraded mode.");
     console.error("   Reason: " + err.message);
-    console.error("   Ensure your IP is whitelisted in MongoDB Atlas (0.0.0.0/0 for cloud).");
 });
