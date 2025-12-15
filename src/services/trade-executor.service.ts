@@ -19,6 +19,13 @@ interface Position {
   currentValue: number;
 }
 
+export interface ExecutionResult {
+    status: 'FILLED' | 'FAILED' | 'SKIPPED';
+    txHash?: string;
+    executedAmount: number;
+    reason?: string;
+}
+
 export class TradeExecutorService {
   private readonly deps: TradeExecutorDeps;
   
@@ -54,8 +61,16 @@ export class TradeExecutorService {
       }
   }
 
-  async copyTrade(signal: TradeSignal): Promise<string | number> {
+  async copyTrade(signal: TradeSignal): Promise<ExecutionResult> {
     const { logger, env, adapter, proxyWallet } = this.deps;
+    
+    // Default Failure Result
+    const failResult = (reason: string): ExecutionResult => ({
+        status: 'SKIPPED',
+        executedAmount: 0,
+        reason
+    });
+
     try {
       // 1. Get User Balance (Real-time + Local Adjustment)
       // Only fetch from chain every 10 seconds to save RPC, otherwise rely on local decrement
@@ -91,14 +106,14 @@ export class TradeExecutorService {
       if (sizing.targetUsdSize < 0.50) {
           // Polymarket minimum is technically low, but usually <$1 orders are unreliable.
           // We allow >$0.50 to handle small tests, but <$0.10 is dust.
-          if (effectiveBalance < 0.50) return "skipped_insufficient_balance";
+          if (effectiveBalance < 0.50) return failResult("skipped_insufficient_balance");
           // If the calculated size is dust but we have funds, it means the whale bet was tiny relative to ratio.
-          if (sizing.targetUsdSize < 0.10) return "skipped_dust_size";
+          if (sizing.targetUsdSize < 0.10) return failResult("skipped_dust_size");
       }
 
       if (signal.side === 'BUY' && effectiveBalance < sizing.targetUsdSize) {
           logger.error(`Insufficient USDC. Need: $${sizing.targetUsdSize.toFixed(2)}, Have: $${effectiveBalance.toFixed(2)}`);
-          return "insufficient_funds";
+          return failResult("insufficient_funds");
       }
 
       // 4. Calculate Price Limit (SLIPPAGE PROTECTION)
@@ -126,7 +141,7 @@ export class TradeExecutorService {
       logger.info(`🛡️ Price Guard: Signal @ ${signal.price.toFixed(3)} -> Limit @ ${priceLimit.toFixed(2)}`);
 
       // 5. Execute via Adapter
-      const result = await adapter.createOrder({
+      const orderIdOrHash = await adapter.createOrder({
         marketId: signal.marketId,
         tokenId: signal.tokenId,
         outcome: signal.outcome,
@@ -135,22 +150,42 @@ export class TradeExecutorService {
         priceLimit: priceLimit
       });
 
-      // 6. Update Pending Spend (If successful)
-      // We assume money is gone until next chain sync proves otherwise
-      if (typeof result === 'string' && !result.includes('failed') && !result.includes('skipped')) {
-          this.pendingSpend += sizing.targetUsdSize;
-      }
+      // 6. Check Result
+      // The adapter returns a string. It might be "failed", "skipped...", or a TxHash/OrderID.
       
-      return result;
+      // Known failure strings from adapter
+      if (orderIdOrHash === "failed" || orderIdOrHash.includes("skipped") || orderIdOrHash.includes("insufficient")) {
+          return {
+              status: 'FAILED',
+              executedAmount: 0,
+              reason: orderIdOrHash
+          };
+      }
+
+      // 7. Success - Update Pending Spend
+      // We assume money is gone until next chain sync proves otherwise
+      this.pendingSpend += sizing.targetUsdSize;
+      
+      return {
+          status: 'FILLED',
+          txHash: orderIdOrHash, // This is the Tx Hash or Order ID
+          executedAmount: sizing.targetUsdSize,
+          reason: 'executed'
+      };
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       if (errorMessage.includes('closed') || errorMessage.includes('resolved') || errorMessage.includes('No orderbook')) {
         logger.warn(`Skipping - Market closed/resolved.`);
+        return failResult("market_closed");
       } else {
         logger.error(`Failed to copy trade: ${errorMessage}`, err as Error);
+        return {
+            status: 'FAILED',
+            executedAmount: 0,
+            reason: errorMessage
+        };
       }
-      return "failed";
     }
   }
 

@@ -12,7 +12,7 @@
     "build": "tsc --build && vite build",
     "build:backend": "tsc",
     "preview": "vite preview",
-    "start": "npm run build:backend && node --experimental-specifier-resolution=node dist-node/server/server.js",
+    "start": "npm run build && npm run build:backend && node --experimental-specifier-resolution=node dist-node/server/server.js",
     "start:server": "npm run build:backend && node --experimental-specifier-resolution=node dist-node/server/server.js",
     "start:cli": "npm run build:backend && node --experimental-specifier-resolution=node dist-node/app/main.js",
     "generate:wallet": "node --loader ts-node/esm --experimental-specifier-resolution=node src/cli/generate-wallet.ts",

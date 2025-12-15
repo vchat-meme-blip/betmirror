@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
@@ -17,6 +16,7 @@ import { SafeManagerService } from '../services/safe-manager.service.js';
 import { BuilderVolumeData } from '../domain/alpha.types.js';
 import axios from 'axios';
 import { Logger } from '../utils/logger.util.js';
+import fs from 'fs';
 
 // ESM compatibility
 const __filename = fileURLToPath(import.meta.url);
@@ -509,7 +509,7 @@ app.post('/api/registry', async (req, res) => {
             listedBy: listedBy.toLowerCase(), 
             listedAt: new Date().toISOString(),
             isSystem: false,
-            tags: [],
+            tags: [], // Fixed: Empty array for new user-listed wallets
             winRate: 0, totalPnl: 0, tradesLast30d: 0, followers: 0, copyCount: 0, copyProfitGenerated: 0
         });
         
@@ -701,7 +701,14 @@ app.post('/api/wallet/withdraw', async (req: any, res: any) => {
 });
 
 app.get('*', (req, res) => {
-    res.sendFile(path.join(distPath, 'index.html'));
+    // SECURITY: Ensure index.html exists before trying to serve it.
+    // This prevents unhandled ENOENT errors crashing the server if the build failed or wasn't run.
+    const indexPath = path.join(distPath, 'index.html');
+    if (!fs.existsSync(indexPath)) {
+        console.error(`[SERVER] Missing index.html at ${indexPath}. Frontend not built?`);
+        return res.status(500).send("Application frontend not found. Ensure 'npm run build' was executed.");
+    }
+    res.sendFile(indexPath);
 });
 
 // --- SYSTEM RESTORE ---

@@ -1,6 +1,6 @@
 
 import { TradeMonitorService } from '../services/trade-monitor.service.js';
-import { TradeExecutorService } from '../services/trade-executor.service.js';
+import { TradeExecutorService, ExecutionResult } from '../services/trade-executor.service.js';
 import { aiAgent } from '../services/ai-agent.service.js';
 import { NotificationService } from '../services/notification.service.js';
 import { FundManagerService } from '../services/fund-manager.service.js';
@@ -176,7 +176,7 @@ export class BotEngine {
             if (this.activePositions.length > 0) return true;
             
             // Otherwise ensure minimum funding
-            return balanceUSDC >= 0.05;// Minimum $0.50 to start
+            return balanceUSDC >= 0.5; // Minimum $0.50 to start
         } catch (e) {
             console.error(e);
             return false;
@@ -344,28 +344,12 @@ export class BotEngine {
                 await this.addLog('info', `🤖 AI Approved: ${aiResult.reasoning} (Score: ${aiResult.riskScore}). Executing...`);
 
                 if (this.executor) {
-                    const result = await this.executor.copyTrade(signal);
+                    // 3. EXECUTE TRADE
+                    // Now returns an object instead of string
+                    const result: ExecutionResult = await this.executor.copyTrade(signal);
                     
-                    if (typeof result === 'string' && (result.includes('skipped') || result.includes('insufficient') || result === 'failed')) {
-                        await this.addLog('warn', `Execution Skipped: ${result}`);
-                        
-                        if (this.callbacks?.onTradeComplete) {
-                            await this.callbacks.onTradeComplete({
-                                id: crypto.randomUUID(),
-                                timestamp: new Date().toISOString(),
-                                marketId: signal.marketId,
-                                outcome: signal.outcome,
-                                side: signal.side,
-                                size: signal.sizeUsd,
-                                executedSize: 0,
-                                price: signal.price,
-                                status: 'FAILED', 
-                                aiReasoning: aiResult.reasoning,
-                                riskScore: aiResult.riskScore
-                            });
-                        }
-                    } else {
-                        await this.addLog('success', `✅ Trade Executed! Order: ${result}`);
+                    if (result.status === 'FILLED') {
+                        await this.addLog('success', `✅ Trade Executed! Order: ${result.txHash} ($${result.executedAmount.toFixed(2)})`);
                         
                         // --- UPDATE LOCAL STATE ---
                         if (signal.side === 'BUY') {
@@ -374,7 +358,7 @@ export class BotEngine {
                                 tokenId: signal.tokenId,
                                 outcome: signal.outcome,
                                 entryPrice: signal.price,
-                                sizeUsd: signal.sizeUsd,
+                                sizeUsd: result.executedAmount, // Store ACTUAL amount
                                 timestamp: Date.now()
                             });
                         } else if (signal.side === 'SELL') {
@@ -393,23 +377,25 @@ export class BotEngine {
                         
                         if (this.callbacks?.onTradeComplete) {
                             await this.callbacks.onTradeComplete({
-                                id: result.toString(), 
+                                id: result.txHash || crypto.randomUUID(), 
                                 timestamp: new Date().toISOString(),
                                 marketId: signal.marketId,
                                 outcome: signal.outcome,
                                 side: signal.side,
-                                size: signal.sizeUsd,
-                                executedSize: signal.sizeUsd, 
+                                size: signal.sizeUsd, // Whale's size
+                                executedSize: result.executedAmount, // User's size
                                 price: signal.price,
                                 status: 'OPEN',
-                                txHash: result.toString(),
+                                txHash: result.txHash,
                                 aiReasoning: aiResult.reasoning,
                                 riskScore: aiResult.riskScore
                             });
                         }
 
+                        // Fee Distribution (On Profit Only)
+                        // Simplified estimate: 10% profit on exit. Real calculation needs entry price tracking.
                         if (signal.side === 'SELL' && feeDistributor) {
-                            const estimatedProfit = signal.sizeUsd * 0.1; 
+                            const estimatedProfit = result.executedAmount * 0.1; 
                             if (estimatedProfit > 0) {
                                 const feeEvent = await feeDistributor.distributeFeesOnProfit(
                                     signal.marketId, 
@@ -426,6 +412,26 @@ export class BotEngine {
                             const cashout = await fundManager.checkAndSweepProfits();
                             if (cashout && this.callbacks?.onCashout) await this.callbacks.onCashout(cashout);
                         }, 15000);
+
+                    } else {
+                        // FAILED or SKIPPED
+                        await this.addLog('warn', `Execution Skipped/Failed: ${result.reason || result.status}`);
+                        
+                        if (this.callbacks?.onTradeComplete) {
+                            await this.callbacks.onTradeComplete({
+                                id: crypto.randomUUID(),
+                                timestamp: new Date().toISOString(),
+                                marketId: signal.marketId,
+                                outcome: signal.outcome,
+                                side: signal.side,
+                                size: signal.sizeUsd,
+                                executedSize: 0,
+                                price: signal.price,
+                                status: 'FAILED', 
+                                aiReasoning: aiResult.reasoning,
+                                riskScore: aiResult.riskScore
+                            });
+                        }
                     }
                 }
             }

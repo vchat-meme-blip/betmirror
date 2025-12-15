@@ -1075,7 +1075,8 @@ const [signerWalletBal, setSignerWalletBal] = useState<WalletBalances>({ native:
 const [activeTab, setActiveTab] = useState<'dashboard' | 'marketplace' | 'history' | 'vault' | 'bridge' | 'system' | 'help'>('dashboard');
 const [isRunning, setIsRunning] = useState(false);
 const [logs, setLogs] = useState<Log[]>([]);
-const [history, setHistory] = useState<TradeHistoryEntry[]>([]);
+// RENAMED from history to tradeHistory to prevent collision with History component from lucide-react
+const [tradeHistory, setTradeHistory] = useState<TradeHistoryEntry[]>([]);
 const [stats, setStats] = useState<UserStats | null>(null);
 const [registry, setRegistry] = useState<TraderProfile[]>([]);
 const [systemStats, setSystemStats] = useState<GlobalStatsResponse | null>(null);
@@ -1283,12 +1284,12 @@ useEffect(() => {
             setIsRunning(res.data.isRunning);
             
             // Check for new logs/trades to play sound
-            if (res.data.history && res.data.history.length > history.length && config.enableSounds) {
+            if (res.data.history && res.data.history.length > tradeHistory.length && config.enableSounds) {
                 playSound('trade');
             }
 
             if (res.data.logs) setLogs(res.data.logs); // Now fetches from DB
-            if (res.data.history) setHistory(res.data.history);
+            if (res.data.history) setTradeHistory(res.data.history);
             if (res.data.stats) setStats(res.data.stats);
 
             // Sync Config from Server ONLY IF RUNNING (Source of Truth)
@@ -1329,7 +1330,7 @@ useEffect(() => {
         clearInterval(interval);
         clearInterval(balanceInterval);
     };
-}, [isConnected, userAddress, proxyAddress, needsActivation, activeTab, history.length, config.enableSounds]);
+}, [isConnected, userAddress, proxyAddress, needsActivation, activeTab, tradeHistory.length, config.enableSounds]);
 
 useEffect(() => {
     if(isConnected && !needsActivation) fetchRegistry();
@@ -2127,17 +2128,29 @@ return (
                     <div className="glass-panel p-5 rounded-xl space-y-4 flex-1">
                         <h3 className="text-sm font-bold text-gray-900 dark:text-white">Recent Trades</h3>
                         <div className="space-y-2">
-                                {history.slice(0, 5).map(trade => (
-                                    <div key={trade.id} className="text-xs flex items-center justify-between p-2 bg-gray-50 dark:bg-black/40 rounded border border-gray-200 dark:border-white/5">
-                                        <div className="flex items-center gap-2">
-                                            <span className={`w-1.5 h-1.5 rounded-full ${trade.side === 'BUY' ? 'bg-green-50 dark:bg-terminal-success' : 'bg-red-50 dark:bg-terminal-danger'}`}></span>
-                                            <span className="font-mono text-gray-700 dark:text-gray-300">{trade.side}</span>
+                                {tradeHistory.slice(0, 5).map(trade => {
+                                    // PREFER EXECUTED SIZE (User's Amount)
+                                    const amountToShow = trade.executedSize && trade.executedSize > 0 ? trade.executedSize : trade.size;
+                                    
+                                    return (
+                                        <div key={trade.id} className="text-xs flex items-center justify-between p-2 bg-gray-50 dark:bg-black/40 rounded border border-gray-200 dark:border-white/5">
+                                            <div className="flex items-center gap-2">
+                                                <span className={`w-1.5 h-1.5 rounded-full ${trade.side === 'BUY' ? 'bg-green-50 dark:bg-terminal-success' : 'bg-red-50 dark:bg-terminal-danger'}`}></span>
+                                                <span className="font-mono text-gray-700 dark:text-gray-300">{trade.side}</span>
+                                            </div>
+                                            <span className="text-gray-500 text-[10px] max-w-[80px] truncate">{trade.outcome}</span>
+                                            <div className="flex items-center gap-2">
+                                                <span className="font-mono text-gray-900 dark:text-white font-bold">${amountToShow.toFixed(2)}</span>
+                                                {trade.txHash ? (
+                                                    <a href={`https://polygonscan.com/tx/${trade.txHash}`} target="_blank" rel="noreferrer" className="text-blue-500 hover:text-blue-600 dark:hover:text-blue-400">
+                                                        <ExternalLink size={10}/>
+                                                    </a>
+                                                ) : <span className="w-3"></span>}
+                                            </div>
                                         </div>
-                                        <span className="text-gray-500 text-[10px] max-w-[80px] truncate">{trade.outcome}</span>
-                                        <span className="font-mono text-gray-900 dark:text-white">${trade.size.toFixed(2)}</span>
-                                    </div>
-                                ))}
-                                {history.length === 0 && <div className="text-center text-gray-500 dark:text-gray-600 text-xs py-4 italic">No trades yet</div>}
+                                    );
+                                })}
+                                {tradeHistory.length === 0 && <div className="text-center text-gray-500 dark:text-gray-600 text-xs py-4 italic">No trades yet</div>}
                         </div>
                     </div>
                 </div>
@@ -3040,7 +3053,7 @@ return (
                 <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center">
                     <h3 className="font-bold text-gray-900 dark:text-white flex items-center gap-2"><History size={16} className="text-gray-500"/> Trade Log</h3>
                     <div className="flex items-center gap-4">
-                        <span className="text-xs text-gray-500 font-mono">{history.length} Entries</span>
+                        <span className="text-xs text-gray-500 font-mono">{tradeHistory.length} Entries</span>
                         {proxyAddress && (
                             <a 
                                 href={`https://polymarket.com/profile/${proxyAddress}?tab=activity`} 
@@ -3061,17 +3074,16 @@ return (
                                 <th className="p-4">Market</th>
                                 <th className="p-4">Side</th>
                                 <th className="p-4">Exec. Price</th>
-                                <th className="p-4">Total Cost</th>
+                                <th className="p-4">My Stake</th>
                                 <th className="p-4">AI Reasoning</th>
+                                <th className="p-4 text-center">Chain</th>
                                 <th className="p-4 text-right pr-6">Status</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-200 dark:divide-gray-800 font-mono">
-                            {history.map((tx) => {
-                                // Calculate total cost if executed size is available, otherwise use planned size
-                                const totalCost = tx.executedSize ? tx.executedSize : tx.size;
-                                // In new logic, executedSize is USD value.
-                                // If tx.size (USD) is used, it's correct.
+                            {tradeHistory.map((tx) => {
+                                // Prefer executedSize (User amount) over size (Whale amount) for display
+                                const displayAmount = tx.executedSize && tx.executedSize > 0 ? tx.executedSize : tx.size;
                                 
                                 return (
                                     <tr key={tx.id} className={`hover:bg-gray-50 dark:hover:bg-white/5 transition-colors ${tx.status === 'SKIPPED' ? 'opacity-50 grayscale' : ''}`}>
@@ -3083,10 +3095,17 @@ return (
                                             </span>
                                         </td>
                                         <td className="p-4 text-gray-900 dark:text-white font-bold">{tx.price > 0 ? tx.price.toFixed(2) : '-'}</td>
-                                        <td className="p-4 text-gray-900 dark:text-white font-mono">${totalCost.toFixed(2)}</td>
+                                        <td className="p-4 text-gray-900 dark:text-white font-mono font-bold">${displayAmount.toFixed(2)}</td>
                                         <td className="p-4 text-gray-500 max-w-[300px] truncate" title={tx.aiReasoning}>
                                             {tx.riskScore ? <span className={`mr-2 font-bold ${tx.riskScore > 7 ? 'text-red-500' : 'text-purple-500'}`}>[{tx.riskScore}/10]</span> : ''}
                                             {tx.aiReasoning || '-'}
+                                        </td>
+                                        <td className="p-4 text-center">
+                                            {tx.txHash ? (
+                                                <a href={`https://polygonscan.com/tx/${tx.txHash}`} target="_blank" rel="noreferrer" className="text-blue-500 hover:text-blue-600 dark:hover:text-blue-400 p-1 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded inline-block" title="View on PolygonScan">
+                                                    <ExternalLink size={14}/>
+                                                </a>
+                                            ) : <span className="text-gray-300">-</span>}
                                         </td>
                                         <td className="p-4 text-right pr-6">
                                             <span className={`font-bold px-2 py-1 rounded text-[10px] uppercase ${
@@ -3102,7 +3121,7 @@ return (
                             })}
                         </tbody>
                     </table>
-                    {history.length === 0 && <div className="p-12 text-center text-gray-600 text-sm">No history available yet. Start the bot to generate data.</div>}
+                    {tradeHistory.length === 0 && <div className="p-12 text-center text-gray-600 text-sm">No history available yet. Start the bot to generate data.</div>}
                 </div>
             </div>
         )}
