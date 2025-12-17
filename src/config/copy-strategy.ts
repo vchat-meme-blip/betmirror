@@ -32,20 +32,26 @@ export function computeProportionalSizing(input: CopyInputs): SizingResult {
 
   // 3. THE "SMART MATCH" LOGIC
   
-  // A. The Hard Floor ($1.00)
-  // Polymarket APIs typically reject orders < $1 (Dust) for Market/FOK orders.
-  // If the proportional math says "$0.05", we boost it to "$1.00" so the user actually participates.
-  const SYSTEM_MIN_ORDER = 1.00;
+  // A. Polymarket Constraints (Hard Floor)
+  // Constraint 1: Must be at least $1.00 USD
+  const MIN_USD_VALUE = 1.00;
+  // Constraint 2: Must be at least 5 Shares (Critical for prices > $0.20)
+  const MIN_SHARES = 5;
+  const costForMinShares = MIN_SHARES * price;
+
+  // The actual hard floor is the greater of $1 or the cost of 5 shares at current price
+  const effectiveMinUsd = Math.max(MIN_USD_VALUE, costForMinShares);
   
-  if (targetUsdSize < SYSTEM_MIN_ORDER) {
-      if (yourUsdBalance >= SYSTEM_MIN_ORDER) {
-          targetUsdSize = SYSTEM_MIN_ORDER;
-          reason = "floor_boost_min_1";
+  if (targetUsdSize < effectiveMinUsd) {
+      if (yourUsdBalance >= effectiveMinUsd) {
+          // If user has enough funds to cover the minimum valid order, boost it.
+          targetUsdSize = effectiveMinUsd;
+          reason = `floor_boost_min_${effectiveMinUsd.toFixed(2)}`;
       } else {
-          // User has less than $1.00. 
-          // They cannot trade on CLOB.
+          // User has less than the minimum required for this specific trade. 
+          // They cannot trade on CLOB without error.
           targetUsdSize = 0; 
-          reason = "insufficient_for_min_order";
+          reason = `insufficient_for_min_order_of_${effectiveMinUsd.toFixed(2)}`;
       }
   }
 
@@ -67,9 +73,10 @@ export function computeProportionalSizing(input: CopyInputs): SizingResult {
   // We floor to avoid "Insufficient Balance" due to 0.00001 diffs.
   targetUsdSize = Math.floor(targetUsdSize * 100) / 100;
   
-  // Double check post-floor: if it dropped below $1 but user has funds, bump it back up
-  if (targetUsdSize < SYSTEM_MIN_ORDER && targetUsdSize > 0) {
-       if (yourUsdBalance >= SYSTEM_MIN_ORDER) targetUsdSize = SYSTEM_MIN_ORDER;
+  // Double check post-floor: if it dropped below minimums but user has funds, bump it back up
+  // or kill it if we can't afford it after rounding
+  if (targetUsdSize < effectiveMinUsd && targetUsdSize > 0) {
+       if (yourUsdBalance >= effectiveMinUsd) targetUsdSize = effectiveMinUsd;
        else targetUsdSize = 0;
   }
 

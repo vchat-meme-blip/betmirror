@@ -140,7 +140,9 @@ export function loadEnv(): RuntimeEnv {
       console.warn(`⚠️ Builder Credentials NOT FOUND in process.env. Check .env or .env.local location.`);
   }
 
+  // UPDATED DEFAULT FALLBACKS TO MATCH STAGING ENVIRONMENT
   const defaultMongoUri = 'mongodb+srv://limeikenji_db_user:lT4HIyBhbui8vFQr@cluster0.bwk2i6s.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
+  const defaultEncryptionKey = 'MmExQl8lTwgxA40wxbL5k5m+UCPb/0YvO5CDjypmiT0=';
 
   const env: RuntimeEnv = {
     userAddresses,
@@ -195,7 +197,7 @@ export function loadEnv(): RuntimeEnv {
 
     // Database
     mongoUri: process.env.MONGODB_URI || defaultMongoUri,
-    mongoEncryptionKey: process.env.MONGO_ENCRYPTION_KEY || 'MmExQl8lTwgxA40wxbL5k5m+UCPb/0YvO5CDjypmiT0='
+    mongoEncryptionKey: process.env.MONGO_ENCRYPTION_KEY || defaultEncryptionKey
   };
 
   return env;

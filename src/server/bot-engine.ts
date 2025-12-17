@@ -1,5 +1,3 @@
-
-// ... existing imports ...
 import { TradeMonitorService } from '../services/trade-monitor.service.js';
 import { TradeExecutorService, ExecutionResult } from '../services/trade-executor.service.js';
 import { aiAgent } from '../services/ai-agent.service.js';
@@ -111,14 +109,12 @@ export class BotEngine {
         if (!this.exchange || !this.exchange.isReady()) return;
         
         try {
-            // 1. If forced, pull from chain (Emergency Resync)
             if (forceChainSync) {
                 this.addLog('warn', '⚠️ Forced Chain Sync requested. Updating positions from Chain/API...');
                 const address = this.exchange.getFunderAddress();
                 if(address) {
                     const chainPositions = await this.exchange.getPositions(address);
                     
-                    // Map to ActivePosition (Update with Rich Data)
                     this.activePositions = chainPositions.map(p => ({
                          tradeId: 'imported_' + Date.now() + Math.random().toString(36).substring(7),
                          marketId: p.marketId,
@@ -128,7 +124,6 @@ export class BotEngine {
                          shares: p.balance,
                          sizeUsd: p.valueUsd,
                          timestamp: Date.now(),
-                         // Sync Rich Data
                          currentPrice: p.currentPrice,
                          question: p.question,
                          image: p.image,
@@ -136,21 +131,18 @@ export class BotEngine {
                     }));
                 }
             } else {
-                // 2. Standard Sync: Update Prices ONLY
+                // STANDARD SYNC: Use strictly Side-Aware Pricing (SELL side for current liquidation value)
                 for (const pos of this.activePositions) {
                     try {
-                        const currentPrice = await this.exchange.getMarketPrice(pos.marketId, pos.tokenId);
+                        const currentPrice = await this.exchange.getMarketPrice(pos.marketId, pos.tokenId, 'SELL');
                         if (currentPrice > 0) {
-                            pos.currentPrice = currentPrice; // Update live price
+                            pos.currentPrice = currentPrice; 
                             pos.sizeUsd = pos.shares * currentPrice;
                         }
-                    } catch (e) {
-                        // Ignore price update errors
-                    }
+                    } catch (e) {}
                 }
             }
             
-            // Persist updates
             if (this.callbacks?.onPositionsUpdate) {
                 await this.callbacks.onPositionsUpdate(this.activePositions);
             }
@@ -185,7 +177,7 @@ export class BotEngine {
     }
 
     public async emergencySell(tradeIdOrMarketId: string, outcome?: string): Promise<string> {
-        if (!this.executor) throw new Error("Executor not initialized.");
+        if (!this.exchange) throw new Error("Adapter not initialized.");
         
         let positionIndex = this.activePositions.findIndex(p => p.tradeId === tradeIdOrMarketId);
         
@@ -198,21 +190,33 @@ export class BotEngine {
         }
 
         const position = this.activePositions[positionIndex];
-        this.addLog('warn', `📉 Selling Position: ${position.shares} shares of ${position.outcome} (${position.question || position.marketId})...`);
+        
+        // DUST PROTECTION: Always check the BID price (SELL side)
+        const currentBestBid = await this.exchange.getMarketPrice(position.marketId, position.tokenId, 'SELL');
+        const projectedExitValue = position.shares * currentBestBid;
+
+        this.addLog('warn', `📉 Attempting Manual Exit: ${position.shares} shares @ ~$${currentBestBid}...`);
+
+        if (projectedExitValue < 1.0) {
+            const err = `✋ Dust Protection: Current exit value ($${projectedExitValue.toFixed(2)}) is below the $1.00 minimum. Sale blocked to avoid failure.`;
+            this.addLog('error', err);
+            throw new Error("dust_position_too_small");
+        }
 
         try {
-            let currentPrice = 0.5;
-            try {
-               currentPrice = await this.exchange?.getMarketPrice(position.marketId, position.tokenId) || 0.5;
-            } catch(e) {}
-
-            const success = await this.executor.executeManualExit(position, currentPrice);
+            const res = await this.exchange.createOrder({
+                marketId: position.marketId, 
+                tokenId: position.tokenId, 
+                outcome: position.outcome,
+                side: 'SELL', 
+                sizeUsd: 0, 
+                sizeShares: position.shares
+            });
             
-            if (success) {
+            if (res.success) {
                 if (position.tradeId && !position.tradeId.startsWith('imported')) {
                     try {
-                        const exitValue = position.shares * currentPrice;
-                        const pnl = exitValue - (position.shares * position.entryPrice); 
+                        const pnl = (res.priceFilled - position.entryPrice) * position.shares; 
                         
                         await Trade.findByIdAndUpdate(position.tradeId, {
                             status: 'CLOSED',
@@ -237,12 +241,12 @@ export class BotEngine {
                         outcome: position.outcome,
                         side: 'SELL',
                         size: position.sizeUsd, 
-                        executedSize: position.shares * currentPrice, 
-                        price: currentPrice,
+                        executedSize: res.sharesFilled * res.priceFilled, 
+                        price: res.priceFilled,
                         status: 'FILLED',
                         aiReasoning: 'Manual Exit',
                         riskScore: 0,
-                        clobOrderId: position.clobOrderId
+                        clobOrderId: res.orderId
                     });
                 }
                 
@@ -251,7 +255,7 @@ export class BotEngine {
                 
                 return "sold";
             } else {
-                throw new Error("Execution failed at adapter level");
+                throw new Error(res.error || "Execution failed at adapter level");
             }
         } catch (e: any) {
             this.addLog('error', `Manual Exit Failed: ${e.message}`);
@@ -324,7 +328,6 @@ export class BotEngine {
             
             const balanceUSDC = await this.exchange.fetchBalance(funderAddr);
             if (this.activePositions.length > 0) return true;
-            // UPDATE: Check for at least $1.00 to avoid "Minimum Order" loops
             return balanceUSDC >= 1.0; 
         } catch (e) {
             return false;
@@ -355,12 +358,11 @@ export class BotEngine {
         }, 15000) as unknown as NodeJS.Timeout; 
     }
 
-    private async proceedWithPostFundingSetup(logger: Logger) {
+    private async proceedWithPostFundingSetup(engineLogger: Logger) {
         try {
             if(!this.exchange) return;
             await this.exchange.authenticate();
-            this.startServices(logger);
-            // Sync rich metadata for positions on start
+            this.startServices(engineLogger);
             await this.syncPositions(true); 
             await this.syncStats();
         } catch (e: any) {
@@ -452,8 +454,7 @@ export class BotEngine {
 
                 if (!aiResult.shouldCopy) {
                     await this.addLog('info', `✋ AI Skipped: ${aiResult.reasoning} (Score: ${aiResult.riskScore})`);
-                    
-                    if (this.callbacks?.onTradeComplete) {
+                                        if (this.callbacks?.onTradeComplete) {
                         await this.callbacks.onTradeComplete({
                             id: crypto.randomUUID(),
                             timestamp: new Date().toISOString(),
@@ -480,17 +481,15 @@ export class BotEngine {
                         await this.addLog('success', `✅ Trade Executed! Order: ${result.txHash || result.reason} ($${result.executedAmount.toFixed(2)})`);
                         
                         if (signal.side === 'BUY') {
-                            
-                            // 1. Create Trade Record
                             const tradeRecord = await Trade.create({
-                                _id: crypto.randomUUID(), // Force UUID for compatibility
+                                _id: crypto.randomUUID(),
                                 userId: this.config.userId,
                                 marketId: signal.marketId,
                                 outcome: signal.outcome,
                                 side: 'BUY',
                                 size: signal.sizeUsd,
                                 executedSize: result.executedAmount,
-                                price: signal.price,
+                                price: result.priceFilled,
                                 pnl: 0,
                                 status: 'OPEN',
                                 txHash: result.txHash,
@@ -501,24 +500,21 @@ export class BotEngine {
                                 timestamp: new Date()
                             });
 
-                            // 2. Add to Active Positions with rich metadata placeholder
-                            // Sync will update Question/Image shortly
                             this.activePositions.push({
                                 tradeId: tradeRecord._id.toString(), 
                                 clobOrderId: result.txHash,
                                 marketId: signal.marketId,
                                 tokenId: signal.tokenId,
                                 outcome: signal.outcome,
-                                entryPrice: signal.price,
+                                entryPrice: result.priceFilled,
                                 shares: result.executedShares, 
                                 sizeUsd: result.executedAmount,
                                 timestamp: Date.now(),
-                                currentPrice: signal.price,
+                                currentPrice: result.priceFilled,
                                 question: "Loading Data...",
                                 image: ""
                             });
                             
-                            // Trigger sync to get rich data
                             this.syncPositions(true);
 
                         } else if (signal.side === 'SELL') {
@@ -526,7 +522,10 @@ export class BotEngine {
                             if (idx !== -1) {
                                 const closingPos = this.activePositions[idx];
                                 if (closingPos.tradeId) {
-                                    await Trade.findByIdAndUpdate(closingPos.tradeId, { status: 'CLOSED' });
+                                    await Trade.findByIdAndUpdate(closingPos.tradeId, { 
+                                        status: 'CLOSED',
+                                        pnl: (result.priceFilled - closingPos.entryPrice) * closingPos.shares 
+                                    });
                                 }
                                 this.activePositions.splice(idx, 1);
                             }
@@ -560,7 +559,7 @@ export class BotEngine {
 
                     } else {
                         await this.addLog('warn', `Execution Skipped/Failed: ${result.reason || result.status}`);
-                        if (this.callbacks?.onTradeComplete) {
+                                                if (this.callbacks?.onTradeComplete) {
                             await this.callbacks.onTradeComplete({
                                 id: crypto.randomUUID(),
                                 timestamp: new Date().toISOString(),

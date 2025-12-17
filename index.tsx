@@ -3615,7 +3615,7 @@ return (
                         </h3>
                         <div className="space-y-4 text-sm text-gray-600 dark:text-gray-400">
                             <p>
-                                What if Bet Mirror disappears?
+                                What if Bet Mirror is knocked offline?
                             </p>
                             <ul className="list-disc pl-5 space-y-2">
                                 <li>
