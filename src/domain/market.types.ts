@@ -26,4 +26,5 @@ export interface PositionData {
     question?: string;
     image?: string;
     endDate?: string;
+    marketSlug?: string; // ADDED
 }

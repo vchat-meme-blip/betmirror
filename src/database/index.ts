@@ -98,7 +98,8 @@ const ActivePositionSchema = new Schema({
   // Rich Data
   currentPrice: Number,
   question: String,
-  image: String
+  image: String,
+  marketSlug: String // ADDED
 }, { _id: false });
 
 const TradingWalletSchema = new Schema({

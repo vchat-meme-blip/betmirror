@@ -56,4 +56,5 @@ export interface ActivePosition {
   question?: string;
   image?: string;
   endDate?: string;
+  marketSlug?: string; // ADDED
 }

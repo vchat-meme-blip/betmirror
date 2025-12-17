@@ -94,7 +94,8 @@ export class BotEngine {
                         // Sync Rich Data
                         currentPrice: p.currentPrice,
                         question: p.question,
-                        image: p.image
+                        image: p.image,
+                        marketSlug: p.marketSlug
                     }));
                 }
             }

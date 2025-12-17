@@ -9,6 +9,11 @@ import axios from 'axios';
 import crypto from 'crypto';
 const HOST_URL = 'https://clob.polymarket.com';
 const USDC_ABI = ['function balanceOf(address owner) view returns (uint256)'];
+// Standard User Agent to prevent Cloudflare 403s
+const HTTP_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json'
+};
 var SignatureType;
 (function (SignatureType) {
     SignatureType[SignatureType["EOA"] = 0] = "EOA";
@@ -124,7 +129,7 @@ export class PolymarketAdapter {
     async getPortfolioValue(address) {
         try {
             const url = `https://data-api.polymarket.com/value?user=${address}`;
-            const res = await axios.get(url);
+            const res = await axios.get(url, { headers: HTTP_HEADERS });
             return parseFloat(res.data) || 0;
         }
         catch (e) {
@@ -133,7 +138,7 @@ export class PolymarketAdapter {
         }
     }
     async getMarketPrice(marketId, tokenId) {
-        if (!this.client)
+        if (!this.client || !tokenId)
             return 0;
         try {
             const mid = await this.client.getMidpoint(tokenId);
@@ -144,15 +149,12 @@ export class PolymarketAdapter {
         }
     }
     // --- UPDATED: POSITION FETCHING WITH RICH DATA ENRICHMENT ---
-    // 1. Fetches basic list from Data API
-    // 2. Calls CLOB to get Market Details (Question, Image)
-    // 3. Calls CLOB to get Live Price (Midpoint) for accuracy
     async getPositions(address) {
         this.logger.debug(`Fetching positions for ${address}...`);
         let apiPositions = [];
         try {
             const url = `https://data-api.polymarket.com/positions?user=${address}`;
-            const res = await axios.get(url);
+            const res = await axios.get(url, { headers: HTTP_HEADERS });
             if (Array.isArray(res.data)) {
                 // Filter dust
                 apiPositions = res.data.filter(p => p.size > 0.001);
@@ -160,37 +162,39 @@ export class PolymarketAdapter {
         }
         catch (e) {
             this.logger.warn(`Data API Position fetch failed: ${e.message}.`);
-            // Can't do much without base data, return empty or retry
             return [];
         }
         // ENRICHMENT LOOP
         // Use Promise.all to fetch metadata in parallel
         const enrichmentPromises = apiPositions.map(async (p) => {
             try {
+                // FIX: Support both 'market' and 'conditionId' fields from API
+                const marketId = p.market || p.conditionId;
                 let marketData = null;
-                let currentPrice = Number(p.currentPrice); // Default to API price
-                if (this.client) {
-                    // A. Fetch Market Metadata (Question, Image)
+                let currentPrice = Number(p.currentPrice);
+                // Only call CLOB if we have a valid market ID and client
+                if (this.client && marketId && marketId !== 'undefined') {
+                    // A. Fetch Market Metadata (Question, Image, Slug)
                     try {
-                        marketData = await this.client.getMarket(p.market);
+                        marketData = await this.client.getMarket(marketId);
                     }
                     catch (err) {
-                        // console.warn(`Market fetch failed for ${p.market}`);
+                        // Suppress 404s for old markets
                     }
-                    // B. Fetch Real-Time CLOB Price
+                }
+                // B. Fetch Real-Time CLOB Price if asset ID exists
+                if (this.client && p.asset) {
                     try {
                         const mid = await this.client.getMidpoint(p.asset);
                         if (mid && mid.mid) {
                             currentPrice = parseFloat(mid.mid);
                         }
                     }
-                    catch (err) {
-                        // console.warn(`Price fetch failed for ${p.asset}`);
-                    }
+                    catch (err) { }
                 }
                 const size = Number(p.size);
                 return {
-                    marketId: p.market,
+                    marketId: marketId || "UNKNOWN",
                     tokenId: p.asset,
                     outcome: p.outcome || 'UNK',
                     balance: size,
@@ -198,13 +202,14 @@ export class PolymarketAdapter {
                     entryPrice: Number(p.initialValue) / size, // Approx avg entry
                     currentPrice: currentPrice,
                     // Rich Fields
-                    question: marketData?.question || p.title || "Loading Market Data...",
+                    question: marketData?.question || p.title || "Unknown Market",
                     image: marketData?.image || marketData?.icon || "",
-                    endDate: marketData?.end_date_iso
+                    endDate: marketData?.end_date_iso,
+                    marketSlug: marketData?.market_slug // Added Slug
                 };
             }
             catch (e) {
-                // If one fails, don't break the whole list, just skip or return basic
+                // If one fails, don't break the whole list
                 return null;
             }
         });
@@ -233,7 +238,7 @@ export class PolymarketAdapter {
     async fetchPublicTrades(address, limit = 20) {
         try {
             const url = `https://data-api.polymarket.com/trades?user=${address}&limit=${limit}`;
-            const res = await axios.get(url);
+            const res = await axios.get(url, { headers: HTTP_HEADERS });
             if (!res.data || !Array.isArray(res.data))
                 return [];
             const signals = [];
@@ -352,9 +357,6 @@ export class PolymarketAdapter {
             const roundedPrice = Math.floor(rawPrice * inverseTick) / inverseTick;
             let shares = params.sizeShares || 0;
             if (!shares && params.sizeUsd > 0) {
-                // Use ceil to potentially round UP to nearest share count. 
-                // If price is high (0.99), 1/0.99 = 1.01. Floor gives 1 share -> 0.99USD < 1USD min. 
-                // Ceil gives 2 shares -> 1.98USD > 1USD min.
                 const rawShares = params.sizeUsd / roundedPrice;
                 shares = Math.ceil(rawShares);
             }
@@ -403,7 +405,6 @@ export class PolymarketAdapter {
                 this.initClobClient(this.config.l2ApiCredentials);
                 return this.createOrder(params, retryCount + 1);
             }
-            // Log full error object for debugging if available
             if (error.response?.data) {
                 this.logger.error(`[CLOB Client] request error ${JSON.stringify(error.response)}`);
             }
@@ -417,7 +418,6 @@ export class PolymarketAdapter {
                 return { success: false, error: "insufficient_funds", sharesFilled: 0, priceFilled: 0 };
             }
             else if (errorMsg?.includes("minimum") || errorMsg?.includes("invalid amount")) {
-                // Catch "invalid amount for a marketable BUY order ($0.99), min size: $1"
                 this.logger.error(`❌ Failed: Below Min Size (CLOB Rejection).`);
                 return { success: false, error: "skipped_min_size_limit", sharesFilled: 0, priceFilled: 0 };
             }

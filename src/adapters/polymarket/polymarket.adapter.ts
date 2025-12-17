@@ -275,7 +275,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
 
                 // Only call CLOB if we have a valid market ID and client
                 if (this.client && marketId && marketId !== 'undefined') {
-                    // A. Fetch Market Metadata (Question, Image)
+                    // A. Fetch Market Metadata (Question, Image, Slug)
                     try {
                         marketData = await this.client.getMarket(marketId);
                     } catch (err) {
@@ -306,7 +306,8 @@ export class PolymarketAdapter implements IExchangeAdapter {
                     // Rich Fields
                     question: marketData?.question || p.title || "Unknown Market",
                     image: marketData?.image || marketData?.icon || "",
-                    endDate: marketData?.end_date_iso
+                    endDate: marketData?.end_date_iso,
+                    marketSlug: marketData?.market_slug // Added Slug
                 } as PositionData;
 
             } catch (e) {

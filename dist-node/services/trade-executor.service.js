@@ -41,24 +41,40 @@ export class TradeExecutorService {
             reason
         });
         try {
-            // 1. Get User Balance (Real-time + Local Adjustment)
-            // Only fetch from chain every 10 seconds to save RPC, otherwise rely on local decrement
-            let chainBalance = 0;
-            if (Date.now() - this.lastBalanceFetch > 10000) {
-                chainBalance = await adapter.fetchBalance(proxyWallet);
-                this.lastBalanceFetch = Date.now();
-                this.pendingSpend = 0; // Reset pending on fresh chain sync
+            let usableBalanceForTrade = 0;
+            // 1. Determine Source Capital (Cash vs Position)
+            if (signal.side === 'BUY') {
+                // BUY: Use Wallet Cash
+                let chainBalance = 0;
+                // Cache chain balance for 10s to save RPC calls
+                if (Date.now() - this.lastBalanceFetch > 10000) {
+                    chainBalance = await adapter.fetchBalance(proxyWallet);
+                    this.lastBalanceFetch = Date.now();
+                    this.pendingSpend = 0; // Reset pending on fresh chain sync
+                }
+                else {
+                    chainBalance = await adapter.fetchBalance(proxyWallet);
+                }
+                usableBalanceForTrade = Math.max(0, chainBalance - this.pendingSpend);
             }
             else {
-                // If we haven't synced recently, assume chain balance is same as last known
-                chainBalance = await adapter.fetchBalance(proxyWallet);
+                // SELL: Use Existing Position Value
+                // We must fetch our current holdings to know how much we can sell
+                // Note: This fetches all positions, optimized adapter should cache or allow filtered lookup
+                const positions = await adapter.getPositions(proxyWallet);
+                const myPosition = positions.find(p => p.tokenId === signal.tokenId);
+                if (!myPosition || myPosition.balance <= 0) {
+                    return failResult("no_position_to_sell");
+                }
+                // We use the USD value of our position as the 'balance' to proportion against
+                usableBalanceForTrade = myPosition.valueUsd;
             }
-            const effectiveBalance = Math.max(0, chainBalance - this.pendingSpend);
-            // 2. Get Whale Balance
+            // 2. Get Whale Balance (Total Portfolio Value)
+            // For proper ratio, we need their total equity, not just cash
             const traderBalance = await this.getTraderBalance(signal.trader);
             // 3. Compute Size
             const sizing = computeProportionalSizing({
-                yourUsdBalance: effectiveBalance,
+                yourUsdBalance: usableBalanceForTrade,
                 traderUsdBalance: traderBalance,
                 traderTradeUsd: signal.sizeUsd,
                 multiplier: env.tradeMultiplier,
@@ -66,44 +82,37 @@ export class TradeExecutorService {
                 maxTradeAmount: env.maxTradeAmount
             });
             const profileUrl = `https://polymarket.com/profile/${signal.trader}`;
-            logger.info(`[Sizing] Whale: $${traderBalance.toFixed(0)} | Signal: $${signal.sizeUsd.toFixed(0)} | You: $${effectiveBalance.toFixed(2)} | Target: $${sizing.targetUsdSize.toFixed(2)} (${sizing.reason})`);
+            logger.info(`[Sizing] Whale: $${traderBalance.toFixed(0)} | Signal: $${signal.sizeUsd.toFixed(0)} (${signal.side}) | You: $${usableBalanceForTrade.toFixed(2)} | Target: $${sizing.targetUsdSize.toFixed(2)}`);
             logger.info(`🔗 Trader: ${profileUrl}`);
             if (sizing.targetUsdSize < 1.00) {
-                if (effectiveBalance < 1.00)
+                if (usableBalanceForTrade < 1.00)
                     return failResult("skipped_insufficient_balance_min_1");
                 return failResult("skipped_size_too_small");
             }
-            if (signal.side === 'BUY' && effectiveBalance < sizing.targetUsdSize) {
-                logger.error(`Insufficient USDC. Need: $${sizing.targetUsdSize.toFixed(2)}, Have: $${effectiveBalance.toFixed(2)}`);
-                return failResult("insufficient_funds");
-            }
             // 4. Calculate Price Limit (SLIPPAGE PROTECTION)
-            // We essentially want to limit how much WORSE we buy than the signal.
             let priceLimit = 0;
             const SLIPPAGE_PCT = 0.05; // 5% tolerance
             if (signal.side === 'BUY') {
                 // Buying: Limit is Higher than signal
                 priceLimit = signal.price * (1 + SLIPPAGE_PCT);
-                // Hard Clamp: Never buy > 0.99
                 if (priceLimit > 0.99)
                     priceLimit = 0.99;
-                // Floor Clamp: Never limit < 0.01 (or orders fail)
                 if (priceLimit < 0.01)
                     priceLimit = 0.01;
             }
             else {
-                // Selling: Limit is Lower than signal (Not typically used for copy-buy, but for exit)
+                // Selling: Limit is Lower than signal
                 priceLimit = signal.price * (1 - SLIPPAGE_PCT);
                 if (priceLimit < 0.01)
                     priceLimit = 0.01;
             }
-            // Round to 2 decimals for cleaner logs/API, but ensure we don't round down to 0
+            // Round to 2 decimals
             priceLimit = Math.floor(priceLimit * 100) / 100;
             if (priceLimit <= 0)
                 priceLimit = 0.01;
             logger.info(`🛡️ Price Guard: Signal @ ${signal.price.toFixed(3)} -> Limit @ ${priceLimit.toFixed(2)}`);
             // 5. Execute via Adapter
-            // Returns rich object
+            // Note: If selling, we pass sizeUsd. The adapter will calculate shares = sizeUsd / priceLimit (or market price)
             const result = await adapter.createOrder({
                 marketId: signal.marketId,
                 tokenId: signal.tokenId,
@@ -121,15 +130,16 @@ export class TradeExecutorService {
                     reason: result.error || 'Unknown error'
                 };
             }
-            // 7. Success - Update Pending Spend
-            this.pendingSpend += sizing.targetUsdSize;
-            // Calculate Exact Shares and Amount based on what was filled
+            // 7. Success - Update Pending Spend (Only for Buys)
+            if (signal.side === 'BUY') {
+                this.pendingSpend += sizing.targetUsdSize;
+            }
             const shares = result.sharesFilled;
             const price = result.priceFilled;
             const actualUsd = shares * price;
             return {
                 status: 'FILLED',
-                txHash: result.orderId || result.txHash, // Prefer Order ID for tracking
+                txHash: result.orderId || result.txHash,
                 executedAmount: actualUsd,
                 executedShares: shares,
                 reason: 'executed'

@@ -1131,6 +1131,9 @@ const [showBridgeGuide, setShowBridgeGuide] = useState(false);
 const [recoveryOwnerAdded, setRecoveryOwnerAdded] = useState(false);
 const [isAddingRecovery, setIsAddingRecovery] = useState(false);
 
+// --- REFS for Audio Logic ---
+const lastTradeIdRef = useRef<string | null>(null); // ADDED
+
 const [config, setConfig] = useState<AppConfig>({
     targets: [],
     rpcUrl: 'https://polygon-rpc.com', // UPDATED: More reliable public RPC default
@@ -1298,9 +1301,15 @@ useEffect(() => {
             const res = await axios.get(`/api/bot/status/${userAddress}`);
             setIsRunning(res.data.isRunning);
             
-            // Check for new logs/trades to play sound
-            if (res.data.history && res.data.history.length > tradeHistory.length && config.enableSounds) {
-                playSound('trade');
+            // FIX: Track latest ID instead of length
+            const latestHistory = res.data.history || [];
+            if (latestHistory.length > 0) {
+                const latestId = latestHistory[0].id;
+                // Only play if initialized (not null) and different
+                if (lastTradeIdRef.current !== null && lastTradeIdRef.current !== latestId && config.enableSounds) {
+                    playSound('trade');
+                }
+                lastTradeIdRef.current = latestId;
             }
 
             if (res.data.logs) setLogs(res.data.logs); // Now fetches from DB
@@ -2219,23 +2228,36 @@ return (
                             </div>
                         </div>
                     </div>
-                    {/* Live Positions & History (Tabbed) - The Panel from Snippet */}
+                    {/* Live Positions & History (Tabbed) */}
                         <div className="glass-panel p-5 rounded-xl space-y-4 flex-1 flex flex-col bg-white dark:bg-zinc-900/50 border border-gray-200 dark:border-zinc-800 shadow-sm min-h-[600px]">
                             {/* Tab Headers */}
-                            <div className="flex items-center gap-4 border-b border-gray-200 dark:border-white/5 pb-2">
-                                <button 
-                                    onClick={() => setTradePanelTab('active')}
-                                    className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all ${tradePanelTab === 'active' ? 'bg-gray-900 dark:bg-white text-white dark:text-black shadow-md' : 'text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/5'}`}
-                                >
-                                    Active Positions 
-                                    <span className="px-1.5 py-0.5 bg-gray-100 dark:bg-white/10 rounded-full text-[10px]">{activePositions.length}</span>
-                                </button>
-                                <button 
-                                    onClick={() => setActiveTab('history')}
-                                    className={`text-sm font-bold pb-2 border-b-2 transition-colors ${tradePanelTab === 'history' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
-                                >
-                                    History
-                                </button>
+                            <div className="flex items-center justify-between border-b border-gray-200 dark:border-white/5 pb-2">
+                                <div className="flex items-center gap-4">
+                                    <button 
+                                        onClick={() => setTradePanelTab('active')}
+                                        className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all ${tradePanelTab === 'active' ? 'bg-gray-900 dark:bg-white text-white dark:text-black shadow-md' : 'text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/5'}`}
+                                    >
+                                        Active Positions 
+                                        <span className="px-1.5 py-0.5 bg-gray-300 text-black dark:bg-grey/10 rounded-full text-[10px] ml-1">{activePositions.length}</span>
+                                    </button>
+                                    <button 
+                                        onClick={() => setTradePanelTab('history')}
+                                        className={`text-sm font-bold pb-2 border-b-2 transition-colors ${tradePanelTab === 'history' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                                    >
+                                        History
+                                    </button>
+                                </div>
+                                
+                                {tradePanelTab === 'active' && (
+                                    <button 
+                                        onClick={handleSyncPositions}
+                                        disabled={isSyncingPositions}
+                                        className={`p-2 rounded-full hover:bg-gray-100 dark:hover:bg-white/5 text-gray-400 hover:text-blue-500 transition-all ${isSyncingPositions ? 'animate-spin text-blue-500' : ''}`}
+                                        title="Sync Positions"
+                                    >
+                                        <RefreshCw size={14}/>
+                                    </button>
+                                )}
                             </div>
                             
                             <div className="flex-1 overflow-y-auto custom-scrollbar">
@@ -2246,8 +2268,11 @@ return (
                                             activePositions.map((pos) => {
                                                 const currentPrice = pos.currentPrice || pos.entryPrice;
                                                 const value = pos.shares * currentPrice;
-                                                const pnl = value - pos.sizeUsd;
-                                                const pnlPercent = pos.sizeUsd > 0 ? (pnl / pos.sizeUsd) * 100 : 0;
+                                                // Correct PnL Calculation: Value - Cost Basis
+                                                // Cost Basis = shares * entryPrice
+                                                const costBasis = pos.shares * pos.entryPrice;
+                                                const pnl = value - costBasis;
+                                                const pnlPercent = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
                                                 const isProfitable = pnl >= 0;
                                                 
                                                 // Defensive ID Check
@@ -2273,9 +2298,15 @@ return (
                                                                 )}
                                                             </div>
                                                             <div className="flex-1 min-w-0">
-                                                                <div className="font-bold text-gray-900 dark:text-white line-clamp-2 leading-tight" title={pos.question || safeMarketId}>
+                                                                <a 
+                                                                    href={pos.marketSlug ? `https://polymarket.com/market/${pos.marketSlug}` : `https://polymarket.com/market/${pos.marketId}`}
+                                                                    target="_blank"
+                                                                    rel="noreferrer"
+                                                                    className="font-bold text-gray-900 dark:text-white line-clamp-2 leading-tight hover:text-blue-500 hover:underline transition-colors"
+                                                                    title={pos.question || safeMarketId}
+                                                                >
                                                                     {pos.question || safeMarketId}
-                                                                </div>
+                                                                </a>
                                                                 <div className="text-[10px] text-gray-500 mt-1 flex items-center gap-2">
                                                                     <span className="font-mono">{shortId}...</span>
                                                                     {pos.endDate && <span>• Ends {new Date(pos.endDate).toLocaleDateString()}</span>}
@@ -2290,8 +2321,9 @@ return (
                                                                 <div className={`font-bold ${pos.outcome === 'YES' ? 'text-green-600' : 'text-red-600'}`}>{pos.outcome}</div>
                                                             </div>
                                                             <div className="text-right">
-                                                                <div className="text-[10px] text-gray-500 uppercase font-bold">Size</div>
-                                                                <div className="font-mono">{pos.shares.toFixed(2)} Shares</div>
+                                                                <div className="text-[10px] text-gray-500 uppercase font-bold">Value</div>
+                                                                <div className="font-mono font-bold text-gray-900 dark:text-white">${value.toFixed(2)}</div>
+                                                                <div className="text-[10px] text-gray-500">{pos.shares.toFixed(2)} Shares</div>
                                                             </div>
                                                             <div>
                                                                 <div className="text-[10px] text-gray-500 uppercase font-bold">Entry</div>
@@ -2330,54 +2362,55 @@ return (
                                         )}
                                     </div>
                             ) : (
-                                /* HISTORY TAB */
-                                <div className="space-y-2">
-                                    {tradeHistory.length > 0 ? (
-                                        tradeHistory.slice(0, 8).map(trade => {
-                                            // FIX: Use executedSize as primary, fallback to size for legacy.
-                                            // If executedSize is 0 but status is FILLED/OPEN, use size (legacy assumption)
-                                            const displayAmount = (trade.executedSize && trade.executedSize > 0) ? trade.executedSize : trade.size;
-                                            
-                                            // Ensure user understands this is THEIR amount
-                                            return (
-                                                <div key={trade.id} className="text-xs flex items-center justify-between p-2 bg-gray-50 dark:bg-black/40 rounded border border-gray-200 dark:border-white/5 hover:border-gray-300 dark:hover:border-gray-700 transition-colors">
-                                                    <div className="flex items-center gap-3 overflow-hidden">
-                                                        {/* Side Badge */}
-                                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${trade.side === 'BUY' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400' : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'}`}>
-                                                            {trade.side}
-                                                        </span>
-                                                        <div className="flex flex-col min-w-0">
-                                                            <span className="font-bold text-gray-900 dark:text-white truncate max-w-[100px]">{trade.outcome}</span>
-                                                            <span className="text-[10px] text-gray-500">{new Date(trade.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                    /* HISTORY TAB */
+                                    <div className="space-y-2">
+                                        {tradeHistory.length > 0 ? (
+                                            tradeHistory.slice(0, 8).map(trade => {
+                                                const displayAmount = (trade.executedSize && trade.executedSize > 0) ? trade.executedSize : trade.size;
+                                                // Defensive ID Check
+                                                const tradeId = trade.marketId || "UNKNOWN";
+                                                
+                                                return (
+                                                    <div key={trade.id} className="text-xs flex items-center justify-between p-2 bg-gray-50 dark:bg-black/40 rounded border border-gray-200 dark:border-white/5 hover:border-gray-300 dark:hover:border-gray-700 transition-colors">
+                                                        <div className="flex items-center gap-3 overflow-hidden">
+                                                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${trade.side === 'BUY' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400' : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'}`}>
+                                                                {trade.side}
+                                                            </span>
+                                                            <div className="flex flex-col min-w-0">
+                                                                <span className="font-bold text-gray-900 dark:text-white truncate max-w-[100px]">{trade.outcome}</span>
+                                                                <span className="text-[10px] text-gray-500" title={tradeId}>
+                                                                    {tradeId.length > 10 ? tradeId.slice(0, 10) + '...' : tradeId}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                        {/* ... Rest of row ... */}
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="text-right">
+                                                                <div className="font-mono font-bold text-gray-900 dark:text-white">${displayAmount.toFixed(2)}</div>
+                                                                <div className="text-[10px] text-gray-500">@ {trade.price.toFixed(2)}</div>
+                                                            </div>
+                                                            {trade.txHash ? (
+                                                                <a href={`https://polygonscan.com/tx/${trade.txHash}`} target="_blank" rel="noreferrer" className="text-blue-500 hover:text-blue-600 dark:hover:text-blue-400 p-1 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded inline-block" title="View on PolygonScan">
+                                                                    <ExternalLink size={14}/>
+                                                                </a>
+                                                            ) : <span className="w-5"></span>}
                                                         </div>
                                                     </div>
-                                                    <div className="flex items-center gap-3">
-                                                        <div className="text-right">
-                                                            <div className="font-mono font-bold text-gray-900 dark:text-white">${displayAmount.toFixed(2)}</div>
-                                                            <div className="text-[10px] text-gray-500">@ {trade.price.toFixed(2)}</div>
-                                                        </div>
-                                                        {trade.txHash ? (
-                                                            <a href={`https://polygonscan.com/tx/${trade.txHash}`} target="_blank" rel="noreferrer" className="text-gray-400 hover:text-blue-500 transition-colors p-1" title="View Transaction">
-                                                                <ExternalLink size={12}/>
-                                                            </a>
-                                                        ) : <span className="w-5"></span>}
-                                                    </div>
-                                                </div>
-                                            );
-                                        })
-                                    ) : (
-                                        <div className="text-center py-8 text-gray-400 dark:text-gray-600 flex flex-col items-center gap-2">
-                                            <div className="p-3 bg-gray-100 dark:bg-white/5 rounded-full"><History size={20} className="opacity-50"/></div>
-                                            <p className="text-xs italic">No trade history yet.</p>
-                                        </div>
-                                    )}
-                                    {tradeHistory.length > 8 && (
-                                        <button onClick={() => setActiveTab('history')} className="w-full py-2 text-[10px] text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/5 rounded-lg transition-colors">
-                                            View Full History
-                                        </button>
-                                    )}
-                                </div>
-                            )}
+                                                );
+                                            })
+                                        ) : (
+                                            <div className="text-center py-8 text-gray-400 dark:text-gray-600 flex flex-col items-center gap-2">
+                                                <div className="p-3 bg-gray-100 dark:bg-white/5 rounded-full"><History size={20} className="opacity-50"/></div>
+                                                <p className="text-xs italic">No trade history yet.</p>
+                                            </div>
+                                        )}
+                                        {tradeHistory.length > 8 && (
+                                            <button onClick={() => setActiveTab('history')} className="w-full py-2 text-[10px] text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/5 rounded-lg transition-colors">
+                                                View Full History
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
                         </div>
                     </div>
                 </div>
@@ -3347,7 +3380,7 @@ return (
                         <tbody className="divide-y divide-gray-200 dark:divide-gray-800 font-mono">
                             {tradeHistory.map((tx) => {
                                 // Prefer executedSize (User amount) over size (Whale amount) for display
-                                const displayAmount = tx.executedSize && tx.executedSize > 0 ? tx.executedSize : tx.size;
+                                const displayAmount = (tx.executedSize && tx.executedSize > 0) ? tx.executedSize : tx.size;
                                 
                                 return (
                                     <tr key={tx.id} className={`hover:bg-gray-50 dark:hover:bg-white/5 transition-colors ${tx.status === 'SKIPPED' ? 'opacity-50 grayscale' : ''}`}>
