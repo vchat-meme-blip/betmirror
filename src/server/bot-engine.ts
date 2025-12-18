@@ -1,4 +1,5 @@
 
+// ... existing imports ...
 import { TradeMonitorService } from '../services/trade-monitor.service.js';
 import { TradeExecutorService, ExecutionResult } from '../services/trade-executor.service.js';
 import { aiAgent } from '../services/ai-agent.service.js';
@@ -78,7 +79,7 @@ export class BotEngine {
 
     private async addLog(type: 'info' | 'warn' | 'error' | 'success', message: string) {
         try {
-            await BotLog.create({ userId: this.config.userId, type, message, timestamp: new Date() } as any);
+            await BotLog.create({ userId: this.config.userId, type, message, timestamp: new Date() });
         } catch (e) { console.error("Log failed", e); }
     }
 
@@ -87,60 +88,75 @@ export class BotEngine {
             this.monitor.updateTargets(newConfig.userAddresses);
             this.config.userAddresses = newConfig.userAddresses;
         }
+
         if (newConfig.multiplier !== undefined) {
             this.config.multiplier = newConfig.multiplier;
             if (this.runtimeEnv) this.runtimeEnv.tradeMultiplier = newConfig.multiplier;
         }
+
         if (newConfig.maxTradeAmount !== undefined) {
             this.config.maxTradeAmount = newConfig.maxTradeAmount;
             if (this.runtimeEnv) this.runtimeEnv.maxTradeAmount = newConfig.maxTradeAmount;
         }
+
         if (newConfig.riskProfile !== undefined) this.config.riskProfile = newConfig.riskProfile;
         if (newConfig.autoTp !== undefined) this.config.autoTp = newConfig.autoTp;
-        if (newConfig.autoCashout) this.config.autoCashout = newConfig.autoCashout;
+        
+        if (newConfig.autoCashout) {
+            this.config.autoCashout = newConfig.autoCashout;
+        }
     }
 
     public async syncPositions(forceChainSync = false): Promise<void> {
         if (!this.exchange) return;
+        
         try {
+            // 1. If forced, pull from chain (Emergency Resync)
             if (forceChainSync) {
+                this.addLog('warn', '⚠️ Forced Chain Sync requested. Updating positions from Chain/API...');
                 const address = this.exchange.getFunderAddress();
                 if(address) {
                     const chainPositions = await this.exchange.getPositions(address);
-                    this.activePositions = chainPositions.map(p => {
-                         const currentPrice = isNaN(p.currentPrice) ? (p.entryPrice || 0.5) : p.currentPrice;
-                         const sizeUsd = isNaN(p.valueUsd) ? (p.balance * currentPrice) : p.valueUsd;
-                         
-                         return {
-                             tradeId: 'imported_' + Date.now() + Math.random().toString(36).substring(7),
-                             clobOrderId: p.marketId,
-                             marketId: p.marketId,
-                             tokenId: p.tokenId,
-                             outcome: (p.outcome || 'YES').toUpperCase() as 'YES' | 'NO',
-                             entryPrice: p.entryPrice || 0.5,
-                             shares: p.balance || 0,
-                             sizeUsd: isNaN(sizeUsd) ? 0 : sizeUsd,
-                             timestamp: Date.now(),
-                             currentPrice: isNaN(currentPrice) ? 0 : currentPrice,
-                             question: p.question || p.marketId,
-                             image: p.image || '',
-                             marketSlug: p.marketSlug || ''
-                         };
-                    });
+                    
+                    // Map to ActivePosition (Update with Rich Data)
+                    this.activePositions = chainPositions.map(p => ({
+                         tradeId: 'imported_' + Date.now() + Math.random().toString(36).substring(7),
+                         marketId: p.marketId,
+                         tokenId: p.tokenId,
+                         outcome: p.outcome as 'YES' | 'NO',
+                         entryPrice: p.entryPrice,
+                         shares: p.balance,
+                         sizeUsd: p.valueUsd,
+                         timestamp: Date.now(),
+                         // Sync Rich Data
+                         currentPrice: p.currentPrice,
+                         question: p.question,
+                         image: p.image,
+                         marketSlug: p.marketSlug
+                    }));
                 }
             } else {
+                // 2. Standard Sync: Update Prices ONLY
                 for (const pos of this.activePositions) {
                     try {
                         const currentPrice = await this.exchange.getMarketPrice(pos.marketId, pos.tokenId);
-                        if (!isNaN(currentPrice) && currentPrice > 0) {
-                            pos.currentPrice = currentPrice;
+                        if (currentPrice > 0) {
+                            pos.currentPrice = currentPrice; // Update live price
                             pos.sizeUsd = pos.shares * currentPrice;
                         }
-                    } catch (e) {}
+                    } catch (e) {
+                        // Ignore price update errors
+                    }
                 }
             }
-            if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
+            
+            // Persist updates
+            if (this.callbacks?.onPositionsUpdate) {
+                await this.callbacks.onPositionsUpdate(this.activePositions);
+            }
+            
             await this.syncStats();
+
         } catch (e: any) {
             this.addLog('warn', `Sync Positions Failed: ${e.message}`);
         }
@@ -151,15 +167,21 @@ export class BotEngine {
         try {
             const address = this.exchange.getFunderAddress();
             if(!address) return;
+            
             const cashBalance = await this.exchange.fetchBalance(address);
+            
             let positionValue = 0;
-            this.activePositions.forEach(p => {
-                if (!isNaN(p.sizeUsd)) positionValue += p.sizeUsd;
-            });
+            this.activePositions.forEach(p => positionValue += p.sizeUsd);
+
             this.stats.portfolioValue = cashBalance + positionValue;
             this.stats.cashBalance = cashBalance;
-            if (this.callbacks?.onStatsUpdate) await this.callbacks.onStatsUpdate(this.stats);
-        } catch(e) {}
+            
+            if (this.callbacks?.onStatsUpdate) {
+                await this.callbacks.onStatsUpdate(this.stats);
+            }
+        } catch(e) {
+            console.error("Sync Stats Error", e);
+        }
     }
 
     public async emergencySell(tradeIdOrMarketId: string, outcome?: string): Promise<string> {
@@ -240,15 +262,18 @@ export class BotEngine {
     public async start() {
         if (this.isRunning) return;
         this.isRunning = true;
+
         try {
             await this.addLog('info', '🚀 Starting Engine...');
+
             const engineLogger: Logger = {
-                info: (m: string) => this.addLog('info', m),
-                warn: (m: string) => this.addLog('warn', m),
-                error: (m: string, e?: any) => this.addLog('error', m),
+                info: (m: string) => { console.log(m); this.addLog('info', m); },
+                warn: (m: string) => { console.warn(m); this.addLog('warn', m); },
+                error: (m: string, e?: any) => { console.error(m, e); this.addLog('error', m); },
                 debug: () => {},
-                success: (m: string) => this.addLog('success', m)
+                success: (m: string) => { console.log(`✅ ${m}`); this.addLog('success', m); }
             };
+
             this.exchange = new PolymarketAdapter({
                 rpcUrl: this.config.rpcUrl,
                 walletConfig: this.config.walletConfig!,
@@ -259,15 +284,21 @@ export class BotEngine {
                 builderApiPassphrase: this.config.builderApiPassphrase,
                 mongoEncryptionKey: this.config.mongoEncryptionKey
             }, engineLogger);
+
             await this.exchange.initialize();
+
             const isFunded = await this.checkFunding();
+            
             if (!isFunded) {
-                await this.addLog('warn', '💰 Safe Empty. Engine standby (Min $1.00)...');
+                await this.addLog('warn', '💰 Safe Empty. Engine standby. Waiting for deposit to Safe (Min $1.00)...');
                 this.startFundWatcher();
                 return; 
             }
+
             await this.proceedWithPostFundingSetup(engineLogger);
+
         } catch (e: any) {
+            console.error(e);
             await this.addLog('error', `Startup Failed: ${e.message}`);
             this.isRunning = false;
         }
@@ -275,9 +306,14 @@ export class BotEngine {
 
     public stop() {
         this.isRunning = false;
-        if (this.monitor) this.monitor.stop();
-        if (this.fundWatcher) { clearInterval(this.fundWatcher); this.fundWatcher = undefined; }
-        this.addLog('warn', '🛑 Engine Stopped.').catch(() => {});
+        if (this.monitor) {
+            this.monitor.stop();
+        }
+        if (this.fundWatcher) {
+            clearInterval(this.fundWatcher);
+            this.fundWatcher = undefined;
+        }
+        this.addLog('warn', '🛑 Engine Stopped.').catch(console.error);
     }
 
     private async checkFunding(): Promise<boolean> {
@@ -285,29 +321,38 @@ export class BotEngine {
             if(!this.exchange) return false;
             const funderAddr = this.exchange.getFunderAddress();
             if (!funderAddr) return false;
+            
             const balanceUSDC = await this.exchange.fetchBalance(funderAddr);
             if (this.activePositions.length > 0) return true;
+            // UPDATE: Check for at least $1.00 to avoid "Minimum Order" loops
             return balanceUSDC >= 1.0; 
-        } catch (e) { return false; }
+        } catch (e) {
+            return false;
+        }
     }
 
     private startFundWatcher() {
         if (this.fundWatcher) clearInterval(this.fundWatcher);
         this.fundWatcher = setInterval(async () => {
-            if (!this.isRunning) { clearInterval(this.fundWatcher); return; }
-            if (await this.checkFunding()) {
-                clearInterval(this.fundWatcher); this.fundWatcher = undefined;
+            if (!this.isRunning) {
+                clearInterval(this.fundWatcher);
+                return;
+            }
+            const funded = await this.checkFunding();
+            if (funded) {
+                clearInterval(this.fundWatcher);
+                this.fundWatcher = undefined;
                 await this.addLog('success', '💰 Funds detected. Initializing...');
                 const engineLogger: Logger = {
-                    info: (m: string) => this.addLog('info', m),
-                    warn: (m: string) => this.addLog('warn', m),
-                    error: (m: string, e?: any) => this.addLog('error', m),
+                    info: (m: string) => { console.log(m); this.addLog('info', m); },
+                    warn: (m: string) => { console.warn(m); this.addLog('warn', m); },
+                    error: (m: string, e?: any) => { console.error(m, e); this.addLog('error', m); },
                     debug: () => {},
-                    success: (m: string) => this.addLog('success', m)
+                    success: (m: string) => { console.log(`✅ ${m}`); this.addLog('success', m); }
                 };
                 await this.proceedWithPostFundingSetup(engineLogger);
             }
-        }, 15000);
+        }, 15000) as unknown as NodeJS.Timeout; 
     }
 
     private async proceedWithPostFundingSetup(logger: Logger) {
@@ -315,9 +360,11 @@ export class BotEngine {
             if(!this.exchange) return;
             await this.exchange.authenticate();
             this.startServices(logger);
+            // Sync rich metadata for positions on start
             await this.syncPositions(true); 
             await this.syncStats();
         } catch (e: any) {
+            console.error(e);
             await this.addLog('error', `Setup Failed: ${e.message}`);
             this.isRunning = false; 
         }
@@ -325,6 +372,7 @@ export class BotEngine {
 
     private async startServices(logger: Logger) {
         if(!this.exchange) return;
+
         this.runtimeEnv = {
             tradeMultiplier: this.config.multiplier,
             maxTradeAmount: this.config.maxTradeAmount || 100, 
@@ -332,12 +380,38 @@ export class BotEngine {
             adminRevenueWallet: process.env.ADMIN_REVENUE_WALLET,
             enableNotifications: this.config.enableNotifications,
             userPhoneNumber: this.config.userPhoneNumber,
+            twilioAccountSid: process.env.TWILIO_ACCOUNT_SID,
+            twilioAuthToken: process.env.TWILIO_AUTH_TOKEN,
+            twilioFromNumber: process.env.TWILIO_FROM_NUMBER
         };
-        const funder = this.exchange.getFunderAddress();
-        if (!funder) throw new Error("Missing funder address.");
-        this.executor = new TradeExecutorService({ adapter: this.exchange, proxyWallet: funder, env: this.runtimeEnv, logger: logger });
-        const fundManager = new FundManagerService(this.exchange, funder, { enabled: this.config.autoCashout?.enabled || false, maxRetentionAmount: this.config.autoCashout?.maxAmount, destinationAddress: this.config.autoCashout?.destinationAddress, }, logger, new NotificationService(this.runtimeEnv, logger));
         
+        const funder = this.exchange.getFunderAddress();
+
+        if (!funder) {
+            throw new Error("Adapter initialization incomplete. Missing funder address.");
+        }
+
+        this.executor = new TradeExecutorService({
+            adapter: this.exchange,
+            proxyWallet: funder,
+            env: this.runtimeEnv, 
+            logger: logger
+        });
+
+        this.stats.allowanceApproved = true; 
+
+        const fundManager = new FundManagerService(
+            this.exchange,
+            funder,
+            {
+                enabled: this.config.autoCashout?.enabled || false,
+                maxRetentionAmount: this.config.autoCashout?.maxAmount,
+                destinationAddress: this.config.autoCashout?.destinationAddress,
+            },
+            logger,
+            new NotificationService(this.runtimeEnv, logger)
+        );
+
         let feeDistributor: FeeDistributorService | undefined;
         try {
              const walletService = new EvmWalletService(this.config.rpcUrl, this.config.mongoEncryptionKey);
@@ -345,78 +419,170 @@ export class BotEngine {
                  const wallet = await walletService.getWalletInstance(this.config.walletConfig.encryptedPrivateKey);
                  feeDistributor = new FeeDistributorService(wallet, this.runtimeEnv, logger, this.registryService);
              }
-        } catch(e) {}
+        } catch(e) {
+            logger.warn("Fee Distributor init failed, skipping: " + (e as Error).message);
+        }
 
         const notifier = new NotificationService(this.runtimeEnv, logger);
+
         this.monitor = new TradeMonitorService({
-            adapter: this.exchange, env: this.runtimeEnv, logger: logger, userAddresses: this.config.userAddresses,
+            adapter: this.exchange,
+            env: this.runtimeEnv,
+            logger: logger,
+            userAddresses: this.config.userAddresses,
             onDetectedTrade: async (signal: TradeSignal) => {
                 if (!this.isRunning) return;
-                const aiResult = await aiAgent.analyzeTrade(signal.marketId, signal.side, signal.outcome, signal.sizeUsd, signal.price, this.config.riskProfile, this.config.geminiApiKey);
+
+                if (signal.side === 'SELL') {
+                    const hasPosition = this.activePositions.some(p => 
+                        p.marketId === signal.marketId && p.outcome === signal.outcome
+                    );
+                    if (!hasPosition) return; 
+                }
+
+                const aiResult = await aiAgent.analyzeTrade(
+                    signal.marketId, 
+                    signal.side,
+                    signal.outcome,
+                    signal.sizeUsd,
+                    signal.price,
+                    this.config.riskProfile,
+                    this.config.geminiApiKey
+                );
+
                 if (!aiResult.shouldCopy) {
-                    if (this.callbacks?.onTradeComplete) { 
-                        await this.callbacks.onTradeComplete({ 
-                            id: crypto.randomUUID(), 
-                            timestamp: new Date().toISOString(), 
-                            marketId: signal.marketId, 
-                            outcome: signal.outcome, 
-                            side: signal.side, 
-                            size: signal.sizeUsd, 
-                            executedSize: 0, 
-                            price: signal.price, 
-                            status: 'SKIPPED', 
-                            aiReasoning: aiResult.reasoning, 
-                            riskScore: aiResult.riskScore 
-                        }); 
+                    await this.addLog('info', `✋ AI Skipped: ${aiResult.reasoning} (Score: ${aiResult.riskScore})`);
+                    
+                    if (this.callbacks?.onTradeComplete) {
+                        await this.callbacks.onTradeComplete({
+                            id: crypto.randomUUID(),
+                            timestamp: new Date().toISOString(),
+                            marketId: signal.marketId,
+                            outcome: signal.outcome,
+                            side: signal.side,
+                            size: signal.sizeUsd,
+                            executedSize: 0,
+                            price: signal.price,
+                            status: 'SKIPPED',
+                            aiReasoning: aiResult.reasoning,
+                            riskScore: aiResult.riskScore
+                        });
                     }
                     return;
                 }
+
+                await this.addLog('info', `🤖 AI Approved: ${aiResult.reasoning} (Score: ${aiResult.riskScore}). Executing...`);
+
                 if (this.executor) {
                     const result: ExecutionResult = await this.executor.copyTrade(signal);
+                    
                     if (result.status === 'FILLED') {
-                        const tradeId = crypto.randomUUID();
+                        await this.addLog('success', `✅ Trade Executed! Order: ${result.txHash || result.reason} ($${result.executedAmount.toFixed(2)})`);
+                        
                         if (signal.side === 'BUY') {
-                            this.activePositions.push({ tradeId, clobOrderId: result.txHash, marketId: signal.marketId, tokenId: signal.tokenId, outcome: signal.outcome, entryPrice: signal.price, shares: result.executedShares, sizeUsd: result.executedAmount, timestamp: Date.now(), currentPrice: signal.price, question: "Syncing..." });
-                        }
-                        if (this.callbacks?.onTradeComplete) {
-                            await this.callbacks.onTradeComplete({ 
-                                id: tradeId, 
-                                timestamp: new Date().toISOString(), 
-                                marketId: signal.marketId, 
-                                outcome: signal.outcome, 
-                                side: signal.side, 
-                                size: signal.sizeUsd, 
-                                executedSize: result.executedAmount, 
-                                price: result.priceFilled || signal.price, 
-                                status: 'FILLED', 
-                                txHash: result.txHash, 
-                                aiReasoning: aiResult.reasoning, 
-                                riskScore: aiResult.riskScore 
+                            
+                            // 1. Create Trade Record
+                            const tradeRecord = await Trade.create({
+                                _id: crypto.randomUUID(), // Force UUID for compatibility
+                                userId: this.config.userId,
+                                marketId: signal.marketId,
+                                outcome: signal.outcome,
+                                side: 'BUY',
+                                size: signal.sizeUsd,
+                                executedSize: result.executedAmount,
+                                price: signal.price,
+                                pnl: 0,
+                                status: 'OPEN',
+                                txHash: result.txHash,
+                                clobOrderId: result.txHash, 
+                                assetId: signal.tokenId,
+                                aiReasoning: aiResult.reasoning,
+                                riskScore: aiResult.riskScore,
+                                timestamp: new Date()
                             });
+
+                            // 2. Add to Active Positions with rich metadata placeholder
+                            // Sync will update Question/Image shortly
+                            this.activePositions.push({
+                                tradeId: tradeRecord._id.toString(), 
+                                clobOrderId: result.txHash,
+                                marketId: signal.marketId,
+                                tokenId: signal.tokenId,
+                                outcome: signal.outcome,
+                                entryPrice: signal.price,
+                                shares: result.executedShares, 
+                                sizeUsd: result.executedAmount,
+                                timestamp: Date.now(),
+                                currentPrice: signal.price,
+                                question: "Loading Data...",
+                                image: ""
+                            });
+                            
+                            // Trigger sync to get rich data
+                            this.syncPositions(true);
+
+                        } else if (signal.side === 'SELL') {
+                            const idx = this.activePositions.findIndex(p => p.marketId === signal.marketId && p.outcome === signal.outcome);
+                            if (idx !== -1) {
+                                const closingPos = this.activePositions[idx];
+                                if (closingPos.tradeId) {
+                                    await Trade.findByIdAndUpdate(closingPos.tradeId, { status: 'CLOSED' });
+                                }
+                                this.activePositions.splice(idx, 1);
+                            }
                         }
-                        if (this.callbacks?.onPositionsUpdate) await this.callbacks.onPositionsUpdate(this.activePositions);
+
+                        if (this.callbacks?.onPositionsUpdate) {
+                            await this.callbacks.onPositionsUpdate(this.activePositions);
+                        }
+
                         await notifier.sendTradeAlert(signal);
+                        
+                        if (signal.side === 'SELL' && feeDistributor) {
+                            const estimatedProfit = result.executedAmount * 0.1; 
+                            if (estimatedProfit > 0) {
+                                const feeEvent = await feeDistributor.distributeFeesOnProfit(
+                                    signal.marketId, 
+                                    estimatedProfit, 
+                                    signal.trader
+                                );
+                                if (feeEvent && this.callbacks?.onFeePaid) {
+                                    await this.callbacks.onFeePaid(feeEvent);
+                                }
+                            }
+                        }
+                        
                         setTimeout(() => this.syncStats(), 2000);
+                        setTimeout(async () => {
+                            const cashout = await fundManager.checkAndSweepProfits();
+                            if (cashout && this.callbacks?.onCashout) await this.callbacks.onCashout(cashout);
+                        }, 15000);
+
                     } else {
+                        await this.addLog('warn', `Execution Skipped/Failed: ${result.reason || result.status}`);
                         if (this.callbacks?.onTradeComplete) {
-                            await this.callbacks.onTradeComplete({ 
-                                id: crypto.randomUUID(), 
-                                timestamp: new Date().toISOString(), 
-                                marketId: signal.marketId, 
-                                outcome: signal.outcome, 
-                                side: signal.side, 
-                                size: signal.sizeUsd, 
-                                executedSize: 0, 
-                                price: signal.price, 
+                            await this.callbacks.onTradeComplete({
+                                id: crypto.randomUUID(),
+                                timestamp: new Date().toISOString(),
+                                marketId: signal.marketId,
+                                outcome: signal.outcome,
+                                side: signal.side,
+                                size: signal.sizeUsd,
+                                executedSize: 0,
+                                price: signal.price,
                                 status: 'FAILED', 
-                                aiReasoning: aiResult.reasoning, 
-                                riskScore: aiResult.riskScore 
+                                aiReasoning: aiResult.reasoning,
+                                riskScore: aiResult.riskScore
                             });
                         }
                     }
                 }
             }
         });
-        await this.monitor.start(this.config.startCursor || Math.floor(Date.now() / 1000));
+
+        const startTs = this.config.startCursor || Math.floor(Date.now() / 1000);
+        await this.monitor.start(startTs);
+        
+        this.addLog('success', `Engine Active. Monitoring ${this.config.userAddresses.length} targets.`);
     }
 }

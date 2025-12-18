@@ -1,4 +1,3 @@
-
 import { OrderBook, PositionData } from '../domain/market.types.js';
 import { TradeSignal, TradeHistoryEntry } from '../domain/trade.types.js';
 
@@ -11,7 +10,7 @@ export interface OrderParams {
     side: OrderSide;
     sizeUsd: number;
     priceLimit?: number;
-    // New: Allow specifying raw share count for sells
+    // New: Allow specifying raw share count for sells to ensure 100% closure
     sizeShares?: number; 
 }
 
@@ -40,8 +39,12 @@ export interface IExchangeAdapter {
     
     // Market Data
     fetchBalance(address: string): Promise<number>;
-    getPortfolioValue(address: string): Promise<number>; // NEW: Total Equity
-    getMarketPrice(marketId: string, tokenId: string): Promise<number>;
+    getPortfolioValue(address: string): Promise<number>;
+    /**
+     * Fetches market price.
+     * @param side Optional. Use 'BUY' for Ask (execution cost) or 'SELL' for Bid (liquidation value).
+     */
+    getMarketPrice(marketId: string, tokenId: string, side?: OrderSide): Promise<number>;
     getOrderBook(tokenId: string): Promise<OrderBook>;
     getPositions(address: string): Promise<PositionData[]>; // Sync positions
     
@@ -53,7 +56,7 @@ export interface IExchangeAdapter {
     getTradeHistory(address: string, limit?: number): Promise<TradeHistoryEntry[]>;
 
     // Execution
-    createOrder(params: OrderParams): Promise<OrderResult>; // Updated return type
+    createOrder(params: OrderParams): Promise<OrderResult>; 
     cancelOrder(orderId: string): Promise<boolean>;
     
     // Order Management

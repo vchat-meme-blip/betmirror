@@ -277,55 +277,27 @@ export class SafeManagerService {
     }
 
     public async withdrawUSDC(to: string, amount: string): Promise<string> {
-        const safe = this.safeAddress;
-        
         const usdcInterface = new Interface(ERC20_ABI);
         const data = usdcInterface.encodeFunctionData("transfer", [to, amount]);
-        
-        const tx: SafeTransaction = {
-            to: TOKENS.USDC_BRIDGED, 
-            value: "0",
-            data: data, 
-            operation: OperationType.Call
-        };
-        
-        this.logger.info(`💸 Withdrawing USDC via Relayer API...`);
-        this.logger.info(`   Safe: ${safe} -> To: ${to} ($${(Number(amount)/1e6).toFixed(2)})`);
+        const tx: SafeTransaction = { to: TOKENS.USDC_BRIDGED, value: "0", data, operation: OperationType.Call };
         
         try {
-            // Use manual API call to force proxy address
-            const txHash = await this.executeTransactionViaApi(tx);
-            this.logger.info(`   Tx Submitted: ${txHash}`);
-            return txHash;
+            const task = await this.relayClient.execute([tx]);
+            const result = await task.wait();
+            return (result as any).transactionHash || "0x...";
         } catch (e: any) {
-            this.logger.warn(`   ⚠️ Relayer API withdrawal failed (${e.message}).`);
-            this.logger.warn(`   -> Switching to RESCUE MODE (On-Chain) for ${safe}.`);
-            return await this.withdrawUSDCOnChain(to, amount);
+            throw e;
         }
     }
 
     public async withdrawNative(to: string, amount: string): Promise<string> {
-        const safe = this.safeAddress;
-        
-        const tx: SafeTransaction = {
-            to: to, 
-            value: amount, // Wei amount of POL/MATIC
-            data: "0x", 
-            operation: OperationType.Call
-        };
-        
-        this.logger.info(`💸 Withdrawing POL via Relayer API...`);
-        this.logger.info(`   Safe: ${safe} -> To: ${to} (${ethers.formatEther(amount)} POL)`);
-        
+        const tx: SafeTransaction = { to, value: amount, data: "0x", operation: OperationType.Call };
         try {
-             // Use manual API call to force proxy address
-            const txHash = await this.executeTransactionViaApi(tx);
-            this.logger.info(`   Tx Submitted: ${txHash}`);
-            return txHash;
+            const task = await this.relayClient.execute([tx]);
+            const result = await task.wait();
+            return (result as any).transactionHash || "0x...";
         } catch (e: any) {
-            this.logger.warn(`   ⚠️ Relayer API withdrawal failed (${e.message}).`);
-            this.logger.warn(`   -> Switching to RESCUE MODE (On-Chain) for ${safe}.`);
-            return await this.withdrawNativeOnChain(to, amount);
+            throw e;
         }
     }
 

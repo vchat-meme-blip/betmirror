@@ -38,7 +38,6 @@ export class TradeExecutorService {
             status: 'SKIPPED',
             executedAmount: 0,
             executedShares: 0,
-            priceFilled: 0,
             reason
         });
         try {
@@ -128,8 +127,7 @@ export class TradeExecutorService {
                     status: 'FAILED',
                     executedAmount: 0,
                     executedShares: 0,
-                    priceFilled: 0,
-                    reason: result.error || 'adapter_rejection'
+                    reason: result.error || 'Unknown error'
                 };
             }
             // 7. Success - Update Pending Spend (Only for Buys)
@@ -141,10 +139,9 @@ export class TradeExecutorService {
             const actualUsd = shares * price;
             return {
                 status: 'FILLED',
-                txHash: result.txHash || result.orderId,
-                executedAmount: result.sharesFilled * result.priceFilled,
-                executedShares: result.sharesFilled,
-                priceFilled: result.priceFilled,
+                txHash: result.orderId || result.txHash,
+                executedAmount: actualUsd,
+                executedShares: shares,
                 reason: 'executed'
             };
         }
@@ -155,7 +152,6 @@ export class TradeExecutorService {
                 status: 'FAILED',
                 executedAmount: 0,
                 executedShares: 0,
-                priceFilled: 0,
                 reason: errorMessage
             };
         }

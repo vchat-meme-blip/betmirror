@@ -146,7 +146,7 @@ export class TradeExecutorService {
       }
 
       // Round to 2 decimals
-      priceLimit = Math.floor(priceLimit * 100) / 100;
+      priceLimit = Math.max(priceLimit * 100) / 100;
       if (priceLimit <= 0) priceLimit = 0.01;
 
       logger.info(`🛡️ Price Guard: Signal @ ${signal.price.toFixed(3)} -> Limit @ ${priceLimit.toFixed(2)}`);

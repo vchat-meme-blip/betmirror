@@ -1,4 +1,4 @@
-import { Interface, Contract, ethers, JsonRpcProvider } from 'ethers';
+import { Interface, Contract, JsonRpcProvider } from 'ethers';
 import { RelayClient, OperationType } from '@polymarket/builder-relayer-client';
 import { deriveSafe } from '@polymarket/builder-relayer-client/dist/builder/derive.js';
 import { BuilderConfig } from '@polymarket/builder-signing-sdk';
@@ -245,49 +245,27 @@ export class SafeManagerService {
         }
     }
     async withdrawUSDC(to, amount) {
-        const safe = this.safeAddress;
         const usdcInterface = new Interface(ERC20_ABI);
         const data = usdcInterface.encodeFunctionData("transfer", [to, amount]);
-        const tx = {
-            to: TOKENS.USDC_BRIDGED,
-            value: "0",
-            data: data,
-            operation: OperationType.Call
-        };
-        this.logger.info(`💸 Withdrawing USDC via Relayer API...`);
-        this.logger.info(`   Safe: ${safe} -> To: ${to} ($${(Number(amount) / 1e6).toFixed(2)})`);
+        const tx = { to: TOKENS.USDC_BRIDGED, value: "0", data, operation: OperationType.Call };
         try {
-            // Use manual API call to force proxy address
-            const txHash = await this.executeTransactionViaApi(tx);
-            this.logger.info(`   Tx Submitted: ${txHash}`);
-            return txHash;
+            const task = await this.relayClient.execute([tx]);
+            const result = await task.wait();
+            return result.transactionHash || "0x...";
         }
         catch (e) {
-            this.logger.warn(`   ⚠️ Relayer API withdrawal failed (${e.message}).`);
-            this.logger.warn(`   -> Switching to RESCUE MODE (On-Chain) for ${safe}.`);
-            return await this.withdrawUSDCOnChain(to, amount);
+            throw e;
         }
     }
     async withdrawNative(to, amount) {
-        const safe = this.safeAddress;
-        const tx = {
-            to: to,
-            value: amount, // Wei amount of POL/MATIC
-            data: "0x",
-            operation: OperationType.Call
-        };
-        this.logger.info(`💸 Withdrawing POL via Relayer API...`);
-        this.logger.info(`   Safe: ${safe} -> To: ${to} (${ethers.formatEther(amount)} POL)`);
+        const tx = { to, value: amount, data: "0x", operation: OperationType.Call };
         try {
-            // Use manual API call to force proxy address
-            const txHash = await this.executeTransactionViaApi(tx);
-            this.logger.info(`   Tx Submitted: ${txHash}`);
-            return txHash;
+            const task = await this.relayClient.execute([tx]);
+            const result = await task.wait();
+            return result.transactionHash || "0x...";
         }
         catch (e) {
-            this.logger.warn(`   ⚠️ Relayer API withdrawal failed (${e.message}).`);
-            this.logger.warn(`   -> Switching to RESCUE MODE (On-Chain) for ${safe}.`);
-            return await this.withdrawNativeOnChain(to, amount);
+            throw e;
         }
     }
     // --- MANUAL RELAYER INTERACTION ---
