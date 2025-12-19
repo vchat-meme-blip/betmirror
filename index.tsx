@@ -182,7 +182,7 @@ const DepositModal = ({
                         <ArrowDown size={24}/>
                     </div>
                     <h3 className="text-xl font-bold text-gray-900 dark:text-white">Deposit Funds</h3>
-                    <p className="text-xs text-gray-500 mt-1">Main Wallet (You) <span className="mx-1">→</span> Safe Wallet (Bot)</p>
+                    <p className="text-xs text-gray-500 mt-1">Main Wallet (You) <span className="mx-1">→</span> Safe Wallet (Vault)</p>
                     <div className="mt-2 text-[10px] bg-blue-50 dark:bg-blue-900/10 px-2 py-1 rounded inline-block text-blue-500">
                         Target: {targetAddress ? `${targetAddress.slice(0,6)}...${targetAddress.slice(-4)}` : '...'}
                     </div>
@@ -1508,7 +1508,7 @@ const handleInitializeWallet = async () => {
 
 // --- HANDLERS: Add Recovery Owner ---
 const handleAddRecoveryOwner = async () => {
-    if (!confirm("Add Recovery Owner?\n\nThis will add your Main Wallet as a co-owner of the Gnosis Safe. You will be able to execute transactions directly on-chain if this website ever goes down.\n\nCost: ~0.05 POL (Paid by Signer/Bot)")) return;
+    if (!confirm("Add Recovery Owner?\n\nThis will add your Main Wallet as new owner of the Gnosis Safe. You will be able to execute transactions directly on-chain if this website ever goes down.\n\nCost: ~0.05 POL (Paid by Signer/Bot)")) return;
 
     // Pre-check Signer Gas
     if (parseFloat(signerWalletBal.native) < 0.05) {
@@ -2984,6 +2984,49 @@ return (
                         <div>
                             <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Strategy & Risk</h2>
                             <p className="text-gray-500 text-sm">Configure how your bot sizes positions and manages risk.</p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* NEW: Sovereignty Section (Top Level) */}
+                <div className="mb-8 bg-purple-50 dark:bg-purple-900/10 border border-purple-200 dark:border-purple-800/30 rounded-xl p-6 relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:opacity-20 transition-opacity">
+                         {recoveryOwnerAdded ? <ShieldCheck size={100} className="text-green-600"/> : <Fingerprint size={100} className="text-purple-600"/>}
+                    </div>
+                    
+                    <div className="relative z-10">
+                        <div className="flex justify-between items-start">
+                             <div>
+                                <h3 className="text-lg font-bold text-purple-900 dark:text-purple-100 flex items-center gap-2">
+                                    <Shield size={20}/> Vault Sovereignty (Multi-Sig)
+                                </h3>
+                                <p className="text-sm text-purple-800 dark:text-purple-300 mt-1 max-w-2xl">
+                                    Upgrade your Gnosis Safe to a <strong>Multi-Owner Setup</strong>. This adds your Main Wallet as a signer, giving you 
+                                    full on-chain control independent of this platform. If our servers get knocked offline, you can still access funds via Safe Wallet.
+                                    
+                                    Once your main wallet is added as an owner:
+                                    1. User connects their main wallet to app.safe.global
+                                    2. User imports the Safe address (user's Vault Safe)
+                                    3. User can sign transactions independently (threshold = 1)
+                                    4. User withdraws directly without needing our bot
+                                </p>
+                             </div>
+                             
+                             {recoveryOwnerAdded ? (
+                                 <div className="flex items-center gap-2 px-4 py-2 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded-lg border border-green-200 dark:border-green-800">
+                                     <ShieldCheck size={18}/>
+                                     <span className="text-xs font-bold uppercase tracking-wide">You are an Owner</span>
+                                 </div>
+                             ) : (
+                                 <button 
+                                     onClick={handleAddRecoveryOwner}
+                                     disabled={isAddingRecovery}
+                                     className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg shadow-lg shadow-purple-500/20 text-xs flex items-center gap-2 transition-all disabled:opacity-50"
+                                 >
+                                     {isAddingRecovery ? <Loader2 size={14} className="animate-spin"/> : <PlusCircle size={14}/>}
+                                     ADD RECOVERY KEY
+                                 </button>
+                             )}
                         </div>
                     </div>
                 </div>
