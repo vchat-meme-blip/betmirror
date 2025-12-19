@@ -2049,28 +2049,65 @@ return (
                 )}
                 {/* Left Panel */}
                 <div className="col-span-12 md:col-span-8 flex flex-col gap-6">
-                    {/* Wallet Assets Matrix */}
-                    <div className="glass-panel p-5 rounded-xl relative overflow-hidden">
+                    {/* REDESIGNED: Asset Overview Panel */}
+                    <div className="glass-panel p-5 rounded-xl relative overflow-hidden flex flex-col gap-6">
                         <div className="absolute top-0 right-0 p-4 opacity-5 text-blue-600 dark:text-white">
                             <Wallet size={100} />
                         </div>
-                        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4 flex items-center gap-2">
-                            <Coins size={14}/> Asset Overview
-                        </h3>
                         
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 relative z-10">
+                        <div className="flex justify-between items-center relative z-10">
+                            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+                                <Coins size={14}/> Asset Overview
+                            </h3>
+                            <button 
+                                onClick={fetchBalances} 
+                                className="text-[10px] text-blue-600 hover:text-blue-700 dark:text-blue-400 flex items-center gap-1 bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 rounded transition-colors"
+                            >
+                                <RefreshCw size={10}/> REFRESH
+                            </button>
+                        </div>
+
+                        {/* NEW: Signer Controller Banner (Horizontal Layout) */}
+                        <div className="relative z-10 bg-purple-500/5 dark:bg-purple-500/10 border border-purple-500/20 dark:border-purple-500/30 rounded-xl p-3 flex flex-col sm:flex-row items-center justify-between gap-4 group hover:border-purple-500/40 transition-all">
+                             <div className="flex items-center gap-3 w-full sm:w-auto">
+                                 <div className="w-10 h-10 rounded-full bg-purple-600/20 dark:bg-purple-600/40 flex items-center justify-center text-purple-600 dark:text-purple-400">
+                                     <Fingerprint size={20}/>
+                                 </div>
+                                 <div className="flex flex-col">
+                                     <span className="text-[10px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wider">Bot Signer (Controller)</span>
+                                     <div className="flex items-center gap-2">
+                                         <span className="text-xs font-mono text-gray-600 dark:text-gray-300 truncate max-w-[150px] sm:max-w-none">{signerAddress}</span>
+                                         <button onClick={() => copyToClipboard(signerAddress)} className="p-1 hover:bg-purple-500/20 rounded transition-colors text-purple-600"><Copy size={12}/></button>
+                                         <Tooltip text="Encrypted EOA key held by the server to sign trades for your Safe vault. Needs ~1 POL gas for rescue/recovery tasks." />
+                                     </div>
+                                 </div>
+                             </div>
+                             
+                             <div className="flex items-center gap-6 w-full sm:w-auto px-4 py-2 bg-white/40 dark:bg-black/40 rounded-lg border border-purple-500/10">
+                                 <div className="flex flex-col">
+                                     <span className="text-[8px] text-gray-500 uppercase font-bold">Gas (POL)</span>
+                                     <span className="text-xs font-mono font-bold text-gray-900 dark:text-white">{signerWalletBal.native}</span>
+                                 </div>
+                                 <div className="flex flex-col">
+                                     <span className="text-[8px] text-gray-500 uppercase font-bold">No use for stables</span>
+                                 </div>
+                             </div>
+                        </div>
+                        
+                        {/* 2-Column Grid for Main Wallets */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 relative z-10">
                             {/* Connected Wallet */}
                             <div className="space-y-3">
                                 <div className="flex items-center gap-2 mb-2">
                                     <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-[10px] text-white">W</div>
-                                    <span className="text-sm font-bold text-gray-900 dark:text-white">Main Wallet</span>
+                                    <span className="text-sm font-bold text-gray-900 dark:text-white">Owner Wallet</span>
                                     <button 
                                         onClick={() => copyToClipboard(userAddress)} 
                                         className="p-1 hover:bg-gray-200 dark:hover:bg-white/10 rounded transition-colors text-gray-500"
                                     >
                                         <Copy size={12}/>
                                     </button>
-                                    <Tooltip text="Your connected Browser Wallet (MetaMask, Phantom, etc). This wallet is the owner of the Trading Wallet." />
+                                    <Tooltip text="Your connected Browser Wallet (MetaMask, Phantom, etc). This wallet is the owner of the Trading Wallet (Capital Vault)." />
                                     <span className="text-[10px] text-gray-500 bg-gray-200 dark:bg-gray-900 px-1.5 rounded">{chainId}</span>
                                 </div>
                                 <div className="p-3 bg-white dark:bg-black/40 rounded border border-gray-200 dark:border-gray-800 flex justify-between shadow-sm dark:shadow-none">
@@ -2088,22 +2125,15 @@ return (
                                 <div className="flex items-center justify-between mb-2">
                                     <div className="flex items-center gap-2">
                                         <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] text-white bg-green-600">P</div>
-                                        <span className="text-sm font-bold text-gray-900 dark:text-white">Proxy Vault</span>
+                                        <span className="text-sm font-bold text-gray-900 dark:text-white">Capital Vault (Safe)</span>
                                         <button 
                                             onClick={() => copyToClipboard(proxyAddress)} 
                                             className="p-1 hover:bg-gray-200 dark:hover:bg-white/10 rounded transition-colors text-gray-500"
                                         >
                                             <Copy size={12}/>
                                         </button>
-                                        <Tooltip text="Proxy Polymarket Gnosis Safe trading wallet. It executes your trades on the CLOB." />
+                                        <Tooltip text="Polymarket Sig Type 2 Gnosis Safe trading wallet. Holds funds, executes your trades on the CLOB." />
                                     </div>
-                                    <button 
-                                        onClick={fetchBalances} 
-                                        className="text-[10px] text-blue-600 hover:text-blue-700 dark:text-blue-400 flex items-center gap-1 bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 rounded"
-                                        title="Refresh Balances"
-                                    >
-                                        <RefreshCw size={10}/> Refresh
-                                    </button>
                                 </div>
                                 <div className="p-3 bg-white dark:bg-black/40 rounded border border-gray-200 dark:border-gray-800 flex justify-between shadow-sm dark:shadow-none">
                                     <span className="text-xs text-gray-500 dark:text-gray-400">POL (Gas)</span>
@@ -2117,43 +2147,15 @@ return (
                                     <span className="text-sm font-mono text-gray-900 dark:text-white font-bold">{proxyWalletBal.usdc}</span>
                                 </div>
                             </div>
-                                                        {/* Bot Signer (EOA) */}
-                            <div className="space-y-3">
-                                <div className="flex items-center justify-between mb-2">
-                                    <div className="flex items-center gap-2">
-                                        <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] text-white bg-purple-600">S</div>
-                                        <span className="text-sm font-bold text-gray-900 dark:text-white">Bot Signer</span>
-                                        <button 
-                                            onClick={() => copyToClipboard(signerAddress)} 
-                                            className="p-1 hover:bg-gray-200 dark:hover:bg-white/10 rounded transition-colors text-gray-500"
-                                        >
-                                            <Copy size={12}/>
-                                        </button>
-                                        <Tooltip text="Encrypted in-memory EOA key to sign your Vault/Safe wallet. Fund this with 1 POL (a bit of gas)" />
-                                    </div>
-                                </div>
-                                <div className="p-3 bg-white dark:bg-black/40 rounded border border-gray-200 dark:border-gray-800 flex justify-between shadow-sm dark:shadow-none">
-                                    <span className="text-xs text-gray-500 dark:text-gray-400">POL (Gas)</span>
-                                    <span className="text-sm font-mono text-gray-900 dark:text-white">{signerWalletBal.native}</span>
-                                </div>
-                            </div>
                         </div>
 
                         {/* Action Bar */}
-                        <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-800 flex flex-col sm:flex-row gap-3">
-                            <button 
-                                onClick={openDepositModal}
-                                className="flex-1 py-3 bg-blue-600 dark:bg-terminal-accent hover:bg-blue-700 dark:hover:bg-blue-600 text-white font-bold rounded-lg transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2"
-                            >
+                        <div className="mt-2 pt-4 border-t border-gray-200 dark:border-gray-800 flex flex-col sm:flex-row gap-3 relative z-10">
+                            <button onClick={openDepositModal} className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2">
                                 <ArrowDownCircle size={18}/> DEPOSIT FUNDS
-                                <span className="text-[10px] opacity-80 font-normal">To Trading Wallet</span>
                             </button>
-                            <button 
-                                onClick={openWithdrawModal} 
-                                className="flex-1 py-3 bg-white dark:bg-white/5 hover:bg-gray-50 dark:hover:bg-white/10 border border-red-200 dark:border-terminal-danger/30 text-red-600 dark:text-terminal-danger font-bold rounded-lg transition-all flex items-center justify-center gap-2"
-                            >
+                            <button onClick={openWithdrawModal} className="flex-1 py-3 bg-white dark:bg-white/5 hover:bg-gray-50 dark:hover:bg-white/10 border border-red-200 dark:border-terminal-danger/30 text-red-600 dark:text-terminal-danger font-bold rounded-lg transition-all flex items-center justify-center gap-2">
                                 <ArrowUpCircle size={18}/> WITHDRAW
-                                <span className="text-[10px] opacity-80 font-normal">To Main Wallet</span>
                             </button>
                         </div>
                     </div>
@@ -2197,9 +2199,12 @@ return (
                     {/* Performance Widget */}
                     <div className="glass-panel p-5 rounded-xl">
                         <div className="flex justify-between items-start mb-2">
-                            <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Performance</h3>
-                            <TrendingUp size={20} className="text-green-500 dark:text-terminal-success"/>
+                            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+                                Perfomance
+                                <TrendingUp size={20} className="text-green-500 dark:text-terminal-success"/> 
+                            </h3>
                         </div>
+                        
                         <div className="grid grid-cols-2 gap-4 mt-4">
                             <div>
                                 <div className="text-[10px] text-gray-500">Total PnL</div>
