@@ -652,72 +652,46 @@ app.post('/api/deposit/record', async (req: any, res: any) => {
     }
 });
 
-app.post('/api/wallet/status', async (req: any, res: any) => {
-  const { userId } = req.body; 
-  if (!userId) return res.status(400).json({ error: 'User Address required' });
-  const normId = userId.toLowerCase();
-  
-  try {
-      const user = await User.findOne({ address: normId }).lean();
-      if (!user || !user.tradingWallet) return res.json({ status: 'NEEDS_ACTIVATION' });
-
-      let stats = user.stats;
-      let positions = user.activePositions || [];
-      let isStale = false;
-
-      const engine = ACTIVE_BOTS.get(normId);
-      const adapter = (engine as any)?.exchange;
-
-      if (adapter) {
-          try {
-              const livePositions = await adapter.getPositions(adapter.getFunderAddress());
-              const cashBalance = await adapter.fetchBalance(adapter.getFunderAddress());
-              
-              let unrealizedPnL = 0;
-              let positionValue = 0;
-              livePositions.forEach((p: any) => {
-                  unrealizedPnL += (p.unrealizedPnL || 0);
-                  positionValue += (p.valueUsd || 0);
-              });
-
-              const pnlAgg = await Trade.aggregate([
-                  { $match: { userId: normId, status: 'CLOSED' } },
-                  { $group: { _id: null, totalPnl: { $sum: "$pnl" } } }
-              ]);
-              const realizedPnl = pnlAgg[0]?.totalPnl || 0;
-
-              stats = {
-                  ...stats,
-                  cashBalance,
-                  portfolioValue: cashBalance + positionValue,
-                  totalPnl: realizedPnl + unrealizedPnL
-              };
-              positions = livePositions;
-          } catch (e) {
-              isStale = true;
-          }
-      } else {
-          isStale = true;
-      }
-
-      const dbLogs = await BotLog.find({ userId: normId }).sort({ timestamp: -1 }).limit(100).lean();
-      const formattedLogs = dbLogs.map(l => ({ id: (l as any)._id.toString(), time: (l as any).timestamp.toLocaleTimeString(), type: (l as any).type, message: (l as any).message }));
-      const tradeHistory = await Trade.find({ userId: normId }).sort({ timestamp: -1 }).limit(50).lean();
-
-      res.json({ 
-          status: 'ACTIVE', 
-          isRunning: engine ? engine.isRunning : (user.isBotRunning || false),
-          address: user.tradingWallet.address, 
-          safeAddress: user.tradingWallet.safeAddress,               
-          stats,
-          positions,
-          logs: formattedLogs,
-          history: tradeHistory,
-          isStale
-      });
-  } catch (e: any) {
-      res.status(500).json({ error: 'DB Error: ' + e.message });
-  }
+app.post('/api/wallet/withdraw', async (req: any, res: any) => {
+    const { userId, tokenType, toAddress, forceEoa, targetSafeAddress } = req.body;
+    const normId = userId.toLowerCase();
+    try {
+        const user = await User.findOne({ address: normId });
+        if (!user || !user.tradingWallet || !user.tradingWallet.encryptedPrivateKey) { res.status(400).json({ error: 'Wallet not configured' }); return; }
+        const walletConfig = user.tradingWallet;
+        let txHash = '';
+        const provider = new JsonRpcProvider(ENV.rpcUrl);
+        const USDC_ABI = ['function balanceOf(address owner) view returns (uint256)'];
+        const usdcContract = new ethers.Contract(TOKENS.USDC_BRIDGED, USDC_ABI, provider);
+        let safeAddr = targetSafeAddress || walletConfig.safeAddress;
+        if (!safeAddr) { safeAddr = await SafeManagerService.computeAddress(walletConfig.address); }
+        if (!forceEoa) {
+             let balanceToWithdraw = 0n;
+             if (tokenType === 'POL') { balanceToWithdraw = await provider.getBalance(safeAddr); }
+             else { try { balanceToWithdraw = await usdcContract.balanceOf(safeAddr); } catch(e) {} }
+             let eoaBalance = 0n;
+             if (!targetSafeAddress) { try { if (tokenType === 'POL') { eoaBalance = await provider.getBalance(walletConfig.address); } else { eoaBalance = await usdcContract.balanceOf(walletConfig.address); } } catch(e) {} }
+             if (balanceToWithdraw > 0n) {
+                 const signer = await evmWalletService.getWalletInstance(walletConfig.encryptedPrivateKey);
+                 const safeManager = new SafeManagerService(signer, ENV.builderApiKey, ENV.builderApiSecret, ENV.builderApiPassphrase, serverLogger, safeAddr);
+                 if (tokenType === 'POL') { txHash = await safeManager.withdrawNative(toAddress || normId, balanceToWithdraw.toString()); }
+                 else { txHash = await safeManager.withdrawUSDC(toAddress || normId, balanceToWithdraw.toString()); }
+             } else if (eoaBalance > 0n && !targetSafeAddress) {
+                 let tokenAddr = TOKENS.USDC_BRIDGED;
+                 if (tokenType === 'POL') tokenAddr = TOKENS.POL;
+                 let amountStr: string | undefined = undefined;
+                 if (tokenType === 'POL') { const reserve = ethers.parseEther("0.05"); if (eoaBalance > reserve) { amountStr = ethers.formatEther(eoaBalance - reserve); } else { throw new Error("Insufficient POL in EOA to cover gas for rescue."); } }
+                 txHash = await evmWalletService.withdrawFunds(walletConfig.encryptedPrivateKey, toAddress || normId, tokenAddr, amountStr);
+             } else { return res.status(400).json({ error: `Insufficient ${tokenType || 'USDC'} funds.` }); }
+        } else {
+            let tokenAddress = TOKENS.USDC_BRIDGED;
+            if (tokenType === 'POL') tokenAddress = TOKENS.POL;
+            txHash = await evmWalletService.withdrawFunds(walletConfig.encryptedPrivateKey, toAddress || normId, tokenAddress);
+        }
+        res.json({ success: true, txHash });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.post('/api/wallet/add-recovery', async (req: any, res: any) => {

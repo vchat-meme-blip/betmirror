@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import axios from 'axios';
 import './src/index.css';
 import { 
-Shield, Play, Square, Activity, Settings, Wallet, Key, 
+Shield, Play, Square, Activity, Settings, Wallet, Key, Link,
 Terminal, Trash2, Eye, EyeOff, Save, Lock, Users, RefreshCw, Server, Sparkles, DollarSign,
 TrendingUp, History, Copy, ExternalLink, AlertTriangle, Smartphone, Coins, PlusCircle, X,
 CheckCircle2, ArrowDownCircle, ArrowUpCircle, Brain, AlertCircle, Trophy, Globe, Zap, LogOut,
@@ -2987,46 +2987,102 @@ return (
                         </div>
                     </div>
                 </div>
-
-                {/* NEW: Sovereignty Section (Top Level) */}
-                <div className="mb-8 bg-purple-50 dark:bg-purple-900/10 border border-purple-200 dark:border-purple-800/30 rounded-xl p-6 relative overflow-hidden group">
-                    <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:opacity-20 transition-opacity">
-                         {recoveryOwnerAdded ? <ShieldCheck size={100} className="text-green-600"/> : <Fingerprint size={100} className="text-purple-600"/>}
+                
+                {/* Vault Sovereignty Section */}
+                <div className="mb-8 glass-panel border-purple-500/20 dark:border-purple-500/30 rounded-2xl overflow-hidden relative group">
+                    {/* Background Decorative Element */}
+                    <div className="absolute top-0 right-0 p-8 opacity-[0.03] dark:opacity-[0.07] group-hover:opacity-10 transition-opacity pointer-events-none">
+                         {recoveryOwnerAdded ? <ShieldCheck size={180} /> : <Fingerprint size={180} />}
                     </div>
-                    
-                    <div className="relative z-10">
-                        <div className="flex justify-between items-start">
-                             <div>
-                                <h3 className="text-lg font-bold text-purple-900 dark:text-purple-100 flex items-center gap-2">
-                                    <Shield size={20}/> Vault Sovereignty (Multi-Sig)
-                                </h3>
-                                <p className="text-sm text-purple-800 dark:text-purple-300 mt-1 max-w-2xl">
-                                    Upgrade your Gnosis Safe to a <strong>Multi-Owner Setup</strong>. This adds your Main Wallet as a signer, giving you 
-                                    full on-chain control independent of this platform. If our servers get knocked offline, you can still access funds via Safe Wallet.
-                                    
-                                    Once your main wallet is added as an owner:
-                                    1. User connects their main wallet to app.safe.global
-                                    2. User imports the Safe address (user's Vault Safe)
-                                    3. User can sign transactions independently (threshold = 1)
-                                    4. User withdraws directly without needing our bot
+
+                    <div className="p-6 sm:p-8 relative z-10">
+                        <div className="flex flex-col lg:flex-row justify-between items-start gap-8">
+                            <div className="flex-1">
+                                <div className="flex items-center gap-3 mb-4">
+                                    <div className="p-2.5 bg-purple-600 rounded-xl shadow-lg shadow-purple-500/20">
+                                        <Shield className="text-white" size={24}/>
+                                    </div>
+                                    <div>
+                                        <h3 className="text-l font-black text-gray-900 dark:text-white tracking-tight uppercase">
+                                            Vault Sovereignty
+                                        </h3>
+                                        <p className="text-[10px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-[0.2em]">Self-Custodial Protocol</p>
+                                    </div>
+                                </div>
+                                
+                                <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed max-w-3xl">
+                                    By default, the server operates your vault as a managed signer. To achieve <strong>100% platform independence</strong>, 
+                                    you can add your Main Wallet as a co-owner on the blockchain. This creates a fail-safe recovery path 
+                                    that works even if this terminal is inaccessible.
                                 </p>
-                             </div>
-                             
-                             {recoveryOwnerAdded ? (
-                                 <div className="flex items-center gap-2 px-4 py-2 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded-lg border border-green-200 dark:border-green-800">
-                                     <ShieldCheck size={18}/>
-                                     <span className="text-xs font-bold uppercase tracking-wide">You are an Owner</span>
-                                 </div>
-                             ) : (
-                                 <button 
-                                     onClick={handleAddRecoveryOwner}
-                                     disabled={isAddingRecovery}
-                                     className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg shadow-lg shadow-purple-500/20 text-xs flex items-center gap-2 transition-all disabled:opacity-50"
-                                 >
-                                     {isAddingRecovery ? <Loader2 size={14} className="animate-spin"/> : <PlusCircle size={14}/>}
-                                     ADD RECOVERY KEY
-                                 </button>
-                             )}
+
+                                {/* Instructional Grid */}
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8">
+                                    {[
+                                        { icon: Link, title: "1. Authorize", desc: "Link Main Wallet" },
+                                        { icon: Globe, title: "2. Connect", desc: "Visit Safe{Wallet}" },
+                                        { icon: Key, title: "3. Import", desc: "Load Vault Safe" },
+                                        { icon: ArrowUpCircle, title: "4. Recover", desc: "Direct Withdraw" }
+                                    ].map((step, idx) => (
+                                        <div key={idx} className="p-3 bg-gray-50 dark:bg-black/40 rounded-xl border border-gray-200 dark:border-white/5 flex flex-col items-center text-center group/step hover:border-purple-500/30 transition-all">
+                                            <step.icon size={16} className="text-purple-500 mb-2 group-hover/step:scale-110 transition-transform" />
+                                            <h4 className="text-[11px] font-bold text-gray-900 dark:text-white uppercase mb-1">{step.title}</h4>
+                                            <p className="text-[9px] text-gray-500 leading-tight">{step.desc}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="lg:w-64 w-full flex flex-col gap-4">
+                                <div className={`p-5 rounded-2xl border flex flex-col items-center text-center transition-all ${
+                                    recoveryOwnerAdded 
+                                    ? 'bg-green-50/50 dark:bg-green-900/10 border-green-500/30 shadow-lg shadow-green-500/5' 
+                                    : 'bg-purple-50/50 dark:bg-purple-900/10 border-purple-500/30'
+                                }`}>
+                                    <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-3 ${
+                                        recoveryOwnerAdded ? 'bg-green-500 text-white' : 'bg-purple-100 dark:bg-purple-900/40 text-purple-600'
+                                    }`}>
+                                        {recoveryOwnerAdded ? <ShieldCheck size={24}/> : <Lock size={24}/>}
+                                    </div>
+                                    
+                                    <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Status</span>
+                                    <span className={`text-sm font-black uppercase tracking-tight ${
+                                        recoveryOwnerAdded ? 'text-green-600' : 'text-purple-600'
+                                    }`}>
+                                        {recoveryOwnerAdded ? 'Sovereign Path Active' : 'Managed Access Only'}
+                                    </span>
+
+                                    {!recoveryOwnerAdded && (
+                                        <button 
+                                            onClick={handleAddRecoveryOwner}
+                                            disabled={isAddingRecovery}
+                                            className="mt-4 w-full py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs shadow-xl shadow-purple-500/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                                        >
+                                            {isAddingRecovery ? <Loader2 size={14} className="animate-spin"/> : <PlusCircle size={14}/>}
+                                            UPGRADE VAULT
+                                        </button>
+                                    )}
+
+                                    {recoveryOwnerAdded && (
+                                        <a 
+                                            href="https://app.safe.global" 
+                                            target="_blank" 
+                                            className="mt-4 w-full py-2 bg-white dark:bg-white/5 text-gray-900 dark:text-white border border-gray-200 dark:border-white/10 rounded-lg text-[10px] font-bold uppercase transition-all hover:bg-gray-50 dark:hover:bg-white/10 flex items-center justify-center gap-2"
+                                        >
+                                            Open Safe Dashboard <ExternalLink size={12}/>
+                                        </a>
+                                    )}
+                                </div>
+                                
+                                <div className="p-3 bg-gray-100 dark:bg-white/5 rounded-xl border border-gray-200 dark:border-white/5">
+                                    <div className="flex items-center gap-2 mb-1 text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase">
+                                        <Info size={12}/> Governance Note
+                                    </div>
+                                    <p className="text-[9px] text-gray-400 leading-normal">
+                                        Adding an owner requires a small blockchain transaction (~0.05 POL) to update the Safe contract on-chain.
+                                    </p>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
