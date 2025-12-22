@@ -363,19 +363,29 @@ export class PolymarketAdapter implements IExchangeAdapter {
             let shares = params.sizeShares || Math.floor(params.sizeUsd / roundedPrice);
 
             // CRITICAL FIX: Polymarket enforces a 2-decimal limit on the Maker collateral amount (USDC) for BUY orders.
-            // If side is BUY, the total USDC (shares * roundedPrice) MUST NOT exceed 2 decimals of precision.
+            // Additionally, marketable orders (FOK) must be AT LEAST $1.00 USDC in total value.
             if (side === Side.BUY) {
-                let totalCost = shares * roundedPrice;
-                // If totalCost has more than 2 decimals (e.g., 0.954), we must adjust shares down
-                // until the product is a valid currency amount (e.g., 0.95).
-                while (shares > minOrderSize && (Math.round(shares * roundedPrice * 100) / 100) !== (shares * roundedPrice)) {
-                    shares--;
+                const MIN_ORDER_VALUE = 1.01; // $1.01 buffer to avoid being right on the edge
+                
+                // 1. Ensure total value >= $1.00
+                if (shares * roundedPrice < MIN_ORDER_VALUE) {
+                    shares = Math.ceil(MIN_ORDER_VALUE / roundedPrice);
                 }
-                // Final safety truncate
+
+                // 2. Ensure the product has exactly 2 decimals of precision
+                // We adjust shares up/down slightly to find a valid product if needed
+                let totalCost = shares * roundedPrice;
+                let attempts = 0;
+                while (attempts < 10 && (Math.round(shares * roundedPrice * 100) / 100) !== (shares * roundedPrice)) {
+                    shares++; // Incrementing is safer as it keeps us above the $1 floor
+                    attempts++;
+                }
+                
+                // Final safety truncate/rounding
                 const finalMakerAmount = Math.floor(shares * roundedPrice * 100) / 100;
-                // Log the precision adjustment
-                if (finalMakerAmount !== totalCost) {
-                    this.logger.debug(`[Precision Fix] Adjusted Buy: ${shares} shares @ ${roundedPrice} = $${finalMakerAmount.toFixed(2)} (Prev: $${totalCost.toFixed(3)})`);
+                if (finalMakerAmount < 1.00) {
+                     this.logger.warn(`⚠️ Cannot meet $1.00 minimum at price $${roundedPrice}. Skipping.`);
+                     return { success: false, error: "skipped_min_value_limit", sharesFilled: 0, priceFilled: 0 };
                 }
             }
 
