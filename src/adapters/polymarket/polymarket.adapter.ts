@@ -224,6 +224,67 @@ export class PolymarketAdapter implements IExchangeAdapter {
         };
     }
 
+    private async fetchMarketSlugs(marketId: string): Promise<{ marketSlug: string; eventSlug: string; question: string; image: string }> {
+        console.log(`[FETCH SLUGS] Starting fresh fetch for market: ${marketId}`);
+        let marketSlug = "";
+        let eventSlug = "";
+        let question = marketId;
+        let image = "";
+
+        // CLOB API for market data - force fresh fetch
+        if (this.client && marketId) {
+            try {
+                // Clear cache to force fresh data
+                this.marketMetadataCache.delete(marketId);
+                
+                const marketData = await this.client.getMarket(marketId);
+                this.marketMetadataCache.set(marketId, marketData);
+
+                if (marketData) {
+                    marketSlug = marketData.market_slug || "";
+                    question = marketData.question || question;
+                    image = marketData.image || image;
+                    console.log(`[CLOB SUCCESS] Got marketSlug: "${marketSlug}" for ${marketId}`);
+                }
+            } catch (e) {
+                this.logger.debug(`CLOB API fetch failed for ${marketId}`);
+            }
+        }
+
+        // Gamma API for event slug - use slug endpoint for accurate results
+        if (marketSlug) {
+            try {
+                const gammaUrl = `https://gamma-api.polymarket.com/markets/slug/${marketSlug}`;
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000);
+                
+                const gammaResponse = await fetch(gammaUrl, { signal: controller.signal });
+                clearTimeout(timeoutId);
+                
+                if (gammaResponse.ok) {
+                    const marketData = await gammaResponse.json();
+                    console.log(`[GAMMA SLUG] Market data for ${marketSlug}:`, JSON.stringify(marketData, null, 2));
+                    
+                    // The event slug should be in the events array
+                    if (marketData.events && marketData.events.length > 0) {
+                        eventSlug = marketData.events[0]?.slug || "";
+                        console.log(`[GAMMA SUCCESS] Found eventSlug for ${marketSlug}: "${eventSlug}"`);
+                    } else {
+                        console.log(`[GAMMA ERROR] No events array in response for ${marketId}`);
+                    }
+                } else {
+                    console.log(`[GAMMA ERROR] HTTP ${gammaResponse.status} for ${marketId}`);
+                }
+            } catch (e) {
+                console.log(`[GAMMA ERROR] Fetch failed for ${marketSlug}:`, e);
+                this.logger.debug(`Gamma API fetch failed for slug ${marketSlug}`);
+            }
+        }
+
+        console.log(`[FINAL RESULT] marketSlug: "${marketSlug}", eventSlug: "${eventSlug}"`);
+        return { marketSlug, eventSlug, question, image };
+    }
+
     async getPositions(address: string): Promise<PositionData[]> {
         try {
             const url = `https://data-api.polymarket.com/positions?user=${address}`;
@@ -255,29 +316,8 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 const unrealizedPnL = currentValueUsd - investedValueUsd;
                 const unrealizedPnLPercent = investedValueUsd > 0 ? (unrealizedPnL / investedValueUsd) * 100 : 0;
 
-                let marketSlug = "";
-                let eventSlug = "";
-                let question = p.title || marketId;
-                let image = p.icon || "";
-
-                if (this.client && marketId) {
-                    try {
-                        let marketData = this.marketMetadataCache.get(marketId);
-                        if (!marketData) {
-                            marketData = await this.client.getMarket(marketId);
-                            this.marketMetadataCache.set(marketId, marketData);
-                        }
-
-                        if (marketData) {
-                            marketSlug = marketData.market_slug || "";
-                            eventSlug = marketData.event_slug || "";
-                            question = marketData.question || question;
-                            image = marketData.image || image;
-                        }
-                    } catch (e) {
-                        this.logger.debug(`Metadata fetch failed for ${marketId}`);
-                    }
-                }
+                // Reusable slug fetching
+                const { marketSlug, eventSlug, question, image } = await this.fetchMarketSlugs(marketId);
 
                 positions.push({
                     marketId: marketId,
@@ -297,8 +337,12 @@ export class PolymarketAdapter implements IExchangeAdapter {
                     clobOrderId: tokenId 
                 });
             }
+            
             return positions;
-        } catch(e) { return []; }
+        } catch (e) {
+            this.logger.error("Failed to fetch positions", e as Error);
+            return [];
+        }
     }
 
     async fetchPublicTrades(address: string, limit: number = 20): Promise<TradeSignal[]> {
