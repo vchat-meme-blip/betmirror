@@ -422,9 +422,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
             let rawPrice: number;
             if (side === Side.SELL) {
                 if (!book.bids.length) return { success: false, error: "skipped_no_bids", sharesFilled: 0, priceFilled: 0 };
-                // BOOK SWEEP LOGIC: If we are selling, we use the priceLimit as the FLOOR.
-                // If no limit is provided, we use the best bid.
-                // In production, sending a low floor (like 0.001) with FAK ensures we sweep all bids instantly.
                 rawPrice = params.priceLimit !== undefined ? params.priceLimit : book.bids[0].price; 
             } else {
                 if (!book.asks.length) return { success: false, error: "skipped_no_liquidity", sharesFilled: 0, priceFilled: 0 };
@@ -437,8 +434,20 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 : Math.floor(rawPrice * inverseTick) / inverseTick;
             const finalPrice = Math.max(0.001, Math.min(0.999, roundedPrice));
 
-            const shares = params.sizeShares || Math.floor(params.sizeUsd / finalPrice);
+            // FIX: Use Math.ceil for BUY orders to stay above $1.00 minimum
+            // Use Math.floor for SELL orders to avoid selling more than owned
+            let shares = params.sizeShares || (
+                params.side === 'BUY' 
+                    ? Math.ceil(params.sizeUsd / finalPrice) 
+                    : Math.floor(params.sizeUsd / finalPrice)
+            );
             
+            // Dusty check: Exchange floor for total order value is $1.00
+            if (params.side === 'BUY' && (shares * finalPrice) < 1.00) {
+                shares = Math.ceil(1.00 / finalPrice);
+                this.logger.info(`   + Dust Protection: Boosting shares to ${shares} to meet $1.00 floor`);
+            }
+
             if (shares < minOrderSize) {
                 const errorMsg = `EXCHANGE_LIMIT: Size (${shares.toFixed(2)} shares) is below exchange minimum of ${minOrderSize}.`;
                 return { success: false, error: errorMsg, sharesFilled: 0, priceFilled: 0 };
