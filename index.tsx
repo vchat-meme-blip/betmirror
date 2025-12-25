@@ -925,8 +925,8 @@ const Landing = ({ onConnect, theme, toggleTheme }: { onConnect: () => void, the
                 </h1>
 
                 <p className="text-lg text-gray-500 dark:text-gray-400 font-medium max-w-lg mx-auto leading-relaxed animate-in fade-in slide-in-from-bottom-4 duration-700 delay-300">
-                    The institutional-grade prediction market terminal.<br/>
-                    Non-Custodial Logic. AI-Powered. 24/7 Cloud Execution.
+                    Professional Copy-Trading Terminal.<br/>
+                    Risk-Managed Execution. Lightning-Fast. 24/7 Cloud Automation.
                 </p>
 
                 <div className="mt-12 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-400 w-full max-w-xs">
@@ -1188,8 +1188,8 @@ const ActivationView = ({
                     <div className="flex items-start gap-3 p-3 bg-gray-50 dark:bg-white/5 rounded-lg border border-gray-200 dark:border-white/5">
                         <CheckCircle2 size={16} className="text-green-500 mt-1" />
                         <div>
-                            <span className="text-sm font-bold text-gray-900 dark:text-white">Non-Custodial Logic</span>
-                            <p className="text-xs text-gray-500">While the server holds the signer key, you control withdrawals to your main wallet.</p>
+                            <span className="text-sm font-bold text-gray-900 dark:text-white">Risk-Managed Execution</span>
+                            <p className="text-xs text-gray-500">Advanced position sizing and stop-loss mechanisms protect your capital.</p>
                         </div>
                     </div>
                 </div>
@@ -1584,7 +1584,7 @@ const fetchBalances = async () => {
         // This isolates the proxy check from the user's browser wallet network state, preventing 
         // "wrong balance" issues when the user is on Ethereum Mainnet or Base.
         
-        const polygonProvider = new JsonRpcProvider('https://polygon-rpc.com');
+        const polygonProvider = new JsonRpcProvider(process.env.RPC_URL || 'https://polygon-rpc.com');
         const safeBalance = async (call: () => Promise<any>): Promise<any> => {
             try { return await call(); } catch(e) { return 0n; }
         };
@@ -3795,7 +3795,7 @@ return (
                         <span>Command Center Guide</span>
                     </h2>
                     <p className="text-gray-500 dark:text-gray-400 text-lg max-w-2xl mx-auto">
-                        Master the terminal. From onboarding to institutional-grade execution mechanics.
+                        Master the terminal. From setup to professional execution strategies.
                     </p>
                 </div>
 
@@ -4035,5 +4035,17 @@ return (
 );
 };
 
-const root = createRoot(document.getElementById('root')!);
+// Initialize React app with HMR support
+const container = document.getElementById('root');
+if (!container) throw new Error('Root container not found');
+
+let root: ReturnType<typeof createRoot>;
+
+if (!(container as any)._reactRoot) {
+    root = createRoot(container);
+    (container as any)._reactRoot = root;
+} else {
+    root = (container as any)._reactRoot;
+}
+
 root.render(<App />);

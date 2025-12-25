@@ -94,12 +94,12 @@ export class SafeManagerService {
         const viemClient = createWalletClient({
             account,
             chain: polygon,
-            transport: http('https://polygon-rpc.com')
+            transport: http(process.env.RPC_URL || 'https://polygon-rpc.com')
         });
         
         this.viemPublicClient = createPublicClient({
             chain: polygon,
-            transport: http('https://polygon-rpc.com')
+            transport: http(process.env.RPC_URL || 'https://polygon-rpc.com')
         });
 
         this.relayClient = new RelayClient(
@@ -119,7 +119,7 @@ export class SafeManagerService {
         const stdSafe = await deriveSafe(ownerAddress, STANDARD_SAFE_FACTORY);
 
         try {
-            const provider = new JsonRpcProvider('https://polygon-rpc.com');
+            const provider = new JsonRpcProvider(process.env.RPC_URL || 'https://polygon-rpc.com');
             
             const stdCode = await provider.getCode(stdSafe);
             if (stdCode && stdCode !== '0x') {
