@@ -154,6 +154,7 @@ app.post('/api/wallet/status', async (req: any, res: any) => {
 
   try {
       console.log(`[STATUS CHECK] Querying user: ${normId}`);
+      // Use explicit selection to find safe and eoa address if needed
       const user = await User.findOne({ address: normId });
       
       // If user has a wallet, return it
@@ -270,7 +271,8 @@ app.post('/api/wallet/add-recovery', async (req: any, res: any) => {
     const normId = userId.toLowerCase();
 
     try {
-        const user = await User.findOne({ address: normId });
+        // MUST explicitly select encrypted field for signer instance
+        const user = await User.findOne({ address: normId }).select('+tradingWallet.encryptedPrivateKey');
         if (!user || !user.tradingWallet || !user.tradingWallet.encryptedPrivateKey) {
             return res.status(404).json({ error: 'User wallet not found' });
         }
@@ -402,7 +404,10 @@ app.post('/api/bot/start', async (req: any, res: any) => {
   const normId = userId.toLowerCase();
 
   try {
-      const user = await User.findOne({ address: normId });
+      // MUST explicitly select encrypted fields for the signer key and credentials
+      const user = await User.findOne({ address: normId })
+        .select('+tradingWallet.encryptedPrivateKey +tradingWallet.l2ApiCredentials.key +tradingWallet.l2ApiCredentials.secret +tradingWallet.l2ApiCredentials.passphrase');
+
       if (!user || !user.tradingWallet) { 
           res.status(400).json({ error: 'Trading Wallet not activated.' }); 
           return; 
@@ -545,8 +550,8 @@ app.get('/api/bot/status/:userId', async (req: any, res: any) => {
         // CLARIFICATION: This logs the payload for the current USER VIEWING THE DASHBOARD (normId),
         // but the positions themselves are fetched for the SAFE associated with that user.
         if (livePositions.length > 0) {
-            console.log(`\n📦 [DEBUG] Raw Positions Payload for User ${normId.slice(0, 6)}... (Safe: ${user?.tradingWallet?.safeAddress?.slice(0,6) || 'Unknown'}) :`);
-            console.dir(livePositions, { depth: null, colors: true });
+            //console.log(`\n📦 [DEBUG] Raw Positions Payload for User ${normId.slice(0, 6)}... (Safe: ${user?.tradingWallet?.safeAddress?.slice(0,6) || 'Unknown'}) :`);
+            //console.dir(livePositions, { depth: null, colors: true });
         }
         // -------------------------------
 
@@ -680,7 +685,10 @@ app.post('/api/wallet/withdraw', async (req: any, res: any) => {
     const normId = userId.toLowerCase();
     const isForceEoa = forceEoa === true; // Explicit boolean conversion
     try {
-        const user = await User.findOne({ address: normId });
+        // MUST explicitly select encrypted field for withdrawal
+        const user = await User.findOne({ address: normId })
+            .select('+tradingWallet.encryptedPrivateKey');
+
         if (!user || !user.tradingWallet || !user.tradingWallet.encryptedPrivateKey) { res.status(400).json({ error: 'Wallet not configured' }); return; }
         const walletConfig = user.tradingWallet;
         let txHash = '';
@@ -776,15 +784,9 @@ app.post('/api/wallet/withdraw', async (req: any, res: any) => {
         }
         
         res.status(500).json({ 
-            error: userMessage,
+            error: e?.message || 'Withdrawal failed',
             type: e?.name || 'Unknown',
-            details: e?.stack || 'No stack trace available',
-            debug: {
-                originalError: e?.message || 'Unknown error',
-                code: e?.code || null,
-                tokenType,
-                requestTime: new Date().toISOString()
-            }
+            details: e?.stack || 'No stack trace available'
         });
     }
 });
@@ -793,7 +795,8 @@ app.post('/api/wallet/add-recovery', async (req: any, res: any) => {
     const { userId } = req.body;
     const normId = userId.toLowerCase();
     try {
-        const user = await User.findOne({ address: normId });
+        // MUST explicitly select encrypted field
+        const user = await User.findOne({ address: normId }).select('+tradingWallet.encryptedPrivateKey');
         if (!user || !user.tradingWallet || !user.tradingWallet.encryptedPrivateKey) throw new Error("Wallet not configured");
         const signer = await evmWalletService.getWalletInstance(user.tradingWallet.encryptedPrivateKey);
         const safeAddr = user.tradingWallet.safeAddress || await SafeManagerService.computeAddress(user.tradingWallet.address);
@@ -929,7 +932,10 @@ app.get('*', (req, res) => {
 async function restoreBots() {
     console.log("🔄 Restoring Active Bots from Database...");
     try {
-        const activeUsers = await User.find({ isBotRunning: true, "tradingWallet.address": { $exists: true } });
+        // MUST explicitly select encrypted private keys for restoration
+        const activeUsers = await User.find({ isBotRunning: true, "tradingWallet.address": { $exists: true } })
+            .select('+tradingWallet.encryptedPrivateKey +tradingWallet.l2ApiCredentials.key +tradingWallet.l2ApiCredentials.secret +tradingWallet.l2ApiCredentials.passphrase');
+        
         console.log(`Found ${activeUsers.length} bots to restore.`);
 
         for (const user of activeUsers) {
