@@ -1,4 +1,5 @@
 import mongoose, { Schema } from 'mongoose';
+import { DatabaseEncryptionService } from '../services/database-encryption.service.js';
 const ActivePositionSchema = new Schema({
     tradeId: String,
     clobOrderId: String,
@@ -34,20 +35,38 @@ const ActivePositionSchema = new Schema({
     }
 }, { _id: false });
 const TradingWalletSchema = new Schema({
-    address: String,
-    type: String,
-    encryptedPrivateKey: String,
-    ownerAddress: String,
-    createdAt: String,
-    safeAddress: String,
-    isSafeDeployed: Boolean,
-    recoveryOwnerAdded: Boolean,
+    address: { type: String, required: true },
+    type: { type: String, required: true },
+    encryptedPrivateKey: {
+        type: String,
+        required: true,
+        select: false // Never include in queries by default
+    },
+    ownerAddress: { type: String, required: true },
+    createdAt: { type: String, required: true },
+    safeAddress: { type: String, required: true },
+    isSafeDeployed: { type: Boolean, default: false },
+    recoveryOwnerAdded: { type: Boolean, default: false },
     l2ApiCredentials: {
-        key: String,
-        secret: String,
-        passphrase: String
+        key: {
+            type: String,
+            select: false // Never include in queries by default
+        },
+        secret: {
+            type: String,
+            select: false // Never include in queries by default
+        },
+        passphrase: {
+            type: String,
+            select: false // Never include in queries by default
+        }
     }
 }, { _id: false });
+// Apply field-level encryption to sensitive fields
+DatabaseEncryptionService.createEncryptionMiddleware(TradingWalletSchema, 'encryptedPrivateKey');
+DatabaseEncryptionService.createEncryptionMiddleware(TradingWalletSchema, 'l2ApiCredentials.key');
+DatabaseEncryptionService.createEncryptionMiddleware(TradingWalletSchema, 'l2ApiCredentials.secret');
+DatabaseEncryptionService.createEncryptionMiddleware(TradingWalletSchema, 'l2ApiCredentials.passphrase');
 const UserSchema = new Schema({
     address: { type: String, required: true, unique: true, index: true },
     tradingWallet: TradingWalletSchema,
@@ -167,6 +186,10 @@ export const connectDB = async () => {
     const uri = process.env.MONGODB_URI;
     if (!uri) {
         throw new Error('MONGO_URI environment variable is not defined');
+    }
+    // Validate database encryption key
+    if (!DatabaseEncryptionService.validateEncryptionKey()) {
+        console.warn('Database encryption key is not properly configured. Please set DB_ENCRYPTION_KEY in your environment variables.');
     }
     try {
         mongoose.set('strictQuery', true);

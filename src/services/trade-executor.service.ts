@@ -34,7 +34,6 @@ export class TradeExecutorService {
   private readonly CACHE_TTL = 5 * 60 * 1000; 
   
   private pendingSpend = 0;
-  private lastBalanceFetch = 0;
 
   constructor(deps: TradeExecutorDeps) {
     this.deps = deps;
@@ -71,8 +70,7 @@ export class TradeExecutorService {
               logger.success(`Exit summary: Liquidated ${filled.toFixed(2)} shares @ avg best possible price.`);
               return true;
           } else {
-              const errorStr = result.error || "Unknown Exchange Error";
-              logger.error(`Exit attempt failed: ${errorStr}`);
+              logger.error(`Exit attempt failed: ${result.error || "Unknown Error"}`);
               return false;
           }
           
@@ -94,6 +92,9 @@ export class TradeExecutorService {
     });
 
     try {
+      // UPDATED LIQUIDITY GUARD:
+      // Binary prediction markets use absolute spreads. 
+      // This filter now correctly accepts 1-cent gaps even if the percentage is high.
       // PRE-FLIGHT LIQUIDITY GUARD
       if (this.deps.adapter.getLiquidityMetrics) {
           const metrics = await this.deps.adapter.getLiquidityMetrics(signal.tokenId, signal.side);
@@ -107,25 +108,25 @@ export class TradeExecutorService {
           };
           
           if (ranks[metrics.health] < ranks[minRequired]) {
-              const msg = `[Liquidity Filter] Market health ${metrics.health} is below your required ${minRequired} threshold. (Spread: ${metrics.spreadPercent.toFixed(1)}%, Depth: $${metrics.availableDepthUsd.toFixed(0)}) -> SKIPPING`;
+              // Log ABSOLUTE spread in cents, not percentage
+              const msg = `[Liquidity Filter] Health: ${metrics.health} (Min: ${minRequired}) | Spread: ${(metrics.spread * 100).toFixed(1)}¢ | Depth: $${metrics.availableDepthUsd.toFixed(0)} -> SKIPPING`;
               logger.warn(msg);
               return failResult("insufficient_liquidity", "ILLIQUID");
           }
+          
+          // Log successful pass for transparency
+          logger.info(`[Liquidity OK] Health: ${metrics.health} | Spread: ${(metrics.spread * 100).toFixed(1)}¢ | Depth: $${metrics.availableDepthUsd.toFixed(0)}`);
       }
 
       let usableBalanceForTrade = 0;
 
       if (signal.side === 'BUY') {
-          let chainBalance = 0;
-          chainBalance = await adapter.fetchBalance(proxyWallet);
+          const chainBalance = await adapter.fetchBalance(proxyWallet);
           usableBalanceForTrade = Math.max(0, chainBalance - this.pendingSpend);
       } else {
           const positions = await adapter.getPositions(proxyWallet);
           const myPosition = positions.find(p => p.tokenId === signal.tokenId);
-          
-          if (!myPosition || myPosition.balance <= 0) {
-               return failResult("no_position_to_sell");
-          }
+          if (!myPosition || myPosition.balance <= 0) return failResult("no_position_to_sell");
           usableBalanceForTrade = myPosition.valueUsd;
       }
 
@@ -134,12 +135,8 @@ export class TradeExecutorService {
       let minOrderSize = 5; 
       try {
           const book = await adapter.getOrderBook(signal.tokenId);
-          if (book.min_order_size) {
-              minOrderSize = Number(book.min_order_size);
-          }
-      } catch (e) {
-          logger.debug(`Using default minOrderSize: ${minOrderSize}`);
-      }
+          if (book.min_order_size) minOrderSize = Number(book.min_order_size);
+      } catch (e) {}
 
       const sizing = computeProportionalSizing({
         yourUsdBalance: usableBalanceForTrade,
@@ -157,14 +154,10 @@ export class TradeExecutorService {
       }
 
       let priceLimit: number | undefined = undefined;
-      const SLIPPAGE_PCT = 0.05; 
-
       if (signal.side === 'BUY') {
-          priceLimit = signal.price * (1 + SLIPPAGE_PCT);
-          if (priceLimit > 0.99) priceLimit = 0.99;
+          priceLimit = Math.min(0.99, signal.price * 1.05);
       } else {
-          priceLimit = signal.price * (1 - 0.10); 
-          if (priceLimit < 0.001) priceLimit = 0.001;
+          priceLimit = Math.max(0.001, signal.price * 0.90);
       }
 
       logger.info(`[Sizing] Whale: $${traderBalance.toFixed(0)} | Signal: $${signal.sizeUsd.toFixed(0)} (${signal.side}) | Target: $${sizing.targetUsdSize.toFixed(2)} (${sizing.targetShares} shares)`);
@@ -188,9 +181,7 @@ export class TradeExecutorService {
           };
       }
 
-      if (signal.side === 'BUY') {
-         this.pendingSpend += sizing.targetUsdSize;
-      }
+      if (signal.side === 'BUY') this.pendingSpend += sizing.targetUsdSize;
       
       return {
           status: 'FILLED',
@@ -226,7 +217,6 @@ export class TradeExecutorService {
       );
       const totalValue = positions.reduce((sum, pos) => sum + (pos.currentValue || pos.initialValue || 0), 0);
       const val = Math.max(1000, totalValue);
-      
       this.balanceCache.set(trader, { value: val, timestamp: Date.now() });
       return val;
     } catch {

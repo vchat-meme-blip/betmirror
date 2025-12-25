@@ -3,7 +3,8 @@ import {
     OrderParams,
     OrderResult,
     LiquidityHealth,
-    LiquidityMetrics
+    LiquidityMetrics,
+    OrderSide
 } from '../interfaces.js';
 import { OrderBook, PositionData } from '../../domain/market.types.js';
 import { TradeSignal, TradeHistoryEntry } from '../../domain/trade.types.js';
@@ -12,7 +13,7 @@ import { Wallet as WalletV6, JsonRpcProvider, Contract, formatUnits } from 'ethe
 import { Wallet as WalletV5 } from 'ethers-v5'; // V5 for SDK
 import { EvmWalletService } from '../../services/evm-wallet.service.js';
 import { SafeManagerService } from '../../services/safe-manager.service.js';
-import { TradingWalletConfig } from '../../domain/wallet.types.js';
+import { TradingWalletConfig, L2ApiCredentials } from '../../domain/wallet.types.js';
 import { User } from '../../database/index.js';
 import { BuilderConfig } from '@polymarket/builder-signing-sdk';
 import { Logger } from '../../utils/logger.util.js';
@@ -41,6 +42,17 @@ interface PolyActivityResponse {
   transactionHash: string;
 }
 
+export interface PolymarketAdapterConfig {
+    rpcUrl: string;
+    walletConfig: TradingWalletConfig;
+    userId: string;
+    l2ApiCredentials?: L2ApiCredentials;
+    builderApiKey?: string;
+    builderApiSecret?: string;
+    builderApiPassphrase?: string;
+    mongoEncryptionKey: string;
+}
+
 export class PolymarketAdapter implements IExchangeAdapter {
     readonly exchangeName = 'Polymarket';
     
@@ -56,16 +68,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
     private marketMetadataCache: Map<string, any> = new Map();
 
     constructor(
-        private config: {
-            rpcUrl: string;
-            walletConfig: TradingWalletConfig;
-            userId: string;
-            l2ApiCredentials?: any;
-            builderApiKey?: string;
-            builderApiSecret?: string;
-            builderApiPassphrase?: string;
-            mongoEncryptionKey: string;
-        },
+        private config: PolymarketAdapterConfig,
         private logger: Logger
     ) {}
 
@@ -92,8 +95,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
             this.logger,
             this.safeAddress 
         );
-
-        this.logger.info(`   Target Bot Address: ${this.safeAddress}`);
 
         this.provider = new JsonRpcProvider(this.config.rpcUrl);
         this.usdcContract = new Contract(TOKENS.USDC_BRIDGED, USDC_ABI, this.provider);
@@ -209,72 +210,79 @@ export class PolymarketAdapter implements IExchangeAdapter {
         }
     }
 
-    async getAccurateMidpoint(tokenId: string): Promise<{ mid: number; bestBid: number; bestAsk: number; spread: number }> {
-        if (!this.client) throw new Error("Not auth");
-        const book = await this.client.getOrderBook(tokenId);
-        const bestBid = book.bids.length > 0 ? parseFloat(book.bids[0].price) : 0;
-        const bestAsk = book.asks.length > 0 ? parseFloat(book.asks[0].price) : 1;
-        const mid = (bestBid + bestAsk) / 2;
-        return { mid, bestBid, bestAsk, spread: bestAsk - bestBid };
-    }
-
     async getOrderBook(tokenId: string): Promise<OrderBook> {
         if (!this.client) throw new Error("Not auth");
         const book = await this.client.getOrderBook(tokenId);
         
+        // MUST sort and parse - API may return strings in any order
         const sortedBids = book.bids
             .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }))
-            .sort((a, b) => b.price - a.price);
+            .sort((a, b) => b.price - a.price); // Highest bid first
         const sortedAsks = book.asks
             .map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
-            .sort((a, b) => a.price - b.price);
+            .sort((a, b) => a.price - b.price); // Lowest ask first
 
         return {
             bids: sortedBids,
             asks: sortedAsks,
-            min_order_size: (book as any).min_order_size ? Number((book as any).min_order_size) : 5,
-            tick_size: (book as any).tick_size ? Number((book as any).tick_size) : 0.01,
+            min_order_size: Number((book as any).min_order_size) || 5,
+            tick_size: Number((book as any).tick_size) || 0.01,
             neg_risk: (book as any).neg_risk
         };
     }
 
+    /**
+     * UPDATED LIQUIDITY MATH:
+     * We now use absolute cent spreads instead of percentages.
+     * This is critical for prediction markets where 1c vs 2c is a tiny gap but a huge %.
+     */
     async getLiquidityMetrics(tokenId: string, side: 'BUY' | 'SELL'): Promise<LiquidityMetrics> {
         if (!this.client) throw new Error("Not auth");
         const book = await this.client.getOrderBook(tokenId);
         
-        const bestBid = book.bids.length > 0 ? parseFloat(book.bids[0].price) : 0;
-        const bestAsk = book.asks.length > 0 ? parseFloat(book.asks[0].price) : 1;
+        // Force sort to ensure best prices are at index 0
+        const sortedBids = [...book.bids]
+            .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }))
+            .sort((a, b) => b.price - a.price); // Highest first
+        const sortedAsks = [...book.asks]
+            .map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
+            .sort((a, b) => a.price - b.price); // Lowest first
         
-        const spread = bestAsk - bestBid;
+        const bestBid = sortedBids.length > 0 ? sortedBids[0].price : 0;
+        const bestAsk = sortedAsks.length > 0 ? sortedAsks[0].price : 1;
+        
+        // ABSOLUTE spread in cents - NOT percentage
+        const spreadAbs = bestAsk - bestBid;
         const midpoint = (bestBid + bestAsk) / 2;
-        const spreadPercent = midpoint > 0 ? (spread / midpoint) * 100 : 100;
+        // Keep spreadPercent for logging only, NOT for health decisions
+        const spreadPercent = midpoint > 0 ? (spreadAbs / midpoint) * 100 : 100;
 
-        // DEBUG LOG: Copy this from your server console to show support
-        if (spreadPercent > 50) {
-            this.logger.warn(`[DEBUG-DATA] Token: ${tokenId} | Side: ${side}`);
-            this.logger.warn(`[DEBUG-DATA] Best Bid: ${bestBid} | Best Ask: ${bestAsk} | Mid: ${midpoint}`);
-            this.logger.warn(`[DEBUG-DATA] Raw Bids: ${JSON.stringify(book.bids.slice(0, 2))}`);
-            this.logger.warn(`[DEBUG-DATA] Raw Asks: ${JSON.stringify(book.asks.slice(0, 2))}`);
-        }
-
-        // Depth calculation with explicit parsing
+        // USD depth on the relevant side (what matters for execution)
         let depthUsd = 0;
         if (side === 'SELL') {
             // How much USD is waiting to buy our shares?
-            depthUsd = book.bids.slice(0, 3).reduce((sum, b) => sum + (parseFloat(b.size) * parseFloat(b.price)), 0);
+            depthUsd = sortedBids.slice(0, 3).reduce((sum, b) => sum + (b.size * b.price), 0);
         } else {
             // How much USD of shares is available for us to buy?
-            depthUsd = book.asks.slice(0, 3).reduce((sum, a) => sum + (parseFloat(a.size) * parseFloat(a.price)), 0);
+            depthUsd = sortedAsks.slice(0, 3).reduce((sum, a) => sum + (a.size * a.price), 0);
         }
 
+        // Health based on ABSOLUTE spread (cents) + USD depth
+        // For prediction markets: depth matters MORE than spread at extreme prices
         let health: LiquidityHealth = LiquidityHealth.CRITICAL;
-        if (spreadPercent <= 1.5 && depthUsd >= 500) health = LiquidityHealth.HIGH;
-        else if (spreadPercent <= 4.0 && depthUsd >= 100) health = LiquidityHealth.MEDIUM;
-        else if (spreadPercent <= 10.0 && depthUsd >= 20) health = LiquidityHealth.LOW;
+        
+        if (spreadAbs <= 0.02 && depthUsd >= 500) {
+            health = LiquidityHealth.HIGH;      // Tight spread, deep book
+        } else if (spreadAbs <= 0.05 && depthUsd >= 100) {
+            health = LiquidityHealth.MEDIUM;    // Moderate spread, decent depth
+        } else if (depthUsd >= 20) {
+            health = LiquidityHealth.LOW;       // Depth exists - tradeable but risky
+        }
+        // else CRITICAL - no real liquidity
 
         return {
             health,
-            spread,
+            spread: spreadAbs,
             spreadPercent,
             availableDepthUsd: depthUsd,
             bestPrice: side === 'SELL' ? bestBid : bestAsk
@@ -298,29 +306,20 @@ export class PolymarketAdapter implements IExchangeAdapter {
                     question = marketData.question || question;
                     image = marketData.image || image;
                 }
-            } catch (e) {
-                this.logger.debug(`CLOB API fetch failed for ${marketId}`);
-            }
+            } catch (e) {}
         }
 
         if (marketSlug) {
             try {
                 const gammaUrl = `https://gamma-api.polymarket.com/markets/slug/${marketSlug}`;
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 5000);
-                
-                const gammaResponse = await fetch(gammaUrl, { signal: controller.signal });
-                clearTimeout(timeoutId);
-                
+                const gammaResponse = await fetch(gammaUrl);
                 if (gammaResponse.ok) {
                     const marketData = await gammaResponse.json();
                     if (marketData.events && marketData.events.length > 0) {
                         eventSlug = marketData.events[0]?.slug || "";
                     }
                 }
-            } catch (e) {
-                this.logger.debug(`Gamma API fetch failed for slug ${marketSlug}`);
-            }
+            } catch (e) {}
         }
 
         return { marketSlug, eventSlug, question, image };
@@ -335,7 +334,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             const positions: PositionData[] = [];
             for (const p of res.data) {
                 const size = parseFloat(p.size) || 0;
-                if (size <= 0) continue;
+                if (size <= 0.01) continue;
                 const marketId = p.conditionId || p.market;
                 const tokenId = p.asset;
                 let currentPrice = parseFloat(p.price) || 0;
@@ -351,7 +350,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 const currentValueUsd = size * currentPrice;
                 const investedValueUsd = size * entryPrice;
                 const unrealizedPnL = currentValueUsd - investedValueUsd;
-                const unrealizedPnLPercent = investedValueUsd > 0 ? (unrealizedPnL / investedValueUsd) * 100 : 0;
                 
                 const { marketSlug, eventSlug, question, image } = await this.fetchMarketSlugs(marketId);
 
@@ -365,7 +363,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
                     entryPrice: entryPrice,
                     currentPrice: currentPrice,
                     unrealizedPnL: unrealizedPnL,
-                    unrealizedPnLPercent: unrealizedPnLPercent,
                     question: question,
                     image: image,
                     marketSlug: marketSlug,
@@ -375,7 +372,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
             }
             return positions;
         } catch (e) {
-            this.logger.error("Failed to fetch positions", e as Error);
             return [];
         }
     }
@@ -444,7 +440,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
             const shares = params.sizeShares || Math.floor(params.sizeUsd / finalPrice);
             
             if (shares < minOrderSize) {
-                const errorMsg = `EXCHANGE_LIMIT: Position (${shares.toFixed(2)} shares) is below the Polymarket minimum of ${minOrderSize.toFixed(2)} shares. You must buy more to reach the minimum before you can sell.`;
+                const errorMsg = `EXCHANGE_LIMIT: Size (${shares.toFixed(2)} shares) is below exchange minimum of ${minOrderSize}.`;
                 return { success: false, error: errorMsg, sharesFilled: 0, priceFilled: 0 };
             }
 
@@ -464,7 +460,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
             const res = await this.client.postOrder(signedOrder, orderType);
 
             if (res && res.success) {
-                this.logger.success(`Order Accepted. ID: ${res.orderID}`);
                 return { 
                     success: true, 
                     orderId: res.orderID, 
@@ -481,8 +476,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 this.initClobClient(this.config.l2ApiCredentials);
                 return this.createOrder(params, retryCount + 1);
             }
-            const msg = typeof error === 'string' ? error : (error.message || "Unknown Adapter Error");
-            return { success: false, error: msg, sharesFilled: 0, priceFilled: 0 };
+            return { success: false, error: error.message || "Unknown Error", sharesFilled: 0, priceFilled: 0 };
         }
     }
 
@@ -499,9 +493,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
         try {
             const orders = await this.client.getOpenOrders();
             return orders || [];
-        } catch (e) {
-            return [];
-        }
+        } catch (e) { return []; }
     }
 
     async cashout(amount: number, destination: string): Promise<string> {
@@ -510,9 +502,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
         return await this.safeManager.withdrawUSDC(destination, amountStr);
     }
 
-    // FIX: Removed duplicate function implementation that accepted (safeAddress: string, operatorAddress: string)
-
-    private async ensureOutcomeTokenApprovalLegacy(isNegRisk: boolean): Promise<void> {
+    async ensureOutcomeTokenApproval(isNegRisk: boolean): Promise<void> {
         if (!this.safeManager) throw new Error("Safe Manager not initialized");
         const EXCHANGE = isNegRisk 
             ? "0xC5d563A36AE78145C45a50134d48A1215220f80a"
@@ -524,28 +514,21 @@ export class PolymarketAdapter implements IExchangeAdapter {
             if (!isApproved) {
                 this.logger.info(`   + Granting outcome token rights to ${isNegRisk ? 'NegRisk' : 'Standard'} Exchange...`);
                 await this.safeManager.approveOutcomeTokens(EXCHANGE, isNegRisk);
-                this.logger.success(`   ✅ CTF permissions granted.`);
             }
         } catch (e: any) {
-            this.logger.error(`Failed to approve outcome tokens: ${e.message}`);
             throw e;
         }
-    }
-
-    // Helper for internal use to avoid signature mismatch
-    private async ensureOutcomeTokenApproval(isNegRisk: boolean): Promise<void> {
-        return this.ensureOutcomeTokenApprovalLegacy(isNegRisk);
     }
     
     getFunderAddress() {
         return this.safeAddress || this.config.walletConfig.address;
     }
 
-    public getRawClient(): any {
+    getRawClient(): any {
         return this.client;
     }
 
-    public getSigner(): any {
+    getSigner(): any {
         return this.wallet;
     }
 }
