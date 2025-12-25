@@ -18,7 +18,7 @@ export class TradeExecutorService {
         let remainingShares = position.shares;
         let totalSold = 0;
         try {
-            logger.info(`📉 Executing Manual Exit: Selling ${remainingShares} shares of ${position.tokenId}`);
+            logger.info(`📉 Executing Manual Exit: Selling ${remainingShares} shares of ${position.tokenId} (Ref Price: ${currentPrice})`);
             // Try market sell first (priceLimit: 0)
             const result = await adapter.createOrder({
                 marketId: position.marketId,
@@ -121,7 +121,7 @@ export class TradeExecutorService {
                 multiplier: env.tradeMultiplier,
                 currentPrice: signal.price,
                 maxTradeAmount: env.maxTradeAmount,
-                minOrderSize: minOrderSize // NEW PARAMETER
+                minOrderSize: minOrderSize
             });
             if (sizing.targetUsdSize < 1.00 || sizing.targetShares < minOrderSize) {
                 if (usableBalanceForTrade < 1.00)

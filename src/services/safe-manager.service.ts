@@ -424,13 +424,13 @@ export class SafeManagerService {
         return tx.hash;
     }
 
-    public async checkOutcomeTokenApproval(safeAddress: string, exchangeAddress: string): Promise<boolean> {
+    public async checkOutcomeTokenApproval(safeAddress: string, operatorAddress: string): Promise<boolean> {
         try {
             const isApproved = await this.viemPublicClient.readContract({
                 address: CTF_CONTRACT_ADDRESS,
                 abi: parseAbi(ERC1155_ABI),
                 functionName: 'isApprovedForAll',
-                args: [safeAddress, exchangeAddress]
+                args: [safeAddress, operatorAddress]
             }) as boolean;
             
             return isApproved;
@@ -440,11 +440,11 @@ export class SafeManagerService {
         }
     }
 
-    public async approveOutcomeTokens(exchangeAddress: string, isNegRisk: boolean): Promise<void> {
+    public async approveOutcomeTokens(operatorAddress: string, isNegRisk: boolean): Promise<void> {
         try {
             const ctfInterface = new Interface(ERC1155_ABI);
             
-            const data = ctfInterface.encodeFunctionData("setApprovalForAll", [exchangeAddress, true]);
+            const data = ctfInterface.encodeFunctionData("setApprovalForAll", [operatorAddress, true]);
             
             const tx: SafeTransaction = { 
                 to: CTF_CONTRACT_ADDRESS as `0x${string}`, 

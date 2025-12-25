@@ -40,7 +40,7 @@ export interface IExchangeAdapter {
     // Market Data
     fetchBalance(address: string): Promise<number>;
     getPortfolioValue(address: string): Promise<number>; 
-    getMarketPrice(marketId: string, tokenId: string): Promise<number>;
+    getMarketPrice(marketId: string, tokenId: string, side?: 'BUY' | 'SELL'): Promise<number>;
     getOrderBook(tokenId: string): Promise<OrderBook>;
     getPositions(address: string): Promise<PositionData[]>; 
     

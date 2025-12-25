@@ -1,10 +1,11 @@
 import { GoogleGenAI } from "@google/genai";
 export class AiAgentService {
-    model = "gemini-2.5-flash";
+    /* GUIDELINE: Use gemini-3-flash-preview for basic text tasks */
+    model = "gemini-3-flash-preview";
     async analyzeTrade(marketQuestion, tradeSide, outcome, size, price, riskProfile = 'balanced', apiKey) {
-        // Use provided key, or fall back to process.env
+        // GUIDELINE: The API key must be obtained exclusively from process.env.API_KEY where possible.
         const keyToUse = apiKey || process.env.API_KEY;
-        // FIX: If no API key is provided, bypass AI and allow the trade directly.
+        // FIX: If no API key is provided, bypass AI and allow the trade directly as a safety fallback.
         if (!keyToUse) {
             return {
                 shouldCopy: true,
@@ -12,6 +13,7 @@ export class AiAgentService {
                 riskScore: 0
             };
         }
+        /* INITIALIZATION: Always use new GoogleGenAI({apiKey: process.env.API_KEY}) with a named parameter */
         const ai = new GoogleGenAI({ apiKey: keyToUse });
         const systemInstruction = `You are a specialized Risk Analyst Agent for a prediction market trading bot. 
     Your Risk Profile is: ${riskProfile.toUpperCase()}.
@@ -33,6 +35,7 @@ export class AiAgentService {
       Return JSON only: { "shouldCopy": boolean, "reasoning": "short explanation", "riskScore": number (1-10) }
     `;
         try {
+            /* GENERATE CONTENT: Use ai.models.generateContent to query GenAI */
             const response = await ai.models.generateContent({
                 model: this.model,
                 contents: prompt,
@@ -41,6 +44,7 @@ export class AiAgentService {
                     responseMimeType: "application/json",
                 },
             });
+            /* EXTRACT TEXT: Access the .text property directly, do not call as a method */
             const text = response.text;
             if (!text)
                 throw new Error("No response from AI");

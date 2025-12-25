@@ -79,19 +79,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
              throw new Error("Missing Encrypted Private Key for Trading Wallet");
         }
 
-        /**
-         * DERIVATION GUARD:
-         * We recalculate the address now to ensure parity with the Polymarket SDK logic.
-         * If the address in the DB was derived using a different factory, we override it here.
-         */
         const sdkAlignedAddress = await SafeManagerService.computeAddress(this.config.walletConfig.address);
-        const dbAddress = this.config.walletConfig.safeAddress;
-
-        if (dbAddress && dbAddress.toLowerCase() !== sdkAlignedAddress.toLowerCase()) {
-            this.logger.warn(`⚠️ Mismatched Safe address detected! DB: ${dbAddress} | SDK Expected: ${sdkAlignedAddress}`);
-            this.logger.warn(`   Overriding with SDK-aligned address to ensure signature compatibility.`);
-        }
-
         this.safeAddress = sdkAlignedAddress;
 
         this.safeManager = new SafeManagerService(
@@ -178,7 +166,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 { address: this.config.userId },
                 { 
                     "tradingWallet.l2ApiCredentials": apiCreds,
-                    "tradingWallet.safeAddress": this.safeAddress // Sync the correct address back to DB
+                    "tradingWallet.safeAddress": this.safeAddress 
                 }
             );
             this.config.l2ApiCredentials = apiCreds;
@@ -204,12 +192,30 @@ export class PolymarketAdapter implements IExchangeAdapter {
         } catch (e) { return 0; }
     }
 
-    async getMarketPrice(marketId: string, tokenId: string): Promise<number> {
+    async getMarketPrice(marketId: string, tokenId: string, side: 'BUY' | 'SELL' = 'BUY'): Promise<number> {
         if (!this.client) return 0;
         try {
-            const mid = await this.client.getMidpoint(tokenId);
-            return parseFloat(mid.mid);
-        } catch (e) { return 0; }
+            // Use getPrice for more accurate best execution price
+            const priceRes = await this.client.getPrice(tokenId, side as any);
+            return parseFloat(priceRes.price) || 0;
+        } catch (e) {
+            // Fallback to midpoint if no liquidity on that specific side
+            try {
+                const mid = await this.client.getMidpoint(tokenId);
+                return parseFloat(mid.mid) || 0;
+            } catch (midErr) {
+                return 0;
+            }
+        }
+    }
+
+    async getAccurateMidpoint(tokenId: string): Promise<{ mid: number; bestBid: number; bestAsk: number; spread: number }> {
+        if (!this.client) throw new Error("Not auth");
+        const book = await this.client.getOrderBook(tokenId);
+        const bestBid = book.bids.length > 0 ? parseFloat(book.bids[0].price) : 0;
+        const bestAsk = book.asks.length > 0 ? parseFloat(book.asks[0].price) : 1;
+        const mid = (bestBid + bestAsk) / 2;
+        return { mid, bestBid, bestAsk, spread: bestAsk - bestBid };
     }
 
     async getOrderBook(tokenId: string): Promise<OrderBook> {
@@ -282,14 +288,11 @@ export class PolymarketAdapter implements IExchangeAdapter {
             if(!Array.isArray(res.data)) return [];
             
             const positions: PositionData[] = [];
-            
             for (const p of res.data) {
                 const size = parseFloat(p.size) || 0;
                 if (size <= 0) continue;
-
                 const marketId = p.conditionId || p.market;
                 const tokenId = p.asset;
-
                 let currentPrice = parseFloat(p.price) || 0;
                 if (currentPrice === 0 && this.client && tokenId) {
                     try {
@@ -299,14 +302,13 @@ export class PolymarketAdapter implements IExchangeAdapter {
                         currentPrice = parseFloat(p.avgPrice) || 0.5;
                     }
                 }
-
                 const entryPrice = parseFloat(p.avgPrice) || currentPrice || 0.5;
                 const currentValueUsd = size * currentPrice;
                 const investedValueUsd = size * entryPrice;
                 const unrealizedPnL = currentValueUsd - investedValueUsd;
                 const unrealizedPnLPercent = investedValueUsd > 0 ? (unrealizedPnL / investedValueUsd) * 100 : 0;
-
-                // Reusable slug fetching
+                
+                // RESTORED: Deep slug fetching logic
                 const { marketSlug, eventSlug, question, image } = await this.fetchMarketSlugs(marketId);
 
                 positions.push({
@@ -327,7 +329,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
                     clobOrderId: tokenId 
                 });
             }
-            
             return positions;
         } catch (e) {
             this.logger.error("Failed to fetch positions", e as Error);
@@ -363,207 +364,74 @@ export class PolymarketAdapter implements IExchangeAdapter {
         if (!this.client) throw new Error("Client not authenticated");
 
         try {
-            let negRisk = false;
-            let minOrderSize = 5; 
-            let tickSize = 0.01;
+            const market = await this.client.getMarket(params.marketId);
+            const tickSize = Number(market.minimum_tick_size) || 0.01;
+            const minOrderSize = Number(market.minimum_order_size) || 5;
 
-            try {
-                const market = await this.client.getMarket(params.marketId);
-                negRisk = market.neg_risk;
-                if (market.minimum_order_size) minOrderSize = Number(market.minimum_order_size);
-                if (market.minimum_tick_size) tickSize = Number(market.minimum_tick_size);
-
-                // For SELL orders, ensure outcome tokens are approved for CTF Exchange
-                if (params.side === Side.SELL) {
-                    await this.ensureOutcomeTokenApproval(market.neg_risk);
-                }
-            } catch (e) {
-                try {
-                    const book = await this.getOrderBook(params.tokenId);
-                    if (book.min_order_size) minOrderSize = book.min_order_size;
-                    if (book.tick_size) tickSize = book.tick_size;
-                    if (book.neg_risk !== undefined) negRisk = book.neg_risk;
-                } catch(e2) {
-                    this.logger.debug(`Order: Market info fetch fallback for ${params.marketId}`);
-                }
+            if (params.side === 'SELL') {
+                await this.ensureOutcomeTokenApproval(market.neg_risk);
             }
 
             const side = params.side === 'BUY' ? Side.BUY : Side.SELL;
-            let rawPrice = params.priceLimit;
-
-            if (rawPrice === undefined || rawPrice === 0) {
-                 const book = await this.client.getOrderBook(params.tokenId);
-                 if (side === Side.BUY) {
-                     if (!book.asks || book.asks.length === 0) throw new Error("skipped_no_liquidity");
-                     rawPrice = Number(book.asks[0].price);
-                 } else {
-                     if (book.bids && book.bids.length > 0) {
-                        rawPrice = Number(book.bids[0].price);
-                     } else {
-                        throw new Error("skipped_no_liquidity");
-                     }
-                 }
-            }
-
-            if (rawPrice >= 0.99) rawPrice = 0.99;
-            if (rawPrice <= 0.01) rawPrice = 0.01;
-
-            const inverseTick = Math.round(1 / tickSize);
-            let roundedPrice: number;
             
-            if (side === Side.BUY) {
-                roundedPrice = Math.ceil(rawPrice * inverseTick) / inverseTick;
+            // Single fetch of orderbook for efficiency and accuracy
+            const book = await this.client.getOrderBook(params.tokenId);
+            
+            // Log market levels for transparency
+            const topBids = book.bids.slice(0, 3).map(b => `${b.price} (${b.size})`).join(', ');
+            const topAsks = book.asks.slice(0, 3).map(a => `${a.price} (${a.size})`).join(', ');
+            this.logger.info(`Book [${params.tokenId}]: Bids: [${topBids || 'none'}] | Asks: [${topAsks || 'none'}]`);
+
+            // Determine execution price based on side
+            let rawPrice: number;
+            if (side === Side.SELL) {
+                if (!book.bids.length) return { success: false, error: "skipped_no_bids", sharesFilled: 0, priceFilled: 0 };
+                rawPrice = parseFloat(book.bids[0].price); // Hit the best bid
             } else {
-                roundedPrice = Math.floor(rawPrice * inverseTick) / inverseTick;
+                if (!book.asks.length) return { success: false, error: "skipped_no_liquidity", sharesFilled: 0, priceFilled: 0 };
+                // For buys, use best ask price or user-defined limit
+                rawPrice = params.priceLimit || parseFloat(book.asks[0].price);
             }
 
-            if (roundedPrice > 0.99) roundedPrice = 0.99;
-            if (roundedPrice < 0.01) roundedPrice = 0.01;
-            
-            let shares = params.sizeShares || Math.floor(params.sizeUsd / roundedPrice);
+            // Round to tick size based on direction (Buys ceil, Sells floor)
+            const inverseTick = Math.round(1 / tickSize);
+            const roundedPrice = side === Side.BUY 
+                ? Math.ceil(rawPrice * inverseTick) / inverseTick
+                : Math.floor(rawPrice * inverseTick) / inverseTick;
+            const finalPrice = Math.max(0.001, Math.min(0.999, roundedPrice));
 
-            if (side === Side.BUY) {
-                const MIN_ORDER_VALUE = 1.01;
-                
-                if (shares * roundedPrice < MIN_ORDER_VALUE) {
-                    shares = Math.ceil(MIN_ORDER_VALUE / roundedPrice);
-                }
-
-                let totalCost = shares * roundedPrice;
-                let attempts = 0;
-                while (attempts < 10 && (Math.round(shares * roundedPrice * 100) / 100) !== (shares * roundedPrice)) {
-                    shares++;
-                    attempts++;
-                }
-                
-                const finalMakerAmount = Math.floor(shares * roundedPrice * 100) / 100;
-                if (finalMakerAmount < 1.00) {
-                     this.logger.warn(`Warning: Cannot meet 1.00 minimum at price ${roundedPrice}. Skipping.`);
-                     return { success: false, error: "skipped_min_value_limit", sharesFilled: 0, priceFilled: 0 };
-                }
-            }
-
+            // Calculate shares
+            const shares = params.sizeShares || Math.floor(params.sizeUsd / finalPrice);
             if (shares < minOrderSize) {
-                this.logger.warn(`Warning: Order Rejected: Size (${shares}) < Minimum (${minOrderSize} shares). Req: ${params.sizeUsd.toFixed(2)} @ ${roundedPrice.toFixed(2)}`);
                 return { success: false, error: "skipped_min_size_limit", sharesFilled: 0, priceFilled: 0 };
             }
 
-            const order: any = {
+            this.logger.info(`Placing Order: ${params.side} ${shares} shares @ ${finalPrice.toFixed(3)}`);
+
+            const orderArgs = {
                 tokenID: params.tokenId,
-                price: roundedPrice,
+                price: finalPrice,
                 side: side,
-                size: shares,
+                size: Math.floor(shares),
                 feeRateBps: 0,
                 taker: "0x0000000000000000000000000000000000000000"
             };
 
-            this.logger.info(`Placing Order: ${params.side} ${shares} shares @ ${roundedPrice.toFixed(2)}`);
+            const signedOrder = await this.client.createOrder(orderArgs);
+            const orderType = side === Side.SELL ? OrderType.FAK : OrderType.GTC;
+            const res = await this.client.postOrder(signedOrder, orderType);
 
-            // Smart order type selection with fallback strategy
-            if (side === Side.SELL) {
-                // Get order book to check liquidity and get market parameters
-                const book = await this.client.getOrderBook(params.tokenId);
-                const bestBid = book.bids.length > 0 ? Number(book.bids[0].price) : null;
-                const bidLiquidity = book.bids.reduce((sum, b) => sum + Number(b.size), 0);
-                const tickSize = parseFloat(book.tick_size) || 0.01;
-                const minOrderSize = parseFloat(book.min_order_size) || 5;
-                
-                this.logger.info(`Best bid: ${bestBid}, Bid liquidity: ${bidLiquidity} shares, Tick: ${tickSize}, Min: ${minOrderSize}`);
-
-                // Apply proper rounding for sell orders
-                const inverseTick = Math.round(1 / tickSize);
-                const sellRoundedPrice = Math.floor(roundedPrice * inverseTick) / inverseTick; // Round DOWN for sells
-                
-                // Clamp price to valid range
-                const finalPrice = sellRoundedPrice > 0.99 ? 0.99 : sellRoundedPrice < 0.01 ? 0.01 : sellRoundedPrice;
-                
-                // Round shares to avoid decimal precision issues
-                const roundedShares = Math.floor(shares);
-                
-                // Validate minimum size
-                if (roundedShares < minOrderSize) {
-                    this.logger.warn(`Order size ${roundedShares} below minimum ${minOrderSize}`);
-                    return { success: false, error: `Order size ${roundedShares} below minimum ${minOrderSize}`, sharesFilled: 0, priceFilled: 0 };
-                }
-
-                let remainingShares = roundedShares;
-
-                // Strategy 1: Try FAK at best bid if liquidity exists
-                if (bestBid && bidLiquidity > 0) {
-                    try {
-                        // Apply tick size rounding to best bid as well
-                        const fakPrice = Math.floor(bestBid * inverseTick) / inverseTick;
-                        
-                        // Use createAndPostMarketOrder for FAK (immediate fill)
-                        const fakResult = await this.client.createAndPostMarketOrder(
-                            {
-                                tokenID: params.tokenId,
-                                amount: Math.floor(roundedShares), // Raw shares
-                                side: Side.SELL,
-                                price: fakPrice, // Price limit
-                            },
-                            { negRisk, tickSize: tickSize as any },
-                            OrderType.FAK // FAK for partial fills
-                        );
-
-                        if (fakResult && fakResult.success) {
-                            const filled = parseFloat(fakResult.takingAmount) / 1e6 || 0;
-                            this.logger.success(`FAK filled ${filled}/${roundedShares} shares at ${fakPrice}`);
-                            
-                            if (filled >= roundedShares) {
-                                return { success: true, orderId: fakResult.orderID, txHash: fakResult.transactionHash, sharesFilled: filled, priceFilled: fakPrice };
-                            }
-                            
-                            // Partial fill - update remaining shares for GTC
-                            remainingShares = roundedShares - filled;
-                        }
-                    } catch (e) {
-                        const errorMessage = e instanceof Error ? e.message : String(e);
-                        this.logger.warn(`FAK failed: ${errorMessage}`);
-                    }
-                }
-
-                // Strategy 2: Place GTC limit order for remaining shares
-                try {
-                    const gtcPrice = bestBid ? Math.floor(bestBid * inverseTick) / inverseTick : finalPrice;
-                    const gtcResult = await this.client.createAndPostOrder(
-                        { 
-                            tokenID: params.tokenId, 
-                            price: gtcPrice, 
-                            side: Side.SELL, 
-                            size: Math.floor(remainingShares) // Raw shares
-                        },
-                        { negRisk, tickSize: tickSize as any },
-                        OrderType.GTC
-                    );
-
-                    if (gtcResult && gtcResult.success) {
-                        this.logger.success(`GTC placed: ${gtcResult.orderID} for ${remainingShares} @ ${gtcPrice}`);
-                        const filledShares = roundedShares - remainingShares; // Amount already filled by FAK
-                        return { success: true, orderId: gtcResult.orderID, txHash: gtcResult.transactionHash, sharesFilled: filledShares, priceFilled: gtcPrice };
-                    }
-                } catch (e) {
-                    const errorMessage = e instanceof Error ? e.message : String(e);
-                    this.logger.error(`GTC failed: ${errorMessage}`);
-                    return { success: false, error: errorMessage, sharesFilled: 0, priceFilled: 0 };
-                }
-                
-                // Final fallback if all strategies fail
-                return { success: false, error: "All sell strategies failed", sharesFilled: 0, priceFilled: 0 };
-            } else {
-                // Buy orders use GTC (updated from FOK)
-                const res = await this.client.createAndPostOrder(
-                    order, 
-                    { negRisk, tickSize: tickSize as any }, 
-                    OrderType.GTC
-                );
-
-                if (res && res.success) {
-                    this.logger.success(`Order Accepted. Tx: ${res.transactionHash || res.orderID || 'OK'}`);
-                    return { success: true, orderId: res.orderID, txHash: res.transactionHash, sharesFilled: shares, priceFilled: roundedPrice };
-                }
-                throw new Error(res.errorMsg || "Order failed response");
+            if (res && res.success) {
+                this.logger.success(`Order Accepted. ID: ${res.orderID}`);
+                return { 
+                    success: true, 
+                    orderId: res.orderID, 
+                    txHash: res.transactionHash, 
+                    sharesFilled: shares, 
+                    priceFilled: finalPrice 
+                };
             }
+            throw new Error(res.errorMsg || "Order failed response");
 
         } catch (error: any) {
             if (retryCount < 1 && (String(error).includes("401") || String(error).includes("signature"))) {
@@ -584,22 +452,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
     }
 
     async getOpenOrders(): Promise<any[]> {
-        // Note: ClobClient doesn't have getOrders() method
-        // This would need to be implemented via REST API or stored locally
-        this.logger.warn('getOpenOrders() not implemented - ClobClient lacks getOrders method');
         return [];
-    }
-
-    async getOrderStatus(orderId: string): Promise<any | null> {
-        if (!this.client) return null;
-        try {
-            // Use individual order lookup if available
-            const order = await this.client.getOrder(orderId);
-            return order;
-        } catch (e) {
-            this.logger.debug(`Failed to get order status: ${e instanceof Error ? e.message : String(e)}`);
-            return null;
-        }
     }
 
     async cashout(amount: number, destination: string): Promise<string> {
@@ -610,26 +463,18 @@ export class PolymarketAdapter implements IExchangeAdapter {
 
     private async ensureOutcomeTokenApproval(isNegRisk: boolean): Promise<void> {
         if (!this.safeManager) throw new Error("Safe Manager not initialized");
-
         const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
         const EXCHANGE = isNegRisk 
-            ? "0xC5d563A36AE78145C45a50134d48A1215220f80a"  // Neg Risk CTF Exchange
-            : "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"; // CTF Exchange
-
+            ? "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+            : "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
         try {
-            // Check if already approved
             const safeAddr = this.safeAddress;
-            if (!safeAddr) {
-                this.logger.warn(`Safe address not available, skipping outcome token approval`);
-                return;
-            }
-            
+            if (!safeAddr) return;
             const isApproved = await this.safeManager.checkOutcomeTokenApproval(safeAddr, EXCHANGE);
-            
             if (!isApproved) {
-                this.logger.info(`   + Approving CTF Exchange for outcome tokens`);
+                this.logger.info(`   + Granting outcome token rights to ${isNegRisk ? 'NegRisk' : 'Standard'} Exchange...`);
                 await this.safeManager.approveOutcomeTokens(EXCHANGE, isNegRisk);
-                this.logger.success(`   ✅ CTF Exchange approved for outcome tokens`);
+                this.logger.success(`   ✅ CTF permissions granted.`);
             }
         } catch (e: any) {
             this.logger.error(`Failed to approve outcome tokens: ${e.message}`);
