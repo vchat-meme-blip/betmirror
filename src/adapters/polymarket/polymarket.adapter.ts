@@ -410,7 +410,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
 
             // JIT PROTECTION: Ensure rights and allowances just before trade
             if (params.side === 'BUY') {
-                await this.ensureUsdcAllowance(market.neg_risk);
+                await this.ensureUsdcAllowance(market.neg_risk, params.sizeUsd);
             } else {
                 await this.ensureOutcomeTokenApproval(market.neg_risk);
             }
@@ -521,13 +521,21 @@ export class PolymarketAdapter implements IExchangeAdapter {
         return await this.safeManager.withdrawUSDC(destination, amountStr);
     }
 
-    async ensureUsdcAllowance(isNegRisk: boolean): Promise<void> {
+        async ensureUsdcAllowance(isNegRisk: boolean, tradeAmountUsd: number = 0): Promise<void> {
         if (!this.safeManager) throw new Error("Safe Manager not initialized");
         const EXCHANGE = isNegRisk ? "0xC5d563A36AE78145C45a50134d48A1215220f80a" : "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
+        
         const allowance = await this.usdcContract!.allowance(this.safeAddress, EXCHANGE);
-        if (allowance < 10000000n) { // JIT threshold: $10
-            this.logger.info(`   + JIT: Granting USDC allowance to exchange...`);
+        
+        // Check if current allowance covers this specific trade (plus a tiny buffer)
+        const requiredAmountRaw = BigInt(Math.ceil((tradeAmountUsd + 1) * 1000000));
+        
+        if (allowance < requiredAmountRaw) { 
+            this.logger.info(`   + JIT: Granting USDC allowance ($${tradeAmountUsd} trade)...`);
             await this.safeManager.enableApprovals();
+            // FIX: Add Indexing Delay - CLOB indexer takes a few seconds to see on-chain allowance changes
+            this.logger.info(`   + Waiting for CLOB indexing grace period (5s)...`);
+            await new Promise(r => setTimeout(r, 5000));
         }
     }
 
@@ -543,6 +551,8 @@ export class PolymarketAdapter implements IExchangeAdapter {
             if (!isApproved) {
                 this.logger.info(`   + Granting outcome token rights to ${isNegRisk ? 'NegRisk' : 'Standard'} Exchange...`);
                 await this.safeManager.approveOutcomeTokens(EXCHANGE, isNegRisk);
+                // Indexing Grace Period
+                await new Promise(r => setTimeout(r, 5000));
             }
         } catch (e: any) {
             throw e;
