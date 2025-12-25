@@ -174,6 +174,13 @@ export class PolymarketAdapter {
         const spread = bestAsk - bestBid;
         const midpoint = (bestBid + bestAsk) / 2;
         const spreadPercent = midpoint > 0 ? (spread / midpoint) * 100 : 100;
+        // DEBUG LOG: Copy this from your server console to show support
+        if (spreadPercent > 50) {
+            this.logger.warn(`[DEBUG-DATA] Token: ${tokenId} | Side: ${side}`);
+            this.logger.warn(`[DEBUG-DATA] Best Bid: ${bestBid} | Best Ask: ${bestAsk} | Mid: ${midpoint}`);
+            this.logger.warn(`[DEBUG-DATA] Raw Bids: ${JSON.stringify(book.bids.slice(0, 2))}`);
+            this.logger.warn(`[DEBUG-DATA] Raw Asks: ${JSON.stringify(book.asks.slice(0, 2))}`);
+        }
         // Depth calculation with explicit parsing
         let depthUsd = 0;
         if (side === 'SELL') {

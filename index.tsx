@@ -606,68 +606,110 @@ const OrderManagementModal = ({
 const TraderDetailsModal = ({ trader, onClose }: { trader: TraderProfile, onClose: () => void }) => {
     const [trades, setTrades] = useState<PolyTrade[]>([]);
     const [loading, setLoading] = useState(true);
+    const [earnings, setEarnings] = useState<any>(null);
+    const [userAddress, setUserAddress] = useState<string>('');
 
     useEffect(() => {
-        const fetchHistory = async () => {
+        const fetchData = async () => {
             try {
-                const res = await axios.get(`/api/proxy/trades/${trader.address}`);
-                setTrades(res.data);
+                const [tradesRes, earningsRes] = await Promise.all([
+                    axios.get(`/api/proxy/trades/${trader.address}`),
+                    axios.get(`/api/registry/${trader.address}/earnings`)
+                ]);
+                setTrades(tradesRes.data);
+                setEarnings(earningsRes.data);
             } catch (e) {
                 console.error("Failed to load trader details", e);
             } finally {
                 setLoading(false);
             }
         };
-        fetchHistory();
+        
+        // Get current user address to check if they listed this wallet
+        const currentUser = localStorage.getItem('userAddress') || '';
+        setUserAddress(currentUser);
+        fetchData();
     }, [trader.address]);
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-            <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-2xl w-full max-w-4xl h-[80vh] flex flex-col relative shadow-2xl overflow-hidden">
-                <div className="p-6 border-b border-gray-200 dark:border-gray-800 flex justify-between items-start bg-gray-50 dark:bg-black/20">
-                    <div className="flex gap-4">
-                        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-2xl font-bold text-white shadow-lg">
+            <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-2xl w-full max-w-4xl h-[90vh] sm:h-[80vh] flex flex-col relative shadow-2xl overflow-hidden">
+                {/* Header - Mobile Optimized */}
+                <div className="p-4 sm:p-6 border-b border-gray-200 dark:border-gray-800 flex justify-between items-start bg-gray-50 dark:bg-black/20">
+                    <div className="flex gap-3 sm:gap-4 flex-1 min-w-0">
+                        <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-xl sm:rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg sm:text-2xl font-bold text-white shadow-lg flex-shrink-0">
                             {trader.address.slice(2,4)}
                         </div>
-                        <div>
-                            <div className="flex items-center gap-2">
-                                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
+                        <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <h2 className="text-lg sm:text-2xl font-bold text-gray-900 dark:text-white truncate">
                                     {trader.ens || `${trader.address.slice(0,6)}...${trader.address.slice(-4)}`}
                                 </h2>
-                                {(trader as any).isSystem && <span className="bg-blue-600 text-white text-[10px] px-2 py-0.5 rounded uppercase font-bold">OFFICIAL</span>}
+                                {(trader as any).isSystem && <span className="bg-blue-600 text-white text-[8px] sm:text-[10px] px-2 py-0.5 rounded uppercase font-bold flex-shrink-0">OFFICIAL</span>}
                             </div>
-                            <div className="flex items-center gap-4 mt-2 text-xs text-gray-500 font-mono">
-                                <span className="bg-white dark:bg-white/5 px-2 py-1 rounded border border-gray-200 dark:border-white/10 select-all">{trader.address}</span>
-                                <a href={`https://polymarket.com/profile/${trader.address}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-blue-500 hover:underline">
-                                    View on Polymarket <ExternalLink size={10}/>
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 mt-1 sm:mt-2 text-[10px] sm:text-xs text-gray-500 font-mono">
+                                <span className="bg-white dark:bg-white/5 px-2 py-1 rounded border border-gray-200 dark:border-white/10 select-all truncate">{trader.address}</span>
+                                <a href={`https://polymarket.com/profile/${trader.address}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-blue-500 hover:underline flex-shrink-0">
+                                    <span className="hidden sm:inline">View on Polymarket</span>
+                                    <span className="sm:hidden">Polymarket</span>
+                                    <ExternalLink size={10}/>
                                 </a>
                             </div>
                         </div>
                     </div>
-                    <button onClick={onClose} className="p-2 hover:bg-gray-200 dark:hover:bg-white/10 rounded-full transition-colors">
-                        <X size={20} className="text-gray-500"/>
+                    <button onClick={onClose} className="p-1.5 sm:p-2 hover:bg-gray-200 dark:hover:bg-white/10 rounded-full transition-colors flex-shrink-0">
+                        <X size={16} className="sm:w-5 sm:h-5 text-gray-500"/>
                     </button>
                 </div>
-                <div className="grid grid-cols-4 border-b border-gray-200 dark:border-gray-800 divide-x divide-gray-200 dark:divide-gray-800 bg-white dark:bg-transparent">
-                    <div className="p-4 text-center">
-                        <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Win Rate</div>
-                        <div className="text-2xl font-bold text-green-600 dark:text-green-400">{trader.winRate}%</div>
+                
+                {/* Stats Grid - Mobile Responsive */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 border-b border-gray-200 dark:border-gray-800 divide-x divide-y sm:divide-x-0 sm:divide-y-0 divide-gray-200 dark:divide-gray-800 bg-white dark:bg-transparent">
+                    <div className="p-3 sm:p-4 text-center">
+                        <div className="text-[9px] sm:text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Win Rate</div>
+                        <div className="text-lg sm:text-2xl font-bold text-green-600 dark:text-green-400">{trader.winRate}%</div>
                     </div>
-                    <div className="p-4 text-center">
-                        <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Est. PnL</div>
-                        <div className={`text-2xl font-bold ${trader.totalPnl >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-red-600'}`}>
+                    <div className="p-3 sm:p-4 text-center">
+                        <div className="text-[9px] sm:text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Est. PnL</div>
+                        <div className={`text-lg sm:text-2xl font-bold ${trader.totalPnl >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-red-600'}`}>
                             ${trader.totalPnl.toLocaleString()}
                         </div>
                     </div>
-                    <div className="p-4 text-center">
-                        <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Activity (30d)</div>
-                        <div className="text-2xl font-bold text-gray-900 dark:text-white">{trader.tradesLast30d}</div>
+                    <div className="p-3 sm:p-4 text-center">
+                        <div className="text-[9px] sm:text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Activity (30d)</div>
+                        <div className="text-lg sm:text-2xl font-bold text-gray-900 dark:text-white">{trader.tradesLast30d}</div>
                     </div>
-                    <div className="p-4 text-center">
-                        <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Copiers</div>
-                        <div className="text-2xl font-bold text-gray-900 dark:text-white">{trader.copyCount}</div>
+                    <div className="p-3 sm:p-4 text-center">
+                        <div className="text-[9px] sm:text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Copiers</div>
+                        <div className="text-lg sm:text-2xl font-bold text-gray-900 dark:text-white">{trader.copyCount}</div>
                     </div>
                 </div>
+                
+                {/* Earnings Section - Only show if user listed this wallet */}
+                {earnings && trader.listedBy?.toLowerCase() === userAddress.toLowerCase() && (
+                    <div className="border-b border-gray-200 dark:border-gray-800 bg-green-50 dark:bg-green-900/10">
+                        <div className="px-4 sm:px-6 py-3">
+                            <div className="flex items-center gap-2 mb-2">
+                                <DollarSign size={14} className="text-green-600 dark:text-green-400"/>
+                                <h3 className="font-bold text-green-700 dark:text-green-300 text-sm">Your Finder's Rewards</h3>
+                            </div>
+                            <div className="grid grid-cols-3 gap-3 text-center">
+                                <div>
+                                    <div className="text-lg sm:text-xl font-bold text-green-600 dark:text-green-400">${earnings.totalEarned.toFixed(2)}</div>
+                                    <div className="text-[9px] text-green-600 dark:text-green-400 uppercase">Total Earned</div>
+                                </div>
+                                <div>
+                                    <div className="text-lg sm:text-xl font-bold text-gray-700 dark:text-gray-300">{earnings.totalTrades}</div>
+                                    <div className="text-[9px] text-gray-500 uppercase">Fee Events</div>
+                                </div>
+                                <div>
+                                    <div className="text-lg sm:text-xl font-bold text-gray-700 dark:text-gray-300">{earnings.uniqueCopiers}</div>
+                                    <div className="text-[9px] text-gray-500 uppercase">Unique Copiers</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+                
                 <div className="flex-1 overflow-hidden flex flex-col bg-gray-50 dark:bg-black/40">
                     <div className="px-6 py-3 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center">
                         <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm flex items-center gap-2">
@@ -729,18 +771,17 @@ const FeedbackWidget = ({ userId }: { userId: string }) => {
     };
 
     return (
-        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-4">
+        <div className="fixed bottom-3 right-3 sm:bottom-6 sm:right-6 z-50 flex flex-col items-end gap-4">
             {!isOpen && (
                 <button 
                     onClick={() => setIsOpen(true)} 
-                    className="w-14 h-14 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-lg hover:scale-110 transition-all hover:shadow-blue-500/30 group relative"
+                    className="w-8 h-8 sm:w-14 sm:h-14 bg-blue-600 hover:bg-blue-500 text-white rounded-full shadow-lg shadow-blue-500/20 flex items-center justify-center transition-all hover:scale-110 active:scale-95 p-0"
                 >
-                    <MessageSquare size={24} className="group-hover:rotate-12 transition-transform" />
-                    <span className="absolute top-0 right-0 w-3 h-3 bg-red-500 rounded-full border-2 border-white dark:border-black"></span>
+                    <MessageSquare size={14} className="sm:w-6 sm:h-6"/>
                 </button>
             )}
             {isOpen && (
-                <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-2xl p-6 shadow-2xl w-80 animate-in slide-in-from-bottom-10 zoom-in-95 duration-300 relative overflow-hidden">
+                <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-2xl p-4 sm:p-6 shadow-2xl w-[calc(100vw-2rem)] sm:w-80 max-w-sm animate-in slide-in-from-bottom-10 zoom-in-95 duration-300 relative overflow-hidden">
                     <div className="flex justify-between items-start mb-4">
                         <div>
                             <h4 className="text-gray-900 dark:text-white font-bold text-lg">Feedback</h4>

@@ -248,13 +248,21 @@ export const User = mongoose.model<IUser>('User', UserSchema);
 export const Trade = mongoose.model<ITrade>('Trade', TradeSchema);
 export const Registry = mongoose.model<IRegistry>('Registry', RegistrySchema);
 export const Feedback = mongoose.model<IFeedback>('Feedback', FeedbackSchema);
+
+// Re-export trade tracking models
+export { CopiedTrade, HunterEarning, WalletAnalytics } from './trade-tracking.schema.js';
+
 export const BridgeTransaction = mongoose.model<IBridgeTransaction>('BridgeTransaction', BridgeTransactionSchema);
 export const DepositLog = mongoose.model<IDepositLog>('DepositLog', DepositLogSchema);
 export const BotLog = mongoose.model<IBotLog>('BotLog', BotLogSchema);
 
 // --- Connection ---
 
-export const connectDB = async (uri: string) => {
+export const connectDB = async () => {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) {
+    throw new Error('MONGO_URI environment variable is not defined');
+  }
   try {
     mongoose.set('strictQuery', true);
     console.log(`🔌 Attempting to connect to MongoDB...`);

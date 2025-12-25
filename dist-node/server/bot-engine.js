@@ -3,7 +3,7 @@ import { TradeExecutorService } from '../services/trade-executor.service.js';
 import { aiAgent } from '../services/ai-agent.service.js';
 import { NotificationService } from '../services/notification.service.js';
 import { FundManagerService } from '../services/fund-manager.service.js';
-import { BotLog, User, Trade } from '../database/index.js';
+import { BotLog, Trade } from '../database/index.js';
 import { PolymarketAdapter } from '../adapters/polymarket/polymarket.adapter.js';
 import { FeeDistributorService } from '../services/fee-distributor.service.js';
 import { EvmWalletService } from '../services/evm-wallet.service.js';
@@ -68,6 +68,11 @@ export class BotEngine {
             this.config.maxTradeAmount = newConfig.maxTradeAmount;
             if (this.runtimeEnv)
                 this.runtimeEnv.maxTradeAmount = newConfig.maxTradeAmount;
+        }
+        if (newConfig.minLiquidityFilter !== undefined) {
+            this.config.minLiquidityFilter = newConfig.minLiquidityFilter;
+            if (this.runtimeEnv)
+                this.runtimeEnv.minLiquidityFilter = newConfig.minLiquidityFilter;
         }
         if (newConfig.geminiApiKey !== undefined) {
             this.config.geminiApiKey = newConfig.geminiApiKey;
@@ -137,7 +142,6 @@ export class BotEngine {
             else {
                 for (const pos of this.activePositions) {
                     try {
-                        // Use SELL side for accurate liquidation value check
                         const currentPrice = await this.exchange?.getMarketPrice(pos.marketId, pos.tokenId, 'SELL');
                         if (currentPrice && !isNaN(currentPrice) && currentPrice > 0) {
                             pos.currentPrice = currentPrice;
@@ -167,14 +171,6 @@ export class BotEngine {
             const address = this.exchange.getFunderAddress();
             if (!address)
                 return;
-            // Sync cumulative stats from Database to ensure memory isn't stuck at 0
-            const userRecord = await User.findOne({ address: this.config.userId }).lean();
-            if (userRecord && userRecord.stats) {
-                this.stats.totalPnl = userRecord.stats.totalPnl || 0;
-                this.stats.totalVolume = userRecord.stats.totalVolume || 0;
-                this.stats.tradesCount = userRecord.stats.tradesCount || 0;
-                this.stats.winRate = userRecord.stats.winRate || 0;
-            }
             const cashBalance = await this.exchange.fetchBalance(address);
             let positionValue = 0;
             this.activePositions.forEach(p => {
@@ -184,6 +180,7 @@ export class BotEngine {
             });
             this.stats.portfolioValue = cashBalance + positionValue;
             this.stats.cashBalance = cashBalance;
+            // Central callback triggers the DB update in server.ts
             if (this.callbacks?.onStatsUpdate) {
                 await this.callbacks.onStatsUpdate(this.stats);
             }
@@ -202,7 +199,7 @@ export class BotEngine {
         if (positionIndex === -1)
             throw new Error("Position not found in active database.");
         const position = this.activePositions[positionIndex];
-        this.addLog('warn', `Selling Position: ${position.shares} shares of ${position.outcome} (${position.question || position.marketId})...`);
+        this.addLog('warn', `Executing Market Exit: Offloading ${position.shares} shares of ${position.outcome} (${position.question || position.marketId})...`);
         try {
             let currentPrice = 0.5;
             try {
@@ -214,10 +211,6 @@ export class BotEngine {
                 const exitValue = position.shares * currentPrice;
                 const costBasis = position.shares * position.entryPrice;
                 const realizedPnl = exitValue - costBasis;
-                // Update local memory stats immediately so Dashboard reflects change
-                this.stats.totalPnl += realizedPnl;
-                this.stats.totalVolume += exitValue;
-                this.stats.tradesCount += 1;
                 if (this.callbacks?.onTradeComplete) {
                     await this.callbacks.onTradeComplete({
                         id: crypto.randomUUID(),
@@ -237,14 +230,7 @@ export class BotEngine {
                         eventSlug: position.eventSlug
                     });
                 }
-                // Update user's P/L directly in DB
-                await User.updateOne({ address: this.config.userId }, {
-                    $inc: {
-                        'stats.totalPnl': realizedPnl,
-                        'stats.tradesCount': 1,
-                        'stats.totalVolume': exitValue
-                    }
-                });
+                // Remove from active tracking
                 if (position.tradeId && !position.tradeId.startsWith('imported')) {
                     await Trade.findByIdAndUpdate(position.tradeId, {
                         status: 'CLOSED',
@@ -254,8 +240,8 @@ export class BotEngine {
                 this.activePositions.splice(positionIndex, 1);
                 if (this.callbacks?.onPositionsUpdate)
                     await this.callbacks.onPositionsUpdate(this.activePositions);
-                this.addLog('success', `Position Closed (PnL: ${realizedPnl.toFixed(2)}).`);
-                setTimeout(() => this.syncStats(), 1000);
+                this.addLog('success', `Exit summary: Liquidated ${position.shares.toFixed(2)} shares @ $${currentPrice.toFixed(3)}. Realized PnL: $${realizedPnl.toFixed(2)}`);
+                setTimeout(() => this.syncStats(), 2000);
                 return "sold";
             }
             else {
@@ -376,6 +362,7 @@ export class BotEngine {
         this.runtimeEnv = {
             tradeMultiplier: this.config.multiplier,
             maxTradeAmount: this.config.maxTradeAmount || 100,
+            minLiquidityFilter: this.config.minLiquidityFilter || 'LOW',
             usdcContractAddress: TOKENS.USDC_BRIDGED,
             adminRevenueWallet: process.env.ADMIN_REVENUE_WALLET,
             enableNotifications: this.config.enableNotifications,
@@ -449,20 +436,16 @@ export class BotEngine {
                     const result = await this.executor.copyTrade(signal);
                     if (result.status === 'FILLED') {
                         await this.addLog('success', `Trade Executed! Size: $${result.executedAmount.toFixed(2)}`);
-                        // Update Cumulative Stats in Memory
-                        this.stats.totalVolume += result.executedAmount;
-                        this.stats.tradesCount += 1;
                         if (signal.side === 'BUY') {
                             const tradeId = crypto.randomUUID();
                             const marketData = await this.exchange?.getRawClient()?.getMarket(signal.marketId);
-                            // RESTORED: Robust Gamma and CLOB metadata fetching
                             let marketSlug = "";
                             let question = "Syncing...";
                             let image = "";
                             if (marketData) {
                                 marketSlug = marketData.market_slug || "";
                                 question = marketData.question || question;
-                                image = marketData.image || "";
+                                image = marketData.image || image;
                             }
                             let eventSlug = "";
                             try {
@@ -482,9 +465,9 @@ export class BotEngine {
                                 }
                             }
                             catch (gammaError) { }
-                            await Trade.create({
-                                _id: tradeId,
-                                userId: this.config.userId,
+                            const newTrade = {
+                                id: tradeId,
+                                timestamp: new Date().toISOString(),
                                 marketId: signal.marketId,
                                 outcome: signal.outcome,
                                 side: 'BUY',
@@ -498,10 +481,11 @@ export class BotEngine {
                                 assetId: signal.tokenId,
                                 aiReasoning: aiResult.reasoning,
                                 riskScore: aiResult.riskScore,
-                                timestamp: new Date(),
                                 marketSlug: marketSlug,
                                 eventSlug: eventSlug
-                            });
+                            };
+                            if (this.callbacks?.onTradeComplete)
+                                await this.callbacks.onTradeComplete(newTrade);
                             this.activePositions.push({
                                 tradeId: tradeId,
                                 clobOrderId: result.txHash,
@@ -526,9 +510,7 @@ export class BotEngine {
                                 const closingPos = this.activePositions[idx];
                                 const exitValue = result.executedAmount;
                                 const realizedPnl = exitValue - (closingPos.shares * closingPos.entryPrice);
-                                this.stats.totalPnl += realizedPnl;
                                 await Trade.findByIdAndUpdate(closingPos.tradeId, { status: 'CLOSED', pnl: realizedPnl });
-                                // Ensure callback receives metadata for SELL orders too
                                 if (this.callbacks?.onTradeComplete) {
                                     await this.callbacks.onTradeComplete({
                                         id: crypto.randomUUID(),

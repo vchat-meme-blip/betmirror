@@ -6,7 +6,7 @@ import 'dotenv/config';
 import mongoose from 'mongoose';
 import { ethers, JsonRpcProvider } from 'ethers';
 import { BotEngine } from './bot-engine.js';
-import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog, DepositLog } from '../database/index.js';
+import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog, DepositLog, HunterEarning } from '../database/index.js';
 import { loadEnv, TOKENS } from '../config/env.js';
 import { DbRegistryService } from '../services/db-registry.service.js';
 import { registryAnalytics } from '../services/registry-analytics.service.js';
@@ -55,18 +55,23 @@ async function startUserBot(userId, config) {
             await User.updateOne({ address: normId }, { $push: { cashoutHistory: record } });
         },
         onTradeComplete: async (trade) => {
-            // Restore missing user stats update logic
             try {
-                const user = await User.findOne({ address: normId });
-                if (user) {
-                    const stats = user.stats || { totalVolume: 0, tradesCount: 0, totalPnl: 0 };
-                    stats.totalVolume = (stats.totalVolume || 0) + (trade.executedSize || 0);
-                    stats.tradesCount = (stats.tradesCount || 0) + 1;
-                    if (trade.pnl !== undefined) {
-                        stats.totalPnl = (stats.totalPnl || 0) + trade.pnl;
+                // ATOMIC STATS UPDATE
+                // We use $inc to prevent race conditions and ensure accurate accounting
+                const update = {
+                    $inc: {
+                        'stats.totalVolume': trade.executedSize || 0,
+                        'stats.tradesCount': 1
                     }
-                    await User.updateOne({ address: normId }, { stats });
+                };
+                if (trade.side === 'SELL' && trade.pnl !== undefined) {
+                    update.$inc['stats.totalPnl'] = trade.pnl;
+                    if (trade.pnl >= 0)
+                        update.$inc['stats.winCount'] = 1;
+                    else
+                        update.$inc['stats.lossCount'] = 1;
                 }
+                await User.updateOne({ address: normId }, update);
                 const exists = await Trade.findById(trade.id);
                 if (!exists) {
                     await Trade.create({
@@ -510,8 +515,28 @@ app.get('/api/bot/status/:userId', async (req, res) => {
 // 8. Registry Routes
 app.get('/api/registry', async (req, res) => {
     try {
-        const list = await Registry.find().sort({ isSystem: -1, winRate: -1 }).lean();
-        res.json(list);
+        const profiles = await Registry.find().sort({ copyCount: -1, totalPnl: -1 });
+        res.json(profiles);
+    }
+    catch (e) {
+        res.status(500).json({ error: 'DB Error' });
+    }
+});
+app.get('/api/registry/:address/earnings', async (req, res) => {
+    try {
+        const address = req.params.address.toLowerCase();
+        const earnings = await HunterEarning.find({ hunterAddress: address })
+            .sort({ timestamp: -1 })
+            .limit(50);
+        const totalEarned = earnings.reduce((sum, e) => sum + e.hunterFeeUsd, 0);
+        const totalTrades = earnings.length;
+        const uniqueCopiers = new Set(earnings.map(e => e.copierUserId)).size;
+        res.json({
+            totalEarned,
+            totalTrades,
+            uniqueCopiers,
+            recentEarnings: earnings.slice(0, 10)
+        });
     }
     catch (e) {
         res.status(500).json({ error: 'DB Error' });
@@ -863,6 +888,21 @@ app.post('/api/redeem', async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
+app.post('/api/feedback', async (req, res) => {
+    const { userId, rating, comment } = req.body;
+    try {
+        await Feedback.create({
+            userId: userId?.toLowerCase() || "anonymous",
+            rating: Number(rating),
+            comment,
+            timestamp: new Date()
+        });
+        res.json({ success: true });
+    }
+    catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 app.get('*', (req, res) => {
     const indexPath = path.join(distPath, 'index.html');
     if (!fs.existsSync(indexPath)) {
@@ -963,7 +1003,7 @@ async function seedRegistry() {
 const server = app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`🌍 Bet Mirror Server running on port ${PORT}`);
 });
-connectDB(ENV.mongoUri)
+connectDB()
     .then(async () => {
     console.log("✅ DB Connected. Syncing system...");
     await seedRegistry();

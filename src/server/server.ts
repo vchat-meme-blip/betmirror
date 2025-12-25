@@ -7,7 +7,7 @@ import mongoose from 'mongoose';
 import { ethers, JsonRpcProvider } from 'ethers';
 import { BotEngine, BotConfig } from './bot-engine.js';
 import { TradingWalletConfig } from '../domain/wallet.types.js';
-import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog, DepositLog } from '../database/index.js';
+import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog, DepositLog, HunterEarning } from '../database/index.js';
 import { loadEnv, TOKENS } from '../config/env.js';
 import { DbRegistryService } from '../services/db-registry.service.js';
 import { registryAnalytics } from '../services/registry-analytics.service.js';
@@ -567,9 +567,32 @@ app.get('/api/bot/status/:userId', async (req: any, res: any) => {
 // 8. Registry Routes
 app.get('/api/registry', async (req, res) => {
     try {
-        const list = await Registry.find().sort({ isSystem: -1, winRate: -1 }).lean();
-        res.json(list);
+        const profiles = await Registry.find().sort({ copyCount: -1, totalPnl: -1 });
+        res.json(profiles);
     } catch (e) { res.status(500).json({error: 'DB Error'}); }
+});
+
+app.get('/api/registry/:address/earnings', async (req, res) => {
+    try {
+        const address = req.params.address.toLowerCase();
+        
+        const earnings = await HunterEarning.find({ hunterAddress: address })
+            .sort({ timestamp: -1 })
+            .limit(50);
+        
+        const totalEarned = earnings.reduce((sum, e) => sum + e.hunterFeeUsd, 0);
+        const totalTrades = earnings.length;
+        const uniqueCopiers = new Set(earnings.map(e => e.copierUserId)).size;
+        
+        res.json({
+            totalEarned,
+            totalTrades,
+            uniqueCopiers,
+            recentEarnings: earnings.slice(0, 10)
+        });
+    } catch (e) { 
+        res.status(500).json({error: 'DB Error'}); 
+    }
 });
 
 app.get('/api/registry/:address', async (req: any, res: any) => {
@@ -1001,7 +1024,7 @@ const server = app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`🌍 Bet Mirror Server running on port ${PORT}`);
 });
 
-connectDB(ENV.mongoUri)
+connectDB()
     .then(async () => {
         console.log("✅ DB Connected. Syncing system...");
         await seedRegistry(); 
