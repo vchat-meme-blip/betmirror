@@ -3,41 +3,49 @@ import { Schema } from 'mongoose';
 
 /**
  * Service providing Field-Level Encryption (FLE) for MongoDB.
- * Uses AES-256-GCM for authenticated encryption.
+ * Uses AES-256-GCM for new data and maintains compatibility with legacy AES-256-CBC data.
  */
 export class DatabaseEncryptionService {
   private static masterKey: Buffer | null = null;
+  private static legacyKey: Buffer | null = null;
+  
   private static readonly ALGORITHM = 'aes-256-gcm';
+  private static readonly LEGACY_ALGORITHM = 'aes-256-cbc';
+  
   private static readonly IV_LENGTH = 12;
+  private static readonly LEGACY_IV_LENGTH = 16;
   private static readonly TAG_LENGTH = 16;
+  
   private static readonly SALT = 'bet-mirror-db-salt-2025';
+  private static readonly LEGACY_SALT = 'salt';
 
   /**
-   * Initializes the encryption service by deriving the master key once.
-   * This prevents expensive PBKDF2/Scrypt operations on every database access.
+   * Initializes the encryption service by deriving both master and legacy keys.
    */
   static init(envKey: string) {
     if (!envKey) {
-      console.error("❌ DatabaseEncryptionService: MONGO_ENCRYPTION_KEY is missing from environment!");
+      console.error("❌ DatabaseEncryptionService: MONGO_ENCRYPTION_KEY is missing!");
       return;
     }
     
     try {
-      // Derive a 32-byte key using Scrypt (secure and better performance for initialization)
+      // New GCM Key
       this.masterKey = crypto.scryptSync(envKey, this.SALT, 32);
-      console.log("🔐 Database Encryption Service Initialized (AES-256-GCM)");
+      // Legacy CBC Key (Support for existing production data)
+      this.legacyKey = crypto.scryptSync(envKey, this.LEGACY_SALT, 32);
+      
+      console.log("🔐 Database Encryption Service Initialized (GCM + Legacy CBC Support)");
     } catch (error) {
-      console.error("❌ DatabaseEncryptionService: Failed to derive master key", error);
+      console.error("❌ DatabaseEncryptionService: Failed to derive keys", error);
     }
   }
 
   /**
-   * Encrypts a string using AES-256-GCM.
-   * Returns a format: iv:authTag:encryptedData
+   * Encrypts a string using the new AES-256-GCM algorithm.
    */
   static encrypt(text: string): string {
     if (!this.masterKey) {
-      throw new Error("DatabaseEncryptionService: Not initialized. Call init() first.");
+      throw new Error("DatabaseEncryptionService: Not initialized.");
     }
     
     const iv = crypto.randomBytes(this.IV_LENGTH);
@@ -48,52 +56,65 @@ export class DatabaseEncryptionService {
     
     const authTag = cipher.getAuthTag();
     
+    // Return format: iv:authTag:encryptedData
     return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
   }
 
   /**
-   * Decrypts an AES-256-GCM encrypted string.
+   * Decrypts an encrypted string, automatically detecting if it is Legacy (CBC) or New (GCM).
    */
   static decrypt(encryptedData: string): string {
-    if (!this.masterKey) {
-      throw new Error("DatabaseEncryptionService: Not initialized. Call init() first.");
+    if (!this.masterKey || !this.legacyKey) {
+      throw new Error("DatabaseEncryptionService: Not initialized.");
     }
-    
-    const parts = encryptedData.split(':');
-    if (parts.length !== 3) {
-      // Data is not in the expected encrypted format, return as is
-      return encryptedData;
-    }
+
+    // Strip 0x if present (common in manually edited or legacy DB entries)
+    let cleanData = encryptedData.startsWith('0x') ? encryptedData.slice(2) : encryptedData;
+    const parts = cleanData.split(':');
 
     try {
-      const iv = Buffer.from(parts[0], 'hex');
-      const authTag = Buffer.from(parts[1], 'hex');
-      const encryptedText = parts[2];
+      if (parts.length === 3) {
+        // --- New GCM Format (iv:tag:data) ---
+        const iv = Buffer.from(parts[0], 'hex');
+        const authTag = Buffer.from(parts[1], 'hex');
+        const encryptedText = parts[2];
 
-      const decipher = crypto.createDecipheriv(this.ALGORITHM, this.masterKey, iv);
-      decipher.setAuthTag(authTag);
-      
-      let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
-      decrypted += decipher.final('utf8');
-      
-      return decrypted;
+        const decipher = crypto.createDecipheriv(this.ALGORITHM, this.masterKey, iv);
+        decipher.setAuthTag(authTag);
+        
+        let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        
+        return decrypted;
+
+      } else if (parts.length === 2) {
+        // --- Legacy CBC Format (iv:data) ---
+        const iv = Buffer.from(parts[0], 'hex');
+        const encryptedText = parts[1];
+
+        // Fix for ts(2774): Directly call createDecipheriv as it is always defined in Node.js
+        const decipher = crypto.createDecipheriv(this.LEGACY_ALGORITHM, this.legacyKey, iv);
+            
+        let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        
+        return decrypted;
+      }
     } catch (error) {
-      console.error("❌ Decryption failed. Possible key mismatch or data corruption.");
+      console.error("❌ Decryption failed. Format mismatch or key corruption.");
+      // Return original only if it doesn't look encrypted (last resort safety)
+      if (!encryptedData.includes(':')) return encryptedData;
       throw error;
     }
+
+    return encryptedData;
   }
 
-  /**
-   * Attaches encryption middleware to a Mongoose schema for a specific field.
-   * Handles both 'save' (pre) and 'init' (post-fetch) hooks.
-   */
   static createEncryptionMiddleware(schema: Schema, fieldPath: string) {
-    // Helper to get nested values (e.g., 'credentials.apiKey')
     const getNestedValue = (obj: any, path: string) => {
         return path.split('.').reduce((prev, curr) => prev && prev[curr], obj);
     };
 
-    // Helper to set nested values
     const setNestedValue = (obj: any, path: string, value: any) => {
         const parts = path.split('.');
         const last = parts.pop();
@@ -101,25 +122,19 @@ export class DatabaseEncryptionService {
         if (target && last) target[last] = value;
     };
 
-    // Hook for when a document is being saved to the database
-    // Fix: Removing the 'next' parameter and using a synchronous signature to prevent TypeScript from incorrectly
-    // inferring the first parameter as 'SaveOptions', which caused "This expression is not callable" error.
     schema.pre('save', function(this: any) {
         const value = getNestedValue(this, fieldPath);
-        // Only encrypt if it's a string and doesn't look already encrypted
         if (value && typeof value === 'string' && !value.includes(':')) {
             setNestedValue(this, fieldPath, DatabaseEncryptionService.encrypt(value));
         }
     });
 
-    // Hook for when a document is initialized from database data
     schema.post('init', function(doc) {
         const value = getNestedValue(doc, fieldPath);
         if (value && typeof value === 'string' && value.includes(':')) {
             try {
                 setNestedValue(doc, fieldPath, DatabaseEncryptionService.decrypt(value));
             } catch (e) {
-                // If decryption fails, we leave the encrypted string (or handle as needed)
                 console.error(`Failed to decrypt field ${fieldPath} for document ${doc._id}`);
             }
         }
