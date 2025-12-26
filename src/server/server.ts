@@ -961,7 +961,6 @@ app.post('/api/redeem', async (req: any, res: any) => {
                     id: crypto.randomUUID(),
                     timestamp: new Date().toISOString(),
                     marketId: activePosition.marketId,
-                    question: activePosition.question,
                     outcome: activePosition.outcome,
                     side: 'SELL',
                     size: costBasis,
