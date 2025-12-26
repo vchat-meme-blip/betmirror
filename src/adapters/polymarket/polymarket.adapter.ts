@@ -501,8 +501,9 @@ export class PolymarketAdapter implements IExchangeAdapter {
             if (errorMessage.includes("not enough balance / allowance")) {
                 // Check if it's specifically an allowance issue by checking current allowance
                 try {
-                    const allowance = await this.checkUsdcAllowance();
-                    const balance = await this.fetchBalance(this.config.proxyWallet);
+                    const market = await this.client.getMarket(params.marketId);
+                    const allowance = await this.checkUsdcAllowance(market.neg_risk);
+                    const balance = await this.fetchBalance(this.safeAddress!);
                     
                     if (allowance < (params.sizeUsd || 0)) {
                         errorMessage = `INSUFFICIENT_ALLOWANCE (allowance: $${allowance.toFixed(2)}, needed: $${params.sizeUsd?.toFixed(2) || '0'}) - Please approve allowance`;
@@ -556,6 +557,14 @@ export class PolymarketAdapter implements IExchangeAdapter {
             this.logger.info(`   + Waiting for CLOB indexing grace period (5s)...`);
             await new Promise(r => setTimeout(r, 5000));
         }
+    }
+
+    async checkUsdcAllowance(isNegRisk: boolean = false): Promise<number> {
+        if (!this.safeManager) throw new Error("Safe Manager not initialized");
+        const EXCHANGE = isNegRisk ? "0xC5d563A36AE78145C45a50134d48A1215220f80a" : "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
+        
+        const allowance = await this.usdcContract!.allowance(this.safeAddress, EXCHANGE);
+        return Number(allowance) / 1000000; // Convert from wei to USDC
     }
 
     async ensureOutcomeTokenApproval(isNegRisk: boolean): Promise<void> {
