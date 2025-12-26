@@ -167,22 +167,61 @@ export class TradeExecutorService {
         throw e;
       }
       if (this.deps.adapter.getLiquidityMetrics) {
-          const metrics = await this.deps.adapter.getLiquidityMetrics(signal.tokenId, signal.side);
-          const minRequired = (this.deps.env as any).minLiquidityFilter || 'LOW';
-          
-          const ranks: Record<string, number> = { 
-              [LiquidityHealth.HIGH]: 3, 
-              [LiquidityHealth.MEDIUM]: 2, 
-              [LiquidityHealth.LOW]: 1, 
-              [LiquidityHealth.CRITICAL]: 0 
-          };
-          
-          if (ranks[metrics.health] < ranks[minRequired]) {
-              const msg = `[Liquidity Filter] Health: ${metrics.health} (Min: ${minRequired}) | Spread: ${(metrics.spread * 100).toFixed(1)}¢ | Depth: $${metrics.availableDepthUsd.toFixed(0)} -> SKIPPING`;
-              logger.warn(msg);
-              return failResult("insufficient_liquidity", "ILLIQUID");
+          try {
+              const metrics = await this.deps.adapter.getLiquidityMetrics(signal.tokenId, signal.side);
+              const minRequired = (this.deps.env as any).minLiquidityFilter || 'LOW';
+              
+              const ranks: Record<string, number> = { 
+                  [LiquidityHealth.HIGH]: 3, 
+                  [LiquidityHealth.MEDIUM]: 2, 
+                  [LiquidityHealth.LOW]: 1, 
+                  [LiquidityHealth.CRITICAL]: 0 
+              };
+              
+              if (ranks[metrics.health] < ranks[minRequired]) {
+                  const msg = `[Liquidity Filter] Health: ${metrics.health} (Min: ${minRequired}) | Spread: ${(metrics.spread * 100).toFixed(1)}¢ | Depth: $${metrics.availableDepthUsd.toFixed(0)} -> SKIPPING`;
+                  logger.warn(msg);
+                  return failResult("insufficient_liquidity", "ILLIQUID");
+              }
+              logger.info(`[Liquidity OK] Health: ${metrics.health} | Spread: ${(metrics.spread * 100).toFixed(1)}¢ | Depth: $${metrics.availableDepthUsd.toFixed(0)}`);
+          } catch (e: any) {
+              // Check if this is a resolved market (404/No orderbook)
+              if (e.message?.includes("404") || e.message?.includes("No orderbook") || String(e).includes("404")) {
+                  logger.warn(`[Market Resolved] ${signal.marketId} - Attempting to redeem existing position (liquidity check)`);
+                  
+                  // Try to redeem existing position if market is resolved
+                  try {
+                      const positions = await adapter.getPositions(proxyWallet);
+                      const existingPosition = positions.find(p => p.marketId === signal.marketId && p.outcome === signal.outcome);
+                      
+                      if (existingPosition) {
+                          logger.info(`[Auto-Redeem] Found position: ${existingPosition.balance} shares of ${signal.outcome}`);
+                          const redeemResult = await adapter.redeemPosition(signal.marketId, existingPosition.tokenId);
+                          
+                          if (redeemResult.success) {
+                              logger.success(`[Auto-Redeem] Successfully redeemed $${redeemResult.amountUsd?.toFixed(2)} USDC`);
+                              return {
+                                  status: 'FILLED',
+                                  executedAmount: redeemResult.amountUsd || 0,
+                                  executedShares: existingPosition.balance,
+                                  priceFilled: 1.0,
+                                  reason: 'Auto-redeemed resolved market position'
+                              };
+                          } else {
+                              logger.error(`[Auto-Redeem] Failed: ${redeemResult.error}`);
+                              return failResult("redemption_failed", 'FAILED');
+                          }
+                      } else {
+                          logger.warn(`[Auto-Redeem] No existing position found for ${signal.marketId}`);
+                          return failResult("orderbook_not_found");
+                      }
+                  } catch (redeemError: any) {
+                      logger.error(`[Auto-Redeem] Error during redemption: ${redeemError.message}`);
+                      return failResult("redemption_error", 'FAILED');
+                  }
+              }
+              throw e;
           }
-          logger.info(`[Liquidity OK] Health: ${metrics.health} | Spread: ${(metrics.spread * 100).toFixed(1)}¢ | Depth: $${metrics.availableDepthUsd.toFixed(0)}`);
       }
 
       let usableBalanceForTrade = 0;
