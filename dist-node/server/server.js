@@ -56,6 +56,7 @@ async function startUserBot(userId, config) {
         },
         onTradeComplete: async (trade) => {
             try {
+                serverLogger.info(`Trade Complete for ${normId}: ${trade.side} ${trade.outcome} | Executed: $${trade.executedSize?.toFixed(2) || 0} | PnL: $${trade.pnl?.toFixed(2) || 0}`);
                 // ATOMIC STATS UPDATE
                 // We use $inc to prevent race conditions and ensure accurate accounting
                 const update = {
@@ -95,13 +96,30 @@ async function startUserBot(userId, config) {
                         eventSlug: trade.eventSlug
                     });
                 }
+                else {
+                    // Update existing trade entry (e.g. closing an open position)
+                    await Trade.findByIdAndUpdate(trade.id, {
+                        status: trade.status,
+                        pnl: trade.pnl,
+                        executedSize: trade.executedSize || exists.executedSize
+                    });
+                }
             }
             catch (err) {
                 serverLogger.error(`Failed to save trade for ${normId}: ${err.message}`);
             }
         },
         onStatsUpdate: async (stats) => {
-            await User.updateOne({ address: normId }, { stats });
+            // CRITICAL FIX: Use $set on specific non-cumulative fields only.
+            // This prevents overwriting 'totalPnl' and 'totalVolume' back to 0 
+            // when the bot engine synchronizes its in-memory balance.
+            await User.updateOne({ address: normId }, {
+                $set: {
+                    'stats.portfolioValue': stats.portfolioValue,
+                    'stats.cashBalance': stats.cashBalance,
+                    'stats.allowanceApproved': stats.allowanceApproved
+                }
+            });
         },
         onFeePaid: async (event) => {
             const lister = await Registry.findOne({ address: { $regex: new RegExp(`^${event.listerAddress}$`, "i") } });
@@ -137,6 +155,7 @@ app.post('/api/wallet/status', async (req, res) => {
     const normId = userId.toLowerCase();
     try {
         console.log(`[STATUS CHECK] Querying user: ${normId}`);
+        // Use explicit selection to find safe and eoa address if needed
         const user = await User.findOne({ address: normId });
         // If user has a wallet, return it
         if (!user || !user.tradingWallet) {
@@ -237,7 +256,8 @@ app.post('/api/wallet/add-recovery', async (req, res) => {
         return res.status(400).json({ error: 'Missing User ID' });
     const normId = userId.toLowerCase();
     try {
-        const user = await User.findOne({ address: normId });
+        // MUST explicitly select encrypted field for signer instance
+        const user = await User.findOne({ address: normId }).select('+tradingWallet.encryptedPrivateKey');
         if (!user || !user.tradingWallet || !user.tradingWallet.encryptedPrivateKey) {
             return res.status(404).json({ error: 'User wallet not found' });
         }
@@ -358,7 +378,9 @@ app.post('/api/bot/start', async (req, res) => {
     }
     const normId = userId.toLowerCase();
     try {
-        const user = await User.findOne({ address: normId });
+        // MUST explicitly select encrypted fields for the signer key and credentials
+        const user = await User.findOne({ address: normId })
+            .select('+tradingWallet.encryptedPrivateKey +tradingWallet.l2ApiCredentials.key +tradingWallet.l2ApiCredentials.secret +tradingWallet.l2ApiCredentials.passphrase');
         if (!user || !user.tradingWallet) {
             res.status(400).json({ error: 'Trading Wallet not activated.' });
             return;
@@ -494,8 +516,8 @@ app.get('/api/bot/status/:userId', async (req, res) => {
         // CLARIFICATION: This logs the payload for the current USER VIEWING THE DASHBOARD (normId),
         // but the positions themselves are fetched for the SAFE associated with that user.
         if (livePositions.length > 0) {
-            console.log(`\n📦 [DEBUG] Raw Positions Payload for User ${normId.slice(0, 6)}... (Safe: ${user?.tradingWallet?.safeAddress?.slice(0, 6) || 'Unknown'}) :`);
-            console.dir(livePositions, { depth: null, colors: true });
+            //console.log(`\n📦 [DEBUG] Raw Positions Payload for User ${normId.slice(0, 6)}... (Safe: ${user?.tradingWallet?.safeAddress?.slice(0,6) || 'Unknown'}) :`);
+            //console.dir(livePositions, { depth: null, colors: true });
         }
         // -------------------------------
         res.json({
@@ -638,7 +660,9 @@ app.post('/api/wallet/withdraw', async (req, res) => {
     const normId = userId.toLowerCase();
     const isForceEoa = forceEoa === true; // Explicit boolean conversion
     try {
-        const user = await User.findOne({ address: normId });
+        // MUST explicitly select encrypted field for withdrawal
+        const user = await User.findOne({ address: normId })
+            .select('+tradingWallet.encryptedPrivateKey');
         if (!user || !user.tradingWallet || !user.tradingWallet.encryptedPrivateKey) {
             res.status(400).json({ error: 'Wallet not configured' });
             return;
@@ -761,15 +785,9 @@ app.post('/api/wallet/withdraw', async (req, res) => {
             userMessage = e?.message;
         }
         res.status(500).json({
-            error: userMessage,
+            error: e?.message || 'Withdrawal failed',
             type: e?.name || 'Unknown',
-            details: e?.stack || 'No stack trace available',
-            debug: {
-                originalError: e?.message || 'Unknown error',
-                code: e?.code || null,
-                tokenType,
-                requestTime: new Date().toISOString()
-            }
+            details: e?.stack || 'No stack trace available'
         });
     }
 });
@@ -777,7 +795,8 @@ app.post('/api/wallet/add-recovery', async (req, res) => {
     const { userId } = req.body;
     const normId = userId.toLowerCase();
     try {
-        const user = await User.findOne({ address: normId });
+        // MUST explicitly select encrypted field
+        const user = await User.findOne({ address: normId }).select('+tradingWallet.encryptedPrivateKey');
         if (!user || !user.tradingWallet || !user.tradingWallet.encryptedPrivateKey)
             throw new Error("Wallet not configured");
         const signer = await evmWalletService.getWalletInstance(user.tradingWallet.encryptedPrivateKey);
@@ -915,7 +934,9 @@ app.get('*', (req, res) => {
 async function restoreBots() {
     console.log("🔄 Restoring Active Bots from Database...");
     try {
-        const activeUsers = await User.find({ isBotRunning: true, "tradingWallet.address": { $exists: true } });
+        // MUST explicitly select encrypted private keys for restoration
+        const activeUsers = await User.find({ isBotRunning: true, "tradingWallet.address": { $exists: true } })
+            .select('+tradingWallet.encryptedPrivateKey +tradingWallet.l2ApiCredentials.key +tradingWallet.l2ApiCredentials.secret +tradingWallet.l2ApiCredentials.passphrase');
         console.log(`Found ${activeUsers.length} bots to restore.`);
         for (const user of activeUsers) {
             if (user.activeBotConfig && user.tradingWallet) {

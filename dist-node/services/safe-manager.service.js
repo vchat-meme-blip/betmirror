@@ -159,10 +159,15 @@ export class SafeManagerService {
             return await this.deploySafeOnChain();
         }
     }
+    /**
+     * ATOMIC BATCH APPROVAL ENGINE
+     * Bundles all missing USDC allowances and CTF operator permissions into one single multi-send transaction.
+     * This prevents the "Bad Request" (nonce collision) errors from the Polymarket relayer.
+     */
     async enableApprovals() {
         const usdcInterface = new Interface(ERC20_ABI);
         const ctfInterface = new Interface(ERC1155_ABI);
-        this.logger.info(`   Checking permissions for ${this.safeAddress.slice(0, 8)}...`);
+        this.logger.info(`   Synchronizing permissions for ${this.safeAddress.slice(0, 8)}...`);
         // FIX: Wait for Safe deployment confirmation indexing before requesting nonce or executing
         let retries = 10;
         while (retries > 0 && !(await this.isDeployed())) {
@@ -170,6 +175,8 @@ export class SafeManagerService {
             await new Promise(r => setTimeout(r, 3000));
             retries--;
         }
+        const batch = [];
+        // 1. COLLECT USDC APPROVALS
         const usdcSpenders = [
             { addr: CTF_CONTRACT_ADDRESS, name: "CTF" },
             { addr: NEG_RISK_ADAPTER_ADDRESS, name: "NegRiskAdapter" },
@@ -177,61 +184,60 @@ export class SafeManagerService {
             { addr: NEG_RISK_CTF_EXCHANGE_ADDRESS, name: "NegRiskExchange" }
         ];
         for (const spender of usdcSpenders) {
-            try {
-                const allowance = await this.viemPublicClient.readContract({
-                    address: TOKENS.USDC_BRIDGED,
-                    abi: parseAbi(ERC20_ABI),
-                    functionName: 'allowance',
-                    args: [this.safeAddress, spender.addr]
+            const allowance = await this.viemPublicClient.readContract({
+                address: TOKENS.USDC_BRIDGED,
+                abi: parseAbi(ERC20_ABI),
+                functionName: 'allowance',
+                args: [this.safeAddress, spender.addr]
+            });
+            if (allowance < 1000000000000n) { // Threshold: $1,000,000
+                this.logger.info(`     + Batching USDC approval for ${spender.name}`);
+                batch.push({
+                    to: TOKENS.USDC_BRIDGED,
+                    value: "0",
+                    data: usdcInterface.encodeFunctionData("approve", [spender.addr, MAX_UINT256]),
+                    operation: OperationType.Call
                 });
-                if (allowance < 1000000000n) {
-                    this.logger.info(`     + Granting USDC to ${spender.name}`);
-                    const data = usdcInterface.encodeFunctionData("approve", [spender.addr, MAX_UINT256]);
-                    const tx = {
-                        to: TOKENS.USDC_BRIDGED,
-                        value: "0",
-                        data: data,
-                        operation: OperationType.Call
-                    };
-                    const task = await this.relayClient.execute([tx]);
-                    await task.wait();
-                    this.logger.success(`     ✅ Approved ${spender.name}`);
-                }
-            }
-            catch (e) {
-                this.logger.error(`Failed to approve ${spender.name}: ${e.message}`);
             }
         }
+        // 2. COLLECT CTF OPERATOR PERMISSIONS
         const ctfOperators = [
             { addr: CTF_EXCHANGE_ADDRESS, name: "CTFExchange" },
             { addr: NEG_RISK_CTF_EXCHANGE_ADDRESS, name: "NegRiskExchange" },
             { addr: NEG_RISK_ADAPTER_ADDRESS, name: "NegRiskAdapter" }
         ];
         for (const operator of ctfOperators) {
-            try {
-                const isApproved = await this.viemPublicClient.readContract({
-                    address: CTF_CONTRACT_ADDRESS,
-                    abi: parseAbi(ERC1155_ABI),
-                    functionName: 'isApprovedForAll',
-                    args: [this.safeAddress, operator.addr]
+            const isApproved = await this.viemPublicClient.readContract({
+                address: CTF_CONTRACT_ADDRESS,
+                abi: parseAbi(ERC1155_ABI),
+                functionName: 'isApprovedForAll',
+                args: [this.safeAddress, operator.addr]
+            });
+            if (!isApproved) {
+                this.logger.info(`     + Batching Operator set for ${operator.name}`);
+                batch.push({
+                    to: CTF_CONTRACT_ADDRESS,
+                    value: "0",
+                    data: ctfInterface.encodeFunctionData("setApprovalForAll", [operator.addr, true]),
+                    operation: OperationType.Call
                 });
-                if (!isApproved) {
-                    this.logger.info(`     + Granting Operator to ${operator.name}`);
-                    const data = ctfInterface.encodeFunctionData("setApprovalForAll", [operator.addr, true]);
-                    const tx = {
-                        to: CTF_CONTRACT_ADDRESS,
-                        value: "0",
-                        data: data,
-                        operation: OperationType.Call
-                    };
-                    const task = await this.relayClient.execute([tx]);
-                    await task.wait();
-                    this.logger.success(`     ✅ Operator Set: ${operator.name}`);
-                }
+            }
+        }
+        // 3. EXECUTE ATOMIC BATCH
+        if (batch.length > 0) {
+            this.logger.info(`   🚀 Executing Atomic Approval Batch (${batch.length} actions)...`);
+            try {
+                const task = await this.relayClient.execute(batch);
+                await task.wait();
+                this.logger.success(`   ✅ All permissions synchronized.`);
             }
             catch (e) {
-                this.logger.error(`Failed to set operator ${operator.name}: ${e.message}`);
+                this.logger.error(`❌ Batch Approval Failed: ${e.message}`);
+                throw e;
             }
+        }
+        else {
+            this.logger.info(`   ✅ Permissions already sufficient.`);
         }
     }
     async withdrawUSDC(to, amount) {

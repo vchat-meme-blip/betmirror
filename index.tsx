@@ -103,7 +103,7 @@ interface PolyTrade {
 
 const STORAGE_KEY = 'bet_mirror_v3_config';
 
-// --- Sound Manager ---
+// --- Enhanced Sound Manager ---
 const playSound = (type: 'start' | 'stop' | 'trade' | 'cashout' | 'error' | 'success') => {
     try {
         const audio = new Audio(`/sounds/${type}.mp3`);
@@ -124,6 +124,94 @@ const Tooltip = ({ text }: { text: string }) => (
         </div>
     </div>
 );
+
+const HelpGuideModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) => {
+    if (!isOpen) return null;
+    return (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 animate-in fade-in duration-300">
+            <div className="bg-white dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-3xl w-full max-w-3xl max-h-[85vh] overflow-y-auto relative shadow-2xl">
+                <button onClick={onClose} className="absolute top-6 right-6 p-2 bg-gray-100 dark:bg-white/5 rounded-full hover:bg-gray-200 dark:hover:bg-white/10 transition-colors">
+                    <X size={20} className="text-gray-500 dark:text-gray-400" />
+                </button>
+                
+                <div className="p-8 md:p-12">
+                    <div className="flex items-center gap-4 mb-8">
+                        <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg">
+                            <Activity size={24} />
+                        </div>
+                        <div>
+                            <h2 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tight">Institutional Protocols</h2>
+                            <p className="text-sm text-gray-500 uppercase tracking-widest font-bold">Standard Operating Procedure v4.0</p>
+                        </div>
+                    </div>
+
+                    <div className="grid gap-8">
+                        <section className="space-y-3">
+                            <h3 className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                                <Zap size={14} /> 01. The Core Concept
+                            </h3>
+                            <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                                Bet Mirror Pro is a cloud-based execution terminal. Unlike browser-based scripts, your bot maintains a persistent connection to the Polymarket CLOB via a <span className="text-gray-900 dark:text-white font-bold">Gnosis Safe Smart Vault</span>. This allows for 24/7 automated mirroring even when your devices are offline.
+                            </p>
+                        </section>
+
+                        <section className="space-y-3">
+                            <h3 className="text-xs font-bold text-purple-600 dark:text-purple-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                                <Fuel size={14} /> 02. Gasless Revolution
+                            </h3>
+                            <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                                As an authorized <span className="text-gray-900 dark:text-white font-bold">Polymarket Builder</span>, we route all trades through the official Relayer. Gas fees (POL/Matic) are abstracted away. 100% of your deposit goes toward position sizing, maximizing capital efficiency.
+                            </p>
+                        </section>
+
+                        <section className="p-6 bg-yellow-50 dark:bg-yellow-900/10 rounded-2xl border border-yellow-200 dark:border-yellow-900/30 space-y-4">
+                            <h3 className="text-xs font-bold text-yellow-800 dark:text-yellow-500 uppercase tracking-[0.2em] flex items-center gap-2">
+                                <AlertCircle size={14} /> 03. Unbreakable Exchange Rules
+                            </h3>
+                            <div className="grid sm:grid-cols-2 gap-4">
+                                <div className="space-y-1">
+                                    <p className="text-[11px] font-black uppercase text-yellow-900 dark:text-yellow-400">$1.00 Floor Rule</p>
+                                    <p className="text-xs text-yellow-800/80 dark:text-yellow-600">The exchange rejects any order worth less than $1.00. Small whale signals are automatically "Floor Boosted" to $1.00.</p>
+                                </div>
+                                <div className="space-y-1">
+                                    <p className="text-[11px] font-black uppercase text-yellow-900 dark:text-yellow-400">5-Share Minimum</p>
+                                    <p className="text-xs text-yellow-800/80 dark:text-yellow-600">Every position must contain at least 5 shares. The bot will scale your entry size to meet this exchange requirement.</p>
+                                </div>
+                                <div className="space-y-1 col-span-full">
+                                    <p className="text-[11px] font-black uppercase text-yellow-900 dark:text-yellow-400">The "Stuck" Sell condition</p>
+                                    <p className="text-xs text-yellow-800/80 dark:text-yellow-600">If your position value drops below $1.00, you cannot sell until the price recovers. This is a limit of the Polymarket CLOB.</p>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section className="space-y-3">
+                            <h3 className="text-xs font-bold text-green-600 dark:text-green-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                                <TrendingUp size={14} /> 04. Proven Methodologies
+                            </h3>
+                            <div className="grid sm:grid-cols-2 gap-4">
+                                <div className="p-4 bg-gray-50 dark:bg-white/5 rounded-xl border border-gray-100 dark:border-white/5">
+                                    <p className="font-bold text-gray-900 dark:text-white text-xs mb-1">The 70% Sniper</p>
+                                    <p className="text-[10px] text-gray-500">Targets traders with high accuracy. Set a 1.0x multiplier and 10% Auto Take-Profit to compound gains faster than the whale.</p>
+                                </div>
+                                <div className="p-4 bg-gray-50 dark:bg-white/5 rounded-xl border border-gray-100 dark:border-white/5">
+                                    <p className="font-bold text-gray-900 dark:text-white text-xs mb-1">Whale Shadowing</p>
+                                    <p className="text-[10px] text-gray-500">Copy high-volume leaders at 0.1x to 0.5x. You are providing liquidity and catching momentum waves early.</p>
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+
+                    <button 
+                        onClick={onClose}
+                        className="mt-12 w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl shadow-xl shadow-blue-600/20 transition-all uppercase tracking-widest text-sm"
+                    >
+                        I Understand the Protocols
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 const DepositModal = ({
     isOpen,
@@ -602,6 +690,7 @@ const OrderManagementModal = ({
         </div>
     );
 };
+
 
 const TraderDetailsModal = ({ trader, onClose }: { trader: TraderProfile, onClose: () => void }) => {
     const [trades, setTrades] = useState<PolyTrade[]>([]);
@@ -1290,6 +1379,7 @@ const [recipientAddress, setRecipientAddress] = useState<string>(''); // Editabl
 const [isSourceChainSelectOpen, setIsSourceChainSelectOpen] = useState(false);
 const [isDestChainSelectOpen, setIsDestChainSelectOpen] = useState(false);
 const [showBridgeGuide, setShowBridgeGuide] = useState(false);
+const [showHelpGuide, setShowHelpGuide] = useState(false);
 
 // --- STATE: Recovery & Sovereignty ---
 const [recoveryOwnerAdded, setRecoveryOwnerAdded] = useState(false);
@@ -1916,6 +2006,9 @@ const handleWithdraw = async (tokenType: 'USDC' | 'USDC.e' | 'POL', isRescue: bo
     setIsWithdrawing(false);
 };
 
+
+
+
 // --- MANUAL EXIT HANDLER ---
 const handleManualExit = async (position: ActivePosition) => {
     if(!confirm(`Are you sure you want to SELL/EXIT this position?\n\nMarket: ${position.marketId}\nOutcome: ${position.outcome}\n\nThis will trigger an immediate Market Sell order for your full position size.`)) return;
@@ -2452,14 +2545,18 @@ return (
                 <div className="col-span-12 md:col-span-4 flex flex-col gap-6">
                     {/* Performance Widget */}
                     <div className="glass-panel p-5 rounded-xl">
-                        <div className="flex justify-between items-start mb-2">
+                        <div className="flex justify-between items-start mb-4">
                             <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
                                 <TrendingUp size={20} className="text-green-500 dark:text-terminal-success"/> 
-                                Perfomance
+                                Performance
                             </h3>
+                            <div className="flex items-center gap-1.5 px-2 py-1 bg-green-500/10 rounded-full border border-green-500/20">
+                                <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse status-dot"></div>
+                                <span className="text-[9px] font-bold text-green-600 dark:text-green-400 uppercase tracking-wider">Live Sync</span>
+                            </div>
                         </div>
                         
-                        <div className="grid grid-cols-2 gap-4 mt-4">
+                        <div className="grid grid-cols-2 gap-4">
                             <div>
                                 <div className="text-[10px] text-gray-500">Total PnL</div>
                                 <div className={`text-xl font-mono font-bold ${stats?.totalPnl && stats.totalPnl >= 0 ? 'text-green-600 dark:text-terminal-success' : 'text-red-600 dark:text-terminal-danger'}`}>
@@ -2469,6 +2566,14 @@ return (
                             <div>
                                 <div className="text-[10px] text-gray-500">Volume</div>
                                 <div className="text-xl font-mono font-bold text-gray-900 dark:text-white">${stats?.totalVolume?.toFixed(0) || '0'}</div>
+                            </div>
+                            <div className="flex justify-between text-xs p-2 bg-gray-50 dark:bg-white/5 rounded border border-gray-200 dark:border-white/5">
+                                <span className="text-gray-500 dark:text-gray-400">Multiplier</span>
+                                <span className="font-mono text-gray-900 dark:text-white">x{config.multiplier}</span>
+                            </div>
+                            <div className="flex justify-between text-xs p-2 bg-gray-50 dark:bg-white/5 rounded border border-gray-200 dark:border-white/5">
+                                <span className="text-gray-500 dark:text-gray-400">Targets</span>
+                                <span className="font-mono text-gray-900 dark:text-white">{config.targets.length}</span>
                             </div>
                         </div>
                     </div>
@@ -2733,14 +2838,14 @@ return (
                 )}
 
                 {/* Bridge Form */}
-                <div className="md:col-span-2 glass-panel p-8 rounded-xl border border-gray-200 dark:border-terminal-border">
-                    <div className="flex items-center justify-between mb-8">
+                <div className="md:col-span-2 glass-panel p-4 sm:p-8 rounded-xl border border-gray-200 dark:border-terminal-border">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 sm:mb-8">
                         <div className="flex items-center gap-3">
                             <div className="p-2 bg-blue-100 dark:bg-blue-900/20 rounded-lg text-blue-600 dark:text-blue-400">
                                 <Globe size={20}/>
                             </div>
                             <div>
-                                <h2 className="text-xl font-bold text-gray-900 dark:text-white">Cross-Chain Bridge</h2>
+                                <h2 className="text-lg sm:text-xl font-bold text-gray-900 dark:text-white">Cross-Chain Bridge</h2>
                                 <p className="text-xs text-gray-500">{bridgeMode === 'IN' ? 'External → Polygon Trading Wallet' : 'Polygon Main Wallet → External'}</p>
                             </div>
                         </div>
@@ -2748,13 +2853,13 @@ return (
                         <div className="flex bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
                             <button 
                                 onClick={() => bridgeMode !== 'IN' && handleSwapDirection()}
-                                className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${bridgeMode === 'IN' ? 'bg-white dark:bg-gray-700 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                                className={`px-3 sm:px-4 py-1.5 text-xs font-bold rounded-md transition-all ${bridgeMode === 'IN' ? 'bg-white dark:bg-gray-700 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
                             >
                                 Bridge In
                             </button>
                             <button 
                                 onClick={() => bridgeMode !== 'OUT' && handleSwapDirection()}
-                                className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${bridgeMode === 'OUT' ? 'bg-white dark:bg-gray-700 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                                className={`px-3 sm:px-4 py-1.5 text-xs font-bold rounded-md transition-all ${bridgeMode === 'OUT' ? 'bg-white dark:bg-gray-700 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
                             >
                                 Bridge Out
                             </button>
@@ -3797,6 +3902,14 @@ return (
                     <p className="text-gray-500 dark:text-gray-400 text-lg max-w-2xl mx-auto">
                         Master the terminal. From setup to professional execution strategies.
                     </p>
+                    
+                    <button 
+                        onClick={() => setShowHelpGuide(true)}
+                        className="mt-6 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-lg shadow-blue-500/20 transition-all flex items-center gap-3 mx-auto"
+                    >
+                        <BadgeCheck size={18} />
+                        View Institutional Protocols
+                    </button>
                 </div>
 
                 <div className="glass-panel p-8 rounded-2xl border border-gray-200 dark:border-terminal-border relative overflow-hidden">
@@ -4021,10 +4134,16 @@ return (
         successTx={withdrawalTxHash}
     />
 
+    {/* Help Guide Modal */}
+    <HelpGuideModal
+        isOpen={showHelpGuide}
+        onClose={() => setShowHelpGuide(false)}
+    />
+
     {/* Order Management Modal */}
     <OrderManagementModal
         isOpen={isOrderModalOpen}
-        onClose={handleCloseOrderModal}
+        onClose={() => setIsOrderModalOpen(false)}
         position={selectedPosition}
         orders={openOrders}
         onCancelOrder={handleCancelOrder}

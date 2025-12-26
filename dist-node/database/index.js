@@ -1,5 +1,7 @@
 import mongoose, { Schema } from 'mongoose';
 import { DatabaseEncryptionService } from '../services/database-encryption.service.js';
+// Initialize the encryption service immediately with the environment key
+DatabaseEncryptionService.init(process.env.MONGO_ENCRYPTION_KEY || '');
 const ActivePositionSchema = new Schema({
     tradeId: String,
     clobOrderId: String,
@@ -189,7 +191,8 @@ export const connectDB = async () => {
     }
     // Validate database encryption key
     if (!DatabaseEncryptionService.validateEncryptionKey()) {
-        console.warn('Database encryption key is not properly configured. Please set DB_ENCRYPTION_KEY in your environment variables.');
+        console.warn('Database encryption key is not properly configured. Initializing now...');
+        DatabaseEncryptionService.init(process.env.MONGO_ENCRYPTION_KEY || '');
     }
     try {
         mongoose.set('strictQuery', true);

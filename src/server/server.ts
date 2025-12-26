@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
@@ -71,6 +72,8 @@ async function startUserBot(userId: string, config: BotConfig) {
         },
         onTradeComplete: async (trade) => {
             try {
+                serverLogger.info(`Trade Complete for ${normId}: ${trade.side} ${trade.outcome} | Executed: $${trade.executedSize?.toFixed(2) || 0} | PnL: $${trade.pnl?.toFixed(2) || 0}`);
+                
                 // ATOMIC STATS UPDATE
                 // We use $inc to prevent race conditions and ensure accurate accounting
                 const update: any = {
@@ -110,13 +113,29 @@ async function startUserBot(userId: string, config: BotConfig) {
                         marketSlug: trade.marketSlug,
                         eventSlug: trade.eventSlug
                     });
+                } else {
+                    // Update existing trade entry (e.g. closing an open position)
+                    await Trade.findByIdAndUpdate(trade.id, {
+                        status: trade.status,
+                        pnl: trade.pnl,
+                        executedSize: trade.executedSize || exists.executedSize
+                    });
                 }
             } catch (err: any) {
                 serverLogger.error(`Failed to save trade for ${normId}: ${err.message}`);
             }
         },
         onStatsUpdate: async (stats) => {
-            await User.updateOne({ address: normId }, { stats });
+            // CRITICAL FIX: Use $set on specific non-cumulative fields only.
+            // This prevents overwriting 'totalPnl' and 'totalVolume' back to 0 
+            // when the bot engine synchronizes its in-memory balance.
+            await User.updateOne({ address: normId }, { 
+                $set: {
+                    'stats.portfolioValue': stats.portfolioValue,
+                    'stats.cashBalance': stats.cashBalance,
+                    'stats.allowanceApproved': stats.allowanceApproved
+                }
+            });
         },
         onFeePaid: async (event) => {
              const lister = await Registry.findOne({ address: { $regex: new RegExp(`^${event.listerAddress}$`, "i") } });
