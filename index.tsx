@@ -56,7 +56,9 @@ const PerformanceChart = ({ userId, selectedRange }: {
             try {
                 setLoading(true);
                 const response = await axios.get(`/api/portfolio/snapshots/${userId}?period=${selectedRange}`);
-                setPortfolioData(response.data);
+                const data = response.data;
+                // Ensure we always set an array
+                setPortfolioData(Array.isArray(data) ? data : []);
             } catch (error: any) {
                 console.error('Failed to fetch portfolio data:', error);
                 setPortfolioData([]);
@@ -91,7 +93,7 @@ const PerformanceChart = ({ userId, selectedRange }: {
     }
 
     // Transform data for chart
-    const chartData = portfolioData.map(snapshot => ({
+    const chartData = Array.isArray(portfolioData) && portfolioData.length > 0 ? portfolioData.map(snapshot => ({
         timestamp: new Date(snapshot.timestamp).getTime(),
         date: new Date(snapshot.timestamp).toLocaleDateString(),
         portfolioValue: snapshot.totalValue,
@@ -100,7 +102,7 @@ const PerformanceChart = ({ userId, selectedRange }: {
         pnl: snapshot.totalPnL,
         pnlPercent: snapshot.totalPnLPercent,
         trades: snapshot.positionsCount
-    }));
+    })) : [];
 
     return (
         <div className="h-32">

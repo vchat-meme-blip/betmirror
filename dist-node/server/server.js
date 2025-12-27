@@ -1079,6 +1079,40 @@ async function seedRegistry() {
     }
     await registryAnalytics.updateAllRegistryStats();
 }
+// --- MARKET DATA ENDPOINTS ---
+app.get('/api/market/:marketId', async (req, res) => {
+    const { marketId } = req.params;
+    try {
+        // Find a running bot to get the market data
+        const engines = Array.from(ACTIVE_BOTS.values());
+        if (engines.length === 0) {
+            return res.status(404).json({ error: 'No active bot found' });
+        }
+        const engine = engines[0];
+        const adapter = engine.getAdapter();
+        if (!adapter) {
+            return res.status(404).json({ error: 'No adapter found' });
+        }
+        const client = adapter.getRawClient?.();
+        if (!client) {
+            return res.status(404).json({ error: 'No client found' });
+        }
+        const market = await client.getMarket(marketId);
+        if (!market) {
+            return res.status(404).json({ error: 'Market not found' });
+        }
+        res.json(market);
+    }
+    catch (e) {
+        serverLogger.error(`Market data error: ${e.message}`);
+        if (String(e).includes("404") || String(e).includes("Not Found")) {
+            res.status(404).json({ error: 'Market not found or resolved' });
+        }
+        else {
+            res.status(500).json({ error: e.message });
+        }
+    }
+});
 // --- PORTFOLIO ANALYTICS ENDPOINTS ---
 app.get('/api/portfolio/snapshots/:userId', async (req, res) => {
     const { userId } = req.params;
