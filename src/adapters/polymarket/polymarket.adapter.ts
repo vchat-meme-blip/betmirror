@@ -181,79 +181,70 @@ export class PolymarketAdapter implements IExchangeAdapter {
     }
 
     async fetchBalance(address: string): Promise<number> {
-        if(!this.usdcContract) return 0;
+        if (!this.usdcContract)
+            return 0;
         try {
             const bal = await this.usdcContract.balanceOf(address);
             return parseFloat(formatUnits(bal, 6));
-        } catch (e) { return 0; }
+        }
+        catch (e) {
+            return 0;
+        }
     }
-
     async getPortfolioValue(address: string): Promise<number> {
         try {
             const res = await axios.get(`https://data-api.polymarket.com/value?user=${address}`);
             return parseFloat(res.data) || 0;
-        } catch (e) { return 0; }
+        }
+        catch (e) {
+            return 0;
+        }
     }
-
     async getMarketPrice(marketId: string, tokenId: string, side: 'BUY' | 'SELL' = 'BUY'): Promise<number> {
-        if (!this.client) return 0;
+        if (!this.client)
+            return 0;
         try {
-            const priceRes = await this.client.getPrice(tokenId, side as any);
+            const priceRes = await this.client.getPrice(tokenId, side);
             return parseFloat(priceRes.price) || 0;
-        } catch (e) {
+        }
+        catch (e) {
             try {
                 const mid = await this.client.getMidpoint(tokenId);
                 return parseFloat(mid.mid) || 0;
-            } catch (midErr) {
+            }
+            catch (midErr) {
                 return 0;
             }
         }
     }
-
     async getOrderBook(tokenId: string): Promise<OrderBook> {
-        if (!this.client) throw new Error("Not auth");
-        try {
-            const book = await this.client.getOrderBook(tokenId);
-            
-            // MUST sort and parse - API may return strings in any order
-            const sortedBids = book.bids
-                .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }))
-                .sort((a, b) => b.price - a.price); // Highest bid first
-            const sortedAsks = book.asks
-                .map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
-                .sort((a, b) => a.price - b.price); // Lowest ask first
-
-            return {
-                bids: sortedBids,
-                asks: sortedAsks,
-                min_order_size: Number((book as any).min_order_size) || 5,
-                tick_size: Number((book as any).tick_size) || 0.01,
-                neg_risk: (book as any).neg_risk
-            };
-        } catch (e: any) {
-            if (String(e).includes("404") || String(e).includes("No orderbook")) {
-                // Return empty book for closed markets
-                this.logger.warn(`[OrderBook] Market closed or not found for token ${tokenId.slice(0, 10)}...`);
-                return { bids: [], asks: [], min_order_size: 5, tick_size: 0.01, neg_risk: false };
-            }
-            throw e;
-        }
+        if (!this.client)
+            throw new Error("Not auth");
+        const book = await this.client.getOrderBook(tokenId);
+        // MUST sort and parse - API may return strings in any order
+        const sortedBids = book.bids
+            .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }))
+            .sort((a, b) => b.price - a.price); // Highest bid first
+        const sortedAsks = book.asks
+            .map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
+            .sort((a, b) => a.price - b.price); // Lowest ask first
+        return {
+            bids: sortedBids,
+            asks: sortedAsks,
+            min_order_size: Number(book.min_order_size) || 5,
+            tick_size: Number(book.tick_size) || 0.01,
+            neg_risk: book.neg_risk
+        };
     }
-
     /**
      * UPDATED LIQUIDITY MATH:
      * We now use absolute cent spreads instead of percentages.
      * This is critical for prediction markets where 1c vs 2c is a tiny gap but a huge %.
      */
     async getLiquidityMetrics(tokenId: string, side: 'BUY' | 'SELL'): Promise<LiquidityMetrics> {
-        if (!this.client) throw new Error("Not auth");
+        if (!this.client)
+            throw new Error("Not auth");
         const book = await this.client.getOrderBook(tokenId);
-        
-        // Check if market is resolved (empty order book)
-        if (book.bids.length === 0 && book.asks.length === 0) {
-            throw new Error("No orderbook exists for the requested token id");
-        }
-        
         // Force sort to ensure best prices are at index 0
         const sortedBids = [...book.bids]
             .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }))
@@ -261,39 +252,36 @@ export class PolymarketAdapter implements IExchangeAdapter {
         const sortedAsks = [...book.asks]
             .map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
             .sort((a, b) => a.price - b.price); // Lowest first
-        
         const bestBid = sortedBids.length > 0 ? sortedBids[0].price : 0;
         const bestAsk = sortedAsks.length > 0 ? sortedAsks[0].price : 1;
-        
         // ABSOLUTE spread in cents - NOT percentage
         const spreadAbs = bestAsk - bestBid;
         const midpoint = (bestBid + bestAsk) / 2;
         // Keep spreadPercent for logging only, NOT for health decisions
         const spreadPercent = midpoint > 0 ? (spreadAbs / midpoint) * 100 : 100;
-
         // USD depth on the relevant side (what matters for execution)
         let depthUsd = 0;
         if (side === 'SELL') {
             // How much USD is waiting to buy our shares?
             depthUsd = sortedBids.slice(0, 3).reduce((sum, b) => sum + (b.size * b.price), 0);
-        } else {
+        }
+        else {
             // How much USD of shares is available for us to buy?
             depthUsd = sortedAsks.slice(0, 3).reduce((sum, a) => sum + (a.size * a.price), 0);
         }
-
         // Health based on ABSOLUTE spread (cents) + USD depth
         // For prediction markets: depth matters MORE than spread at extreme prices
-        let health: LiquidityHealth = LiquidityHealth.CRITICAL;
-        
+        let health = LiquidityHealth.CRITICAL;
         if (spreadAbs <= 0.02 && depthUsd >= 500) {
-            health = LiquidityHealth.HIGH;      // Tight spread, deep book
-        } else if (spreadAbs <= 0.05 && depthUsd >= 100) {
-            health = LiquidityHealth.MEDIUM;    // Moderate spread, decent depth
-        } else if (depthUsd >= 20) {
-            health = LiquidityHealth.LOW;       // Depth exists - tradeable but risky
+            health = LiquidityHealth.HIGH; // Tight spread, deep book
+        }
+        else if (spreadAbs <= 0.05 && depthUsd >= 100) {
+            health = LiquidityHealth.MEDIUM; // Moderate spread, decent depth
+        }
+        else if (depthUsd >= 20) {
+            health = LiquidityHealth.LOW; // Depth exists - tradeable but risky
         }
         // else CRITICAL - no real liquidity
-
         return {
             health,
             spread: spreadAbs,
@@ -308,27 +296,32 @@ export class PolymarketAdapter implements IExchangeAdapter {
         let eventSlug = "";
         let question = marketId;
         let image = "";
-
-        try {
-            // Use Gamma API with condition_id - this returns BOTH slugs
-            const gammaUrl = `https://gamma-api.polymarket.com/markets?condition_id=${marketId}`;
-            const gammaResponse = await axios.get(gammaUrl);
-            
-            if (gammaResponse.data && gammaResponse.data.length > 0) {
-            const market = gammaResponse.data[0];
-            marketSlug = market.slug || "";
-            question = market.question || question;
-            image = market.image || image;
-            
-            // Get event slug from nested events array
-            if (market.events && market.events.length > 0) {
-                eventSlug = market.events[0]?.slug || "";
+        if (this.client && marketId) {
+            try {
+                this.marketMetadataCache.delete(marketId);
+                const marketData = await this.client.getMarket(marketId);
+                this.marketMetadataCache.set(marketId, marketData);
+                if (marketData) {
+                    marketSlug = marketData.market_slug || "";
+                    question = marketData.question || question;
+                    image = marketData.image || image;
+                }
             }
-            }
-        } catch (e) {
-            this.logger.warn(`[fetchMarketSlugs] Failed for ${marketId}: ${e}`);
+            catch (e) { }
         }
-
+        if (marketSlug) {
+            try {
+                const gammaUrl = `https://gamma-api.polymarket.com/markets/slug/${marketSlug}`;
+                const gammaResponse = await fetch(gammaUrl);
+                if (gammaResponse.ok) {
+                    const marketData = await gammaResponse.json();
+                    if (marketData.events && marketData.events.length > 0) {
+                        eventSlug = marketData.events[0]?.slug || "";
+                    }
+                }
+            }
+            catch (e) { }
+        }
         return { marketSlug, eventSlug, question, image };
     }
 
@@ -336,59 +329,50 @@ export class PolymarketAdapter implements IExchangeAdapter {
         try {
             const url = `https://data-api.polymarket.com/positions?user=${address}`;
             const res = await axios.get(url);
-            if (!Array.isArray(res.data)) return [];
-
-            const positions: PositionData[] = [];
-
+            if (!Array.isArray(res.data))
+                return [];
+            const positions = [];
             for (const p of res.data) {
-            const size = parseFloat(p.size) || 0;
-            if (size <= 0.01) continue;
-
-            const marketId = p.conditionId || p.market;
-            const tokenId = p.asset;
-
-            // Get current price from midpoint (most reliable)
-            let currentPrice = 0;
-            if (this.client && tokenId) {
-                try {
-                const mid = await this.client.getMidpoint(tokenId);
-                currentPrice = parseFloat(mid.mid) || 0;
-                } catch (e) {
-                // Fallback to API price if midpoint fails
-                currentPrice = parseFloat(p.price) || 0;
+                const size = parseFloat(p.size) || 0;
+                if (size <= 0.01)
+                    continue;
+                const marketId = p.conditionId || p.market;
+                const tokenId = p.asset;
+                let currentPrice = parseFloat(p.price) || 0;
+                if (currentPrice === 0 && this.client && tokenId) {
+                    try {
+                        const mid = await this.client.getMidpoint(tokenId);
+                        currentPrice = parseFloat(mid.mid) || 0;
+                    }
+                    catch (e) {
+                        currentPrice = parseFloat(p.avgPrice) || 0.5;
+                    }
                 }
-            } else {
-                currentPrice = parseFloat(p.price) || 0;
-            }
-
-            // Entry price from avgPrice, fallback to current
-            const entryPrice = parseFloat(p.avgPrice) || currentPrice || 0.5;
-            
-            const currentValueUsd = size * currentPrice;
-            const investedValueUsd = size * entryPrice;
-            const unrealizedPnL = currentValueUsd - investedValueUsd;
-
-            const { marketSlug, eventSlug, question, image } = await this.fetchMarketSlugs(marketId);
-
-            positions.push({
-                marketId,
-                tokenId,
-                outcome: p.outcome || 'UNK',
-                balance: size,
-                valueUsd: currentValueUsd,
-                investedValue: investedValueUsd,
-                entryPrice,
-                currentPrice,
-                unrealizedPnL,
-                question,
-                image,
-                marketSlug,
-                eventSlug,
-                clobOrderId: tokenId
-            });
+                const entryPrice = parseFloat(p.avgPrice) || currentPrice || 0.5;
+                const currentValueUsd = size * currentPrice;
+                const investedValueUsd = size * entryPrice;
+                const unrealizedPnL = currentValueUsd - investedValueUsd;
+                const { marketSlug, eventSlug, question, image } = await this.fetchMarketSlugs(marketId);
+                positions.push({
+                    marketId: marketId,
+                    tokenId: tokenId,
+                    outcome: p.outcome || 'UNK',
+                    balance: size,
+                    valueUsd: currentValueUsd,
+                    investedValue: investedValueUsd,
+                    entryPrice: entryPrice,
+                    currentPrice: currentPrice,
+                    unrealizedPnL: unrealizedPnL,
+                    question: question,
+                    image: image,
+                    marketSlug: marketSlug,
+                    eventSlug: eventSlug,
+                    clobOrderId: tokenId
+                });
             }
             return positions;
-        } catch (e) {
+        }
+        catch (e) {
             return [];
         }
     }
@@ -396,21 +380,25 @@ export class PolymarketAdapter implements IExchangeAdapter {
     async fetchPublicTrades(address: string, limit: number = 20): Promise<TradeSignal[]> {
         try {
             const url = `https://data-api.polymarket.com/activity?user=${address}&limit=${limit}`;
-            const res = await axios.get<PolyActivityResponse[]>(url);
-            if (!res.data || !Array.isArray(res.data)) return [];
+            const res = await axios.get(url);
+            if (!res.data || !Array.isArray(res.data))
+                return [];
             return res.data
                 .filter(act => act.type === 'TRADE' || act.type === 'ORDER_FILLED')
                 .map(act => ({
-                    trader: address,
-                    marketId: act.conditionId,
-                    tokenId: act.asset,
-                    outcome: act.outcomeIndex === 0 ? 'YES' : 'NO',
-                    side: act.side.toUpperCase() as 'BUY' | 'SELL',
-                    sizeUsd: act.usdcSize || (act.size * act.price),
-                    price: act.price,
-                    timestamp: (act.timestamp > 1e11 ? act.timestamp : act.timestamp * 1000)
-                }));
-        } catch (e) { return []; }
+                trader: address,
+                marketId: act.conditionId,
+                tokenId: act.asset,
+                outcome: act.outcomeIndex === 0 ? 'YES' : 'NO',
+                side: act.side.toUpperCase(),
+                sizeUsd: act.usdcSize || (act.size * act.price),
+                price: act.price,
+                timestamp: (act.timestamp > 1e11 ? act.timestamp : act.timestamp * 1000)
+            }));
+        }
+        catch (e) {
+            return [];
+        }
     }
 
     async getTradeHistory(address: string, limit: number = 50): Promise<TradeHistoryEntry[]> {

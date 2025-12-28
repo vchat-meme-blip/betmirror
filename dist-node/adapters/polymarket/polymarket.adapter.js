@@ -229,31 +229,23 @@ export class PolymarketAdapter {
         let eventSlug = "";
         let question = marketId;
         let image = "";
-        if (this.client && marketId) {
-            try {
-                this.marketMetadataCache.delete(marketId);
-                const marketData = await this.client.getMarket(marketId);
-                this.marketMetadataCache.set(marketId, marketData);
-                if (marketData) {
-                    marketSlug = marketData.market_slug || "";
-                    question = marketData.question || question;
-                    image = marketData.image || image;
+        try {
+            // Use Gamma API with condition_id - this returns BOTH slugs
+            const gammaUrl = `https://gamma-api.polymarket.com/markets?condition_id=${marketId}`;
+            const gammaResponse = await axios.get(gammaUrl);
+            if (gammaResponse.data && gammaResponse.data.length > 0) {
+                const market = gammaResponse.data[0];
+                marketSlug = market.slug || "";
+                question = market.question || question;
+                image = market.image || image;
+                // Get event slug from nested events array
+                if (market.events && market.events.length > 0) {
+                    eventSlug = market.events[0]?.slug || "";
                 }
             }
-            catch (e) { }
         }
-        if (marketSlug) {
-            try {
-                const gammaUrl = `https://gamma-api.polymarket.com/markets/slug/${marketSlug}`;
-                const gammaResponse = await fetch(gammaUrl);
-                if (gammaResponse.ok) {
-                    const marketData = await gammaResponse.json();
-                    if (marketData.events && marketData.events.length > 0) {
-                        eventSlug = marketData.events[0]?.slug || "";
-                    }
-                }
-            }
-            catch (e) { }
+        catch (e) {
+            this.logger.warn(`[fetchMarketSlugs] Failed for ${marketId}: ${e}`);
         }
         return { marketSlug, eventSlug, question, image };
     }
@@ -270,35 +262,41 @@ export class PolymarketAdapter {
                     continue;
                 const marketId = p.conditionId || p.market;
                 const tokenId = p.asset;
-                let currentPrice = parseFloat(p.price) || 0;
-                if (currentPrice === 0 && this.client && tokenId) {
+                // Get current price from midpoint (most reliable)
+                let currentPrice = 0;
+                if (this.client && tokenId) {
                     try {
                         const mid = await this.client.getMidpoint(tokenId);
                         currentPrice = parseFloat(mid.mid) || 0;
                     }
                     catch (e) {
-                        currentPrice = parseFloat(p.avgPrice) || 0.5;
+                        // Fallback to API price if midpoint fails
+                        currentPrice = parseFloat(p.price) || 0;
                     }
                 }
+                else {
+                    currentPrice = parseFloat(p.price) || 0;
+                }
+                // Entry price from avgPrice, fallback to current
                 const entryPrice = parseFloat(p.avgPrice) || currentPrice || 0.5;
                 const currentValueUsd = size * currentPrice;
                 const investedValueUsd = size * entryPrice;
                 const unrealizedPnL = currentValueUsd - investedValueUsd;
                 const { marketSlug, eventSlug, question, image } = await this.fetchMarketSlugs(marketId);
                 positions.push({
-                    marketId: marketId,
-                    tokenId: tokenId,
+                    marketId,
+                    tokenId,
                     outcome: p.outcome || 'UNK',
                     balance: size,
                     valueUsd: currentValueUsd,
                     investedValue: investedValueUsd,
-                    entryPrice: entryPrice,
-                    currentPrice: currentPrice,
-                    unrealizedPnL: unrealizedPnL,
-                    question: question,
-                    image: image,
-                    marketSlug: marketSlug,
-                    eventSlug: eventSlug,
+                    entryPrice,
+                    currentPrice,
+                    unrealizedPnL,
+                    question,
+                    image,
+                    marketSlug,
+                    eventSlug,
                     clobOrderId: tokenId
                 });
             }
@@ -341,7 +339,6 @@ export class PolymarketAdapter {
             const market = await this.client.getMarket(params.marketId);
             const tickSize = Number(market.minimum_tick_size) || 0.01;
             const minOrderSize = Number(market.minimum_order_size) || 5;
-            // JIT PROTECTION: Ensure rights and allowances just before trade
             if (params.side === 'BUY') {
                 await this.ensureUsdcAllowance(market.neg_risk, params.sizeUsd);
             }
@@ -350,75 +347,69 @@ export class PolymarketAdapter {
             }
             const side = params.side === 'BUY' ? Side.BUY : Side.SELL;
             const book = await this.getOrderBook(params.tokenId);
-            const topBids = book.bids.slice(0, 3).map(b => `${b.price} (${b.size})`).join(', ');
-            const topAsks = book.asks.slice(0, 3).map(a => `${a.price} (${a.size})`).join(', ');
-            this.logger.info(`Book [${params.tokenId}]: Bids: [${topBids || 'none'}] | Asks: [${topAsks || 'none'}]`);
             let rawPrice;
             if (side === Side.SELL) {
                 if (!book.bids.length)
                     return { success: false, error: "skipped_no_bids", sharesFilled: 0, priceFilled: 0 };
-                rawPrice = params.priceLimit !== undefined ? params.priceLimit : book.bids[0].price;
+                rawPrice = book.bids[0].price; // HIT THE BEST BID
+                if (params.priceLimit !== undefined && params.priceLimit > rawPrice) {
+                    rawPrice = params.priceLimit;
+                }
             }
             else {
                 if (!book.asks.length)
                     return { success: false, error: "skipped_no_liquidity", sharesFilled: 0, priceFilled: 0 };
-                rawPrice = params.priceLimit !== undefined ? params.priceLimit : book.asks[0].price;
+                rawPrice = book.asks[0].price; // HIT THE BEST ASK
+                if (params.priceLimit !== undefined && params.priceLimit < rawPrice) {
+                    rawPrice = params.priceLimit;
+                }
             }
             const inverseTick = Math.round(1 / tickSize);
+            // Directional rounding for taker orders
             const roundedPrice = side === Side.BUY
                 ? Math.ceil(rawPrice * inverseTick) / inverseTick
                 : Math.floor(rawPrice * inverseTick) / inverseTick;
             const finalPrice = Math.max(0.001, Math.min(0.999, roundedPrice));
-            // DIRECTIONAL MATH: 
-            // BUY orders use ceil to hit floor. SELL orders use floor to avoid overselling.
             let shares = params.sizeShares || (params.side === 'BUY'
                 ? Math.ceil(params.sizeUsd / finalPrice)
                 : Math.floor(params.sizeUsd / finalPrice));
-            // DUST PROTECTION: 
-            // 1. Exchange floor for total order value is $1.00
             if (params.side === 'BUY' && (shares * finalPrice) < 1.00) {
                 shares = Math.ceil(1.00 / finalPrice);
-                this.logger.info(`   + Dust Protection: Boosting shares to ${shares} to meet $1.00 floor`);
-            }
-            // 2. Exchange floor for share count is usually 5 shares
-            if (params.side === 'BUY' && shares < minOrderSize) {
-                const boostedShares = minOrderSize;
-                const boostedCost = boostedShares * finalPrice;
-                const balance = await this.fetchBalance(this.safeAddress);
-                if (boostedCost > balance) {
-                    return { success: false, error: `DUST_BOOST_EXCEEDS_BALANCE: Need $${boostedCost.toFixed(2)} but only have $${balance.toFixed(2)}`, sharesFilled: 0, priceFilled: 0 };
-                }
-                shares = boostedShares;
-                this.logger.info(`   + Dust Protection: Boosted to ${shares} shares ($${boostedCost.toFixed(2)})`);
             }
             if (shares < minOrderSize) {
-                const errorMsg = `EXCHANGE_LIMIT: Size (${shares.toFixed(2)} shares) is below exchange minimum of ${minOrderSize}.`;
-                return { success: false, error: errorMsg, sharesFilled: 0, priceFilled: 0 };
+                return { success: false, error: "BELOW_MIN_SIZE", sharesFilled: 0, priceFilled: 0 };
             }
             this.logger.info(`Placing Order: ${params.side} ${shares} shares @ ${finalPrice.toFixed(3)} (Limit)`);
-            const orderArgs = {
+            const signedOrder = await this.client.createOrder({
                 tokenID: params.tokenId,
                 price: finalPrice,
                 side: side,
                 size: Math.floor(shares),
                 feeRateBps: 0,
                 taker: "0x0000000000000000000000000000000000000000"
-            };
-            const signedOrder = await this.client.createOrder(orderArgs);
+            });
+            // SELL orders MUST use FAK to hit best bid without staying in the book
             const orderType = side === Side.SELL ? OrderType.FAK : OrderType.GTC;
             const res = await this.client.postOrder(signedOrder, orderType);
             if (res && res.success) {
-                // For FAK, partial fills are possible - use actual filled amount
-                // For GTC, order is "live" not necessarily filled - return requested shares
-                const actualFilled = orderType === OrderType.FAK
-                    ? (parseFloat(res.takingAmount || '0') / 1e6) / finalPrice
-                    : shares; // GTC assumes full placement
+                let actualFilledShares = 0;
+                let actualUsdMoved = 0;
+                if (params.side === 'BUY') {
+                    actualFilledShares = parseFloat(res.takingAmount || '0');
+                    actualUsdMoved = parseFloat(res.makingAmount || '0') / 1e6;
+                }
+                else {
+                    actualUsdMoved = parseFloat(res.takingAmount || '0') / 1e6; // Real USDC Received
+                    actualFilledShares = parseFloat(res.makingAmount || '0'); // Real Shares Given
+                }
+                const avgPrice = actualFilledShares > 0 ? actualUsdMoved / actualFilledShares : finalPrice;
                 return {
                     success: true,
                     orderId: res.orderID,
                     txHash: res.transactionHash,
-                    sharesFilled: actualFilled,
-                    priceFilled: finalPrice
+                    sharesFilled: actualFilledShares,
+                    priceFilled: avgPrice,
+                    usdFilled: actualUsdMoved
                 };
             }
             throw new Error(res.errorMsg || "Order failed response");
@@ -429,26 +420,7 @@ export class PolymarketAdapter {
                 this.initClobClient(this.config.l2ApiCredentials);
                 return this.createOrder(params, retryCount + 1);
             }
-            // Improve error messaging for balance vs allowance issues
-            let errorMessage = error.message || "Unknown Error";
-            if (errorMessage.includes("not enough balance / allowance")) {
-                // Check if it's specifically an allowance issue by checking current allowance
-                try {
-                    const market = await this.client.getMarket(params.marketId);
-                    const allowance = await this.checkUsdcAllowance(market.neg_risk);
-                    const balance = await this.fetchBalance(this.safeAddress);
-                    if (allowance < (params.sizeUsd || 0)) {
-                        errorMessage = `INSUFFICIENT_ALLOWANCE (allowance: $${allowance.toFixed(2)}, needed: $${params.sizeUsd?.toFixed(2) || '0'}) - Please approve allowance`;
-                    }
-                    else {
-                        errorMessage = `INSUFFICIENT_BALANCE (balance: $${balance.toFixed(2)}, needed: $${params.sizeUsd?.toFixed(2) || '0'})`;
-                    }
-                }
-                catch (e) {
-                    errorMessage = "BALANCE_OR_ALLOWANCE_ISSUE - Check wallet balance and token allowance";
-                }
-            }
-            return { success: false, error: errorMessage, sharesFilled: 0, priceFilled: 0 };
+            return { success: false, error: error.message, sharesFilled: 0, priceFilled: 0 };
         }
     }
     async cancelOrder(orderId) {
@@ -484,13 +456,9 @@ export class PolymarketAdapter {
             throw new Error("Safe Manager not initialized");
         const EXCHANGE = isNegRisk ? "0xC5d563A36AE78145C45a50134d48A1215220f80a" : "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
         const allowance = await this.usdcContract.allowance(this.safeAddress, EXCHANGE);
-        // Check if current allowance covers this specific trade (plus a tiny buffer)
         const requiredAmountRaw = BigInt(Math.ceil((tradeAmountUsd + 1) * 1000000));
         if (allowance < requiredAmountRaw) {
-            this.logger.info(`   + JIT: Granting USDC allowance ($${tradeAmountUsd} trade)...`);
             await this.safeManager.enableApprovals();
-            // FIX: Add Indexing Delay - CLOB indexer takes a few seconds to see on-chain allowance changes
-            this.logger.info(`   + Waiting for CLOB indexing grace period (5s)...`);
             await new Promise(r => setTimeout(r, 5000));
         }
     }
@@ -499,7 +467,7 @@ export class PolymarketAdapter {
             throw new Error("Safe Manager not initialized");
         const EXCHANGE = isNegRisk ? "0xC5d563A36AE78145C45a50134d48A1215220f80a" : "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
         const allowance = await this.usdcContract.allowance(this.safeAddress, EXCHANGE);
-        return Number(allowance) / 1000000; // Convert from wei to USDC
+        return Number(allowance) / 1000000;
     }
     async ensureOutcomeTokenApproval(isNegRisk) {
         if (!this.safeManager)
@@ -533,11 +501,10 @@ export class PolymarketAdapter {
         return this.wallet;
     }
     async redeemPosition(marketId, tokenId) {
-        if (!this.safeManager || !this.safeAddress) {
+        if (!this.safeManager || !this.safeAddress)
             return { success: false, error: "Adapter not initialized" };
-        }
         const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
-        const USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"; // USDC.e on Polygon
+        const USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
         try {
             const balanceBefore = await this.fetchBalance(this.safeAddress);
             const redeemTx = {
@@ -545,31 +512,17 @@ export class PolymarketAdapter {
                 data: this.encodeRedeemPositions(USDC_ADDRESS, "0x0000000000000000000000000000000000000000000000000000000000000000", marketId, [1, 2]),
                 value: "0"
             };
-            this.logger.info(`Submitting redeem tx for condition ${marketId.slice(0, 10)}...`);
             const txHash = await this.safeManager.executeTransaction(redeemTx);
             await new Promise(r => setTimeout(r, 5000));
             const balanceAfter = await this.fetchBalance(this.safeAddress);
-            const amountRedeemed = balanceAfter - balanceBefore;
-            this.logger.success(`Redeem complete. Received: $${amountRedeemed.toFixed(2)} USDC`);
-            return {
-                success: true,
-                amountUsd: amountRedeemed,
-                txHash
-            };
+            return { success: true, amountUsd: balanceAfter - balanceBefore, txHash };
         }
         catch (e) {
             return { success: false, error: e.message };
         }
     }
     encodeRedeemPositions(collateralToken, parentCollectionId, conditionId, indexSets) {
-        const iface = new Interface([
-            "function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)"
-        ]);
-        return iface.encodeFunctionData("redeemPositions", [
-            collateralToken,
-            parentCollectionId,
-            conditionId,
-            indexSets
-        ]);
+        const iface = new Interface(["function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)"]);
+        return iface.encodeFunctionData("redeemPositions", [collateralToken, parentCollectionId, conditionId, indexSets]);
     }
 }

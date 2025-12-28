@@ -88,11 +88,15 @@ export class PortfolioService {
                     startDate = new Date(0);
                     break;
             }
+            // Fix for Error at line 142: Using lean() and mapping _id to id ensures objects match the PortfolioSnapshot interface
             const snapshots = await PortfolioSnapshotModel.find({
                 userId,
                 timestamp: { $gte: startDate }
-            }).sort({ timestamp: 1 });
-            return snapshots;
+            }).sort({ timestamp: 1 }).lean();
+            return snapshots.map((s) => ({
+                ...s,
+                id: s._id.toString()
+            }));
         }
         catch (error) {
             this.logger.error(`[Portfolio] Failed to get snapshots: ${error.message}`);
@@ -125,10 +129,17 @@ export class PortfolioService {
     // Get latest snapshot
     async getLatestSnapshot(userId) {
         try {
+            // Fix for Error at line 186: Using lean() and mapping _id to id ensures returned object matches the PortfolioSnapshot interface
             const snapshot = await PortfolioSnapshotModel
                 .findOne({ userId })
-                .sort({ timestamp: -1 });
-            return snapshot;
+                .sort({ timestamp: -1 })
+                .lean();
+            if (!snapshot)
+                return null;
+            return {
+                ...snapshot,
+                id: snapshot._id.toString()
+            };
         }
         catch (error) {
             this.logger.error(`[Portfolio] Failed to get latest snapshot: ${error.message}`);
