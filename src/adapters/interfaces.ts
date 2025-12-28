@@ -35,6 +35,7 @@ export interface OrderResult {
     txHash?: string;
     sharesFilled: number;
     priceFilled: number;
+    usdFilled?: number; // Actual USD value moved (received for sells, spent for buys)
     error?: string;
 }
 

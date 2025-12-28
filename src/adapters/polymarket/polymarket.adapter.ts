@@ -422,7 +422,6 @@ export class PolymarketAdapter implements IExchangeAdapter {
             const tickSize = Number(market.minimum_tick_size) || 0.01;
             const minOrderSize = Number(market.minimum_order_size) || 5;
 
-            // JIT PROTECTION: Ensure rights and allowances just before trade
             if (params.side === 'BUY') {
                 await this.ensureUsdcAllowance(market.neg_risk, params.sizeUsd);
             } else {
@@ -432,86 +431,78 @@ export class PolymarketAdapter implements IExchangeAdapter {
             const side = params.side === 'BUY' ? Side.BUY : Side.SELL;
             const book = await this.getOrderBook(params.tokenId);
             
-            const topBids = book.bids.slice(0, 3).map(b => `${b.price} (${b.size})`).join(', ');
-            const topAsks = book.asks.slice(0, 3).map(a => `${a.price} (${a.size})`).join(', ');
-            this.logger.info(`Book [${params.tokenId}]: Bids: [${topBids || 'none'}] | Asks: [${topAsks || 'none'}]`);
-
             let rawPrice: number;
             if (side === Side.SELL) {
                 if (!book.bids.length) return { success: false, error: "skipped_no_bids", sharesFilled: 0, priceFilled: 0 };
-                rawPrice = params.priceLimit !== undefined ? params.priceLimit : book.bids[0].price; 
+                rawPrice = book.bids[0].price; // HIT THE BEST BID
+                if (params.priceLimit !== undefined && params.priceLimit > rawPrice) {
+                    rawPrice = params.priceLimit;
+                }
             } else {
                 if (!book.asks.length) return { success: false, error: "skipped_no_liquidity", sharesFilled: 0, priceFilled: 0 };
-                rawPrice = params.priceLimit !== undefined ? params.priceLimit : book.asks[0].price;
+                rawPrice = book.asks[0].price; // HIT THE BEST ASK
+                if (params.priceLimit !== undefined && params.priceLimit < rawPrice) {
+                    rawPrice = params.priceLimit;
+                }
             }
 
             const inverseTick = Math.round(1 / tickSize);
+            // Directional rounding for taker orders
             const roundedPrice = side === Side.BUY 
                 ? Math.ceil(rawPrice * inverseTick) / inverseTick
                 : Math.floor(rawPrice * inverseTick) / inverseTick;
             const finalPrice = Math.max(0.001, Math.min(0.999, roundedPrice));
 
-            // DIRECTIONAL MATH: 
-            // BUY orders use ceil to hit floor. SELL orders use floor to avoid overselling.
             let shares = params.sizeShares || (
                 params.side === 'BUY' 
                     ? Math.ceil(params.sizeUsd / finalPrice) 
                     : Math.floor(params.sizeUsd / finalPrice)
             );
             
-            // DUST PROTECTION: 
-            // 1. Exchange floor for total order value is $1.00
             if (params.side === 'BUY' && (shares * finalPrice) < 1.00) {
                 shares = Math.ceil(1.00 / finalPrice);
-                this.logger.info(`   + Dust Protection: Boosting shares to ${shares} to meet $1.00 floor`);
-            }
-
-            // 2. Exchange floor for share count is usually 5 shares
-            if (params.side === 'BUY' && shares < minOrderSize) {
-                const boostedShares = minOrderSize;
-                const boostedCost = boostedShares * finalPrice;
-                const balance = await this.fetchBalance(this.safeAddress!);
-                
-                if (boostedCost > balance) {
-                    return { success: false, error: `DUST_BOOST_EXCEEDS_BALANCE: Need $${boostedCost.toFixed(2)} but only have $${balance.toFixed(2)}`, sharesFilled: 0, priceFilled: 0 };
-                }
-                shares = boostedShares;
-                this.logger.info(`   + Dust Protection: Boosted to ${shares} shares ($${boostedCost.toFixed(2)})`);
             }
 
             if (shares < minOrderSize) {
-                const errorMsg = `EXCHANGE_LIMIT: Size (${shares.toFixed(2)} shares) is below exchange minimum of ${minOrderSize}.`;
-                return { success: false, error: errorMsg, sharesFilled: 0, priceFilled: 0 };
+                return { success: false, error: "BELOW_MIN_SIZE", sharesFilled: 0, priceFilled: 0 };
             }
 
             this.logger.info(`Placing Order: ${params.side} ${shares} shares @ ${finalPrice.toFixed(3)} (Limit)`);
 
-            const orderArgs = {
+            const signedOrder = await this.client.createOrder({
                 tokenID: params.tokenId,
                 price: finalPrice,
                 side: side,
                 size: Math.floor(shares),
                 feeRateBps: 0,
                 taker: "0x0000000000000000000000000000000000000000"
-            };
+            });
 
-            const signedOrder = await this.client.createOrder(orderArgs);
+            // SELL orders MUST use FAK to hit best bid without staying in the book
             const orderType = side === Side.SELL ? OrderType.FAK : OrderType.GTC;
             const res = await this.client.postOrder(signedOrder, orderType);
 
             if (res && res.success) {
-                // For FAK, partial fills are possible - use actual filled amount
-                // For GTC, order is "live" not necessarily filled - return requested shares
-                const actualFilled = orderType === OrderType.FAK 
-                    ? (parseFloat(res.takingAmount || '0') / 1e6) / finalPrice
-                    : shares; // GTC assumes full placement
+                let actualFilledShares = 0;
+                let actualUsdMoved = 0;
+
+                if (params.side === 'BUY') {
+                    actualFilledShares = parseFloat(res.takingAmount || '0');
+                    actualUsdMoved = parseFloat(res.makingAmount || '0') / 1e6;
+                } else {
+                    actualUsdMoved = parseFloat(res.takingAmount || '0') / 1e6; // Real USDC Received
+                    actualFilledShares = parseFloat(res.makingAmount || '0');   // Real Shares Given
+                }
+                
+                const avgPrice = actualFilledShares > 0 ? actualUsdMoved / actualFilledShares : finalPrice;
                 
                 return { 
                     success: true, 
                     orderId: res.orderID, 
                     txHash: res.transactionHash, 
-                    sharesFilled: actualFilled, 
-                    priceFilled: finalPrice 
+                    sharesFilled: actualFilledShares, 
+                    priceFilled: avgPrice,
+                    usdFilled: actualUsdMoved
                 };
             }
             throw new Error(res.errorMsg || "Order failed response");
@@ -522,27 +513,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 this.initClobClient(this.config.l2ApiCredentials);
                 return this.createOrder(params, retryCount + 1);
             }
-            
-            // Improve error messaging for balance vs allowance issues
-            let errorMessage = error.message || "Unknown Error";
-            if (errorMessage.includes("not enough balance / allowance")) {
-                // Check if it's specifically an allowance issue by checking current allowance
-                try {
-                    const market = await this.client.getMarket(params.marketId);
-                    const allowance = await this.checkUsdcAllowance(market.neg_risk);
-                    const balance = await this.fetchBalance(this.safeAddress!);
-                    
-                    if (allowance < (params.sizeUsd || 0)) {
-                        errorMessage = `INSUFFICIENT_ALLOWANCE (allowance: $${allowance.toFixed(2)}, needed: $${params.sizeUsd?.toFixed(2) || '0'}) - Please approve allowance`;
-                    } else {
-                        errorMessage = `INSUFFICIENT_BALANCE (balance: $${balance.toFixed(2)}, needed: $${params.sizeUsd?.toFixed(2) || '0'})`;
-                    }
-                } catch (e) {
-                    errorMessage = "BALANCE_OR_ALLOWANCE_ISSUE - Check wallet balance and token allowance";
-                }
-            }
-            
-            return { success: false, error: errorMessage, sharesFilled: 0, priceFilled: 0 };
+            return { success: false, error: error.message, sharesFilled: 0, priceFilled: 0 };
         }
     }
 
@@ -571,17 +542,11 @@ export class PolymarketAdapter implements IExchangeAdapter {
     async ensureUsdcAllowance(isNegRisk: boolean, tradeAmountUsd: number = 0): Promise<void> {
         if (!this.safeManager || !this.safeAddress) throw new Error("Safe Manager not initialized");
         const EXCHANGE = isNegRisk ? "0xC5d563A36AE78145C45a50134d48A1215220f80a" : "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
-        
         const allowance = await this.usdcContract!.allowance(this.safeAddress, EXCHANGE);
-        
-        // Check if current allowance covers this specific trade (plus a tiny buffer)
         const requiredAmountRaw = BigInt(Math.ceil((tradeAmountUsd + 1) * 1000000));
         
         if (allowance < requiredAmountRaw) { 
-            this.logger.info(`   + JIT: Granting USDC allowance ($${tradeAmountUsd} trade)...`);
             await this.safeManager.enableApprovals();
-            // FIX: Add Indexing Delay - CLOB indexer takes a few seconds to see on-chain allowance changes
-            this.logger.info(`   + Waiting for CLOB indexing grace period (5s)...`);
             await new Promise(r => setTimeout(r, 5000));
         }
     }
@@ -591,7 +556,7 @@ export class PolymarketAdapter implements IExchangeAdapter {
         const EXCHANGE = isNegRisk ? "0xC5d563A36AE78145C45a50134d48A1215220f80a" : "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
         
         const allowance = await this.usdcContract!.allowance(this.safeAddress, EXCHANGE);
-        return Number(allowance) / 1000000; // Convert from wei to USDC
+        return Number(allowance) / 1000000;
     }
 
     async ensureOutcomeTokenApproval(isNegRisk: boolean): Promise<void> {
@@ -627,62 +592,29 @@ export class PolymarketAdapter implements IExchangeAdapter {
     }
 
     async redeemPosition(marketId: string, tokenId: string): Promise<{ success: boolean; amountUsd?: number; txHash?: string; error?: string }> {
-        if (!this.safeManager || !this.safeAddress) {
-            return { success: false, error: "Adapter not initialized" };
-        }
+        if (!this.safeManager || !this.safeAddress) return { success: false, error: "Adapter not initialized" };
         
         const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
-        const USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"; // USDC.e on Polygon
+        const USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
         
         try {
             const balanceBefore = await this.fetchBalance(this.safeAddress);
-            
             const redeemTx = {
                 to: CTF_ADDRESS,
-                data: this.encodeRedeemPositions(
-                    USDC_ADDRESS,
-                    "0x0000000000000000000000000000000000000000000000000000000000000000",
-                    marketId,
-                    [1, 2]
-                ),
+                data: this.encodeRedeemPositions(USDC_ADDRESS, "0x0000000000000000000000000000000000000000000000000000000000000000", marketId, [1, 2]),
                 value: "0"
             };
-            
-            this.logger.info(`Submitting redeem tx for condition ${marketId.slice(0, 10)}...`);
             const txHash = await this.safeManager.executeTransaction(redeemTx);
-            
             await new Promise(r => setTimeout(r, 5000));
             const balanceAfter = await this.fetchBalance(this.safeAddress);
-            const amountRedeemed = balanceAfter - balanceBefore;
-            
-            this.logger.success(`Redeem complete. Received: $${amountRedeemed.toFixed(2)} USDC`);
-            
-            return { 
-                success: true, 
-                amountUsd: amountRedeemed, 
-                txHash 
-            };
-            
+            return { success: true, amountUsd: balanceAfter - balanceBefore, txHash };
         } catch (e: any) {
             return { success: false, error: e.message };
         }
     }
 
-    private encodeRedeemPositions(
-        collateralToken: string,
-        parentCollectionId: string,
-        conditionId: string,
-        indexSets: number[]
-    ): string {
-        const iface = new Interface([
-            "function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)"
-        ]);
-        
-        return iface.encodeFunctionData("redeemPositions", [
-            collateralToken,
-            parentCollectionId,
-            conditionId,
-            indexSets
-        ]);
+    private encodeRedeemPositions(collateralToken: string, parentCollectionId: string, conditionId: string, indexSets: number[]): string {
+        const iface = new Interface(["function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)"]);
+        return iface.encodeFunctionData("redeemPositions", [collateralToken, parentCollectionId, conditionId, indexSets]);
     }
 }
