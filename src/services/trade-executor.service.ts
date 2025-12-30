@@ -46,8 +46,16 @@ export class TradeExecutorService {
     winningOutcome?: string;
     userWon?: boolean;
     market?: any;
-    conditionId?: string; // Add conditionId to the return type
+    conditionId?: string;
 }> {
+    // Debug log to verify method is being called
+    console.log('🔍 checkMarketResolution called with position:', {
+      tradeId: position.tradeId,
+      marketId: position.marketId,
+      conditionId: position.conditionId,
+      outcome: position.outcome
+    });
+
     const { logger, adapter } = this.deps;
     const conditionId = position.conditionId; // Moved outside try block for catch block access
     
@@ -148,6 +156,13 @@ export class TradeExecutorService {
 }
 
   async executeManualExit(position: ActivePosition, currentPrice: number): Promise<boolean> {
+      console.log('🚀 executeManualExit called with:', {
+        positionId: position.tradeId,
+        marketId: position.marketId,
+        shares: position.shares,
+        currentPrice
+      });
+      
       const { logger, adapter } = this.deps;
       let remainingShares = position.shares;
       
