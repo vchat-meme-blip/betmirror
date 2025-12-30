@@ -409,6 +409,12 @@ export class BotEngine {
                     await this.executeArbitrage(opp);
                 }
             });
+            
+            // Start the arbitrage scanner
+            if (this.arbScanner) {
+                await this.arbScanner.start();
+                engineLogger.info('🔄 Arbitrage scanner started');
+            }
 
             const isFunded = await this.checkFunding();
             if (!isFunded) {

@@ -43,10 +43,11 @@ export class ArbitrageScanner extends EventEmitter {
     private connect() {
         if (!this.isScanning) return;
 
+        this.logger.info(`🔌 Connecting to WebSocket: ${WS_URLS.CLOB}`);
         this.ws = new WebSocket(WS_URLS.CLOB);
 
         this.ws.on('open', () => {
-            this.logger.info("📡 CLOB WSS: Connected.");
+            this.logger.info("✅ CLOB WSS: Connected successfully");
             this.subscribe();
             this.startPing();
         });
@@ -66,14 +67,18 @@ export class ArbitrageScanner extends EventEmitter {
             }
         });
 
-        this.ws.on('close', () => {
-            this.logger.warn("📡 CLOB WSS: Disconnected. Reconnecting...");
+        this.ws.on('close', (code, reason) => {
+            this.logger.warn(`📡 CLOB WSS: Disconnected. Code: ${code}, Reason: ${reason || 'No reason provided'}`);
             this.stopPing();
-            if (this.isScanning) setTimeout(() => this.connect(), 5000);
+            if (this.isScanning) {
+                this.logger.info("🔄 Attempting to reconnect in 5 seconds...");
+                setTimeout(() => this.connect(), 5000);
+            }
         });
 
-        this.ws.on('error', (e) => {
-            this.logger.error("WSS Socket Error", e as any);
+        this.ws.on('error', (error) => {
+            this.logger.error(`❌ WebSocket Error: ${error.message}`);
+            console.error('WebSocket error details:', error);
         });
     }
 
