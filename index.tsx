@@ -12,13 +12,14 @@ Info, HelpCircle, ChevronRight, Rocket, Gauge, MessageSquare, Star, ArrowRightLe
 Sun, Moon, Loader2, Timer, Fuel, Check, BarChart3, ChevronDown, MousePointerClick,
 Zap as ZapIcon, FileText, Twitter, Github, LockKeyhole, BadgeCheck, Search, BookOpen, ArrowRightCircle,
 Volume2, VolumeX, Menu, ArrowUpDown, Clipboard, Wallet2, ArrowDown, Sliders, Bell, ShieldAlert,
-Wrench, Fingerprint, ShieldCheck, Clock
+Wrench, Fingerprint, ShieldCheck, Clock, Scale, Landmark
 } from 'lucide-react';
 import { web3Service, USDC_POLYGON, USDC_BRIDGED_POLYGON, USDC_ABI } from './src/services/web3.service';
 import { lifiService, BridgeTransactionRecord } from './src/services/lifi-bridge.service';
 import { TradeHistoryEntry, ActivePosition } from './src/domain/trade.types';
 import { TraderProfile, CashoutRecord, BuilderVolumeData } from './src/domain/alpha.types';
 import { UserStats } from './src/domain/user.types';
+import { ArbitrageOpportunity } from './src/adapters/interfaces';
 import { Contract, BrowserProvider, JsonRpcProvider, formatUnits } from 'ethers';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Area, AreaChart } from 'recharts';
 
@@ -155,6 +156,60 @@ const PerformanceChart = ({ userId, selectedRange }: {
     );
 };
 
+const ArbitrageFeed = ({ opportunities, onExecute, isAutoArb }: { opportunities: ArbitrageOpportunity[], onExecute: (opp: ArbitrageOpportunity) => void, isAutoArb: boolean }) => {
+    return (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            {opportunities.length === 0 ? (
+                <div className="col-span-full py-20 text-center text-gray-500 italic bg-white/5 rounded-3xl border border-dashed border-white/10">
+                    <Scale size={48} className="mx-auto mb-4 opacity-20"/>
+                    <p className="text-sm uppercase tracking-widest font-bold">Scanning Markets...</p>
+                    {/* FIX: Escaped '<' character to prevent JSX parsing issues and fixed potential $1 variable lookup error */}
+                    <p className="text-xs mt-2 opacity-50">Spread opportunities appear when Sum(Outcomes) {'<'} $1.00</p>
+                </div>
+            ) : (
+                opportunities.map((opp) => (
+                    <div key={opp.marketId} className="glass-panel p-6 rounded-3xl border border-emerald-500/20 hover:border-emerald-500/50 transition-all group relative overflow-hidden">
+                        {isAutoArb && (
+                            <div className="absolute top-0 right-0 px-3 py-1 bg-emerald-500 text-black text-[8px] font-black uppercase tracking-tighter rounded-bl-xl z-20">
+                                Autonomous Mode
+                            </div>
+                        )}
+                        <div className="flex justify-between items-start mb-4">
+                            <div className="p-3 bg-emerald-500/10 rounded-2xl text-emerald-500 group-hover:scale-110 transition-transform duration-500">
+                                <ZapIcon size={24}/>
+                            </div>
+                            <div className="text-right">
+                                <div className="text-[10px] font-bold text-gray-500 uppercase tracking-[0.2em]">Est. ROI</div>
+                                <div className="text-2xl font-black text-emerald-500">+{opp.roi.toFixed(2)}%</div>
+                            </div>
+                        </div>
+                        <h4 className="font-bold text-gray-900 dark:text-white text-sm line-clamp-2 mb-6 h-10 leading-tight">{opp.question}</h4>
+                        <div className="space-y-4 bg-black/20 p-4 rounded-2xl mb-6 border border-white/5">
+                            <div className="flex justify-between text-[10px]">
+                                <span className="text-gray-500 uppercase font-black tracking-widest">Combined Cost</span>
+                                <span className="font-mono text-emerald-400 font-bold">${opp.combinedCost.toFixed(3)}</span>
+                            </div>
+                            <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden flex">
+                                <div className="h-full bg-emerald-500 shadow-[0_0_10px_#10b981]" style={{ width: `${(1 - opp.combinedCost) * 100}%` }}></div>
+                            </div>
+                            <div className="flex justify-between text-[10px]">
+                                <span className="text-gray-500 uppercase font-black tracking-widest">Market Depth</span>
+                                <span className="font-mono text-white font-bold">${opp.capacityUsd.toFixed(0)}</span>
+                            </div>
+                        </div>
+                        <button 
+                            onClick={() => onExecute(opp)} 
+                            className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-2xl text-xs transition-all shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 group-hover:-translate-y-1"
+                        >
+                            <Landmark size={16}/> MANUAL DISPATCH
+                        </button>
+                    </div>
+                ))
+            )}
+        </div>
+    );
+};
+
 // --- Types ---
 interface Log {
 id: string;
@@ -178,6 +233,7 @@ maxRetentionAmount: number;
 maxTradeAmount: number; 
 coldWalletAddress: string;
 enableSounds: boolean; 
+enableAutoArb: boolean;
 }
 
 interface WalletBalances {
@@ -1561,29 +1617,31 @@ const [proxyWalletBal, setProxyWalletBal] = useState<WalletBalances>({ native: '
 const [signerWalletBal, setSignerWalletBal] = useState<WalletBalances>({ native: '0.00', usdc: '0.00', usdcNative: '0.00', usdcBridged: '0.00' });
 
 // --- STATE: UI & Data ---
-const [activeTab, setActiveTab] = useState<'dashboard' | 'marketplace' | 'history' | 'vault' | 'bridge' | 'system' | 'help'>('dashboard');
+const [activeTab, setActiveTab] = useState<'dashboard' | 'arbitrage' | 'marketplace' | 'history' | 'vault' | 'bridge' | 'system' | 'help'>('dashboard');
 const [isRunning, setIsRunning] = useState(false);
 const [logs, setLogs] = useState<Log[]>([]);
 // RENAMED from history to tradeHistory to prevent collision with History component from lucide-react
 const [tradeHistory, setTradeHistory] = useState<TradeHistoryEntry[]>([]);
-const [activePositions, setActivePositions] = useState<ActivePosition[]>([]); // ADDED STATE for positions
+const [activePositions, setActivePositions] = useState<ActivePosition[]>([]); 
+const [arbOpps, setArbOpps] = useState<ArbitrageOpportunity[]>([]);
 const [stats, setStats] = useState<UserStats | null>(null);
 const [registry, setRegistry] = useState<TraderProfile[]>([]);
 const [systemStats, setSystemStats] = useState<GlobalStatsResponse | null>(null);
 const [bridgeHistory, setBridgeHistory] = useState<BridgeTransactionRecord[]>([]);
 const [theme, setTheme] = useState<'light' | 'dark'>('light');
 const [performanceRange, setPerformanceRange] = useState<'1W' | '30D' | 'ALL'>('ALL');
+const [isPolling, setIsPolling] = useState(false); // Arbitrage service rfresh
 const [systemView, setSystemView] = useState<'attribution' | 'global'>('attribution');
 // -- MOBILE MENU STATE --
 const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-const [tradePanelTab, setTradePanelTab] = useState<'active' | 'history'>('active'); // NEW: Tab state for right panel
-const [pollError, setPollError] = useState<boolean>(false); // Added for fallback indicator
+const [tradePanelTab, setTradePanelTab] = useState<'active' | 'history'>('active'); 
+const [pollError, setPollError] = useState<boolean>(false); 
 // --- STATE: Forms & Actions ---
 const [isDepositing, setIsDepositing] = useState(false);
-const [isDepositModalOpen, setIsDepositModalOpen] = useState(false); // New Modal State
+const [isDepositModalOpen, setIsDepositModalOpen] = useState(false); 
 const [isWithdrawing, setIsWithdrawing] = useState(false);
 const [isWithdrawModalOpen, setIsWithdrawModalOpen] = useState(false);
-const [withdrawalTxHash, setWithdrawalTxHash] = useState<string | null>(null); // New State for Success UI
+const [withdrawalTxHash, setWithdrawalTxHash] = useState<string | null>(null); 
 
 const [isActivating, setIsActivating] = useState(false);
 const [targetInput, setTargetInput] = useState('');
@@ -1605,7 +1663,7 @@ const [bridgeMode, setBridgeMode] = useState<'IN' | 'OUT'>('IN');
 const [selectedSourceChain, setSelectedSourceChain] = useState<number>(8453); // Default Base for IN
 const [selectedDestChain, setSelectedDestChain] = useState<number>(137); // Default Polygon for IN
 const [bridgeToken, setBridgeToken] = useState<'NATIVE' | 'USDC' | 'USDC.e'>('NATIVE'); // Native, USDC, or Bridged USDC
-const [destToken, setDestToken] = useState<'USDC' | 'NATIVE'>('USDC'); // New state for destination preference
+const [destToken, setDestToken] = useState<'USDC' | 'NATIVE'>('USDC');
 const [bridgeAmount, setBridgeAmount] = useState('0.1');
 const [bridgeQuote, setBridgeQuote] = useState<any>(null);
 const [isBridging, setIsBridging] = useState(false);
@@ -1622,17 +1680,18 @@ const [recoveryOwnerAdded, setRecoveryOwnerAdded] = useState(false);
 const [isAddingRecovery, setIsAddingRecovery] = useState(false);
 
 // --- REFS for Audio Logic ---
-const lastTradeIdRef = useRef<string | null>(null); // ADDED
+const lastTradeIdRef = useRef<string | null>(null); 
 const lastLogTimestampRef = useRef<number>(0); // Track last log timestamp for failed trades
 
 const [config, setConfig] = useState<AppConfig>({
     targets: [],
-    rpcUrl: 'https://polygon-rpc.com', // UPDATED: More reliable public RPC default
+    rpcUrl: 'https://polygon-rpc.com',
     geminiApiKey: '',
     multiplier: 1.0,
     riskProfile: 'balanced',
     minLiquidityFilter: 'LOW',
     autoTp: 20,
+    enableAutoArb: false,
     enableNotifications: false,
     userPhoneNumber: '',
     enableAutoCashout: false,
@@ -1646,35 +1705,42 @@ const [config, setConfig] = useState<AppConfig>({
 const quoteDebounceTimer = useRef<any>(null);
 
 // Helper to update state AND local storage simultaneously
-const updateConfig = async (newConfig: AppConfig) => {
-    setConfig(newConfig);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(newConfig));
-    
-    // If bot is running, immediately push changes to server to prevent state reversion during next poll
-    if (isRunning && userAddress) {
-        try {
-            await axios.post('/api/bot/update', {
+const updateConfig = (updates: Partial<AppConfig>) => {
+    setConfig(prevConfig => {
+        const newConfig = { ...prevConfig, ...updates };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(newConfig));
+        
+        if (isRunning && userAddress) {
+            const { 
+                targets, multiplier, riskProfile, minLiquidityFilter, 
+                autoTp, maxTradeAmount, enableAutoCashout, maxRetentionAmount,
+                coldWalletAddress, enableNotifications, userPhoneNumber, enableAutoArb
+            } = newConfig;
+            
+            // Fire and forget the server update
+            axios.post('/api/bot/update', {
                 userId: userAddress,
-                targets: newConfig.targets,
-                multiplier: newConfig.multiplier,
-                riskProfile: newConfig.riskProfile,
-                minLiquidityFilter: newConfig.minLiquidityFilter,
-                autoTp: newConfig.autoTp,
-                maxTradeAmount: newConfig.maxTradeAmount,
+                targets,
+                multiplier,
+                riskProfile,
+                minLiquidityFilter,
+                autoTp,
+                maxTradeAmount,
+                enableAutoArb,
                 autoCashout: {
-                    enabled: newConfig.enableAutoCashout,
-                    maxAmount: newConfig.maxRetentionAmount,
-                    destinationAddress: newConfig.coldWalletAddress || userAddress
+                    enabled: enableAutoCashout,
+                    maxAmount: maxRetentionAmount,
+                    destinationAddress: coldWalletAddress || userAddress
                 },
                 notifications: {
-                    enabled: newConfig.enableNotifications,
-                    phoneNumber: newConfig.userPhoneNumber
+                    enabled: enableNotifications,
+                    phoneNumber: userPhoneNumber
                 }
-            });
-        } catch (e) {
-            console.warn("Background config sync failed (will retry on next action)");
+            }).catch(console.warn);
         }
-    }
+        
+        return newConfig;
+    });
 };
 
 // --- LOAD LOCAL CONFIG & THEME ---
@@ -1798,6 +1864,7 @@ useEffect(() => {
             if (res.data.logs) setLogs(res.data.logs); // Now fetches from DB
             if (res.data.history) setTradeHistory(res.data.history);
             if (res.data.stats) setStats(res.data.stats);
+            if (res.data.arbOpportunities) setArbOpps(res.data.arbOpportunities);
             // Sync Active Positions
             if (res.data.positions) setActivePositions(res.data.positions);
 
@@ -2263,8 +2330,15 @@ const handleWithdraw = async (tokenType: 'USDC' | 'USDC.e' | 'POL', isRescue: bo
     setIsWithdrawing(false);
 };
 
-
-
+const handleExecuteArb = async (opp: ArbitrageOpportunity) => {
+    // This is a MANUAL override command sent to the server engine
+    if (!confirm(`Manually Dispatch Arbitrage Signal?\n\nTarget: ${opp.question}\nROI: ${opp.roi.toFixed(2)}%`)) return;
+    try {
+        await axios.post('/api/bot/execute-arb', { userId: userAddress, marketId: opp.marketId });
+        playSound('trade');
+        alert("Signal Dispatched to Server Engine");
+    } catch (e) { alert("Arb Signal Failed"); }
+};
 
 // --- MANUAL EXIT HANDLER ---
 const handleManualExit = async (position: ActivePosition) => {
@@ -2518,6 +2592,7 @@ return (
             <nav className="hidden md:flex items-center gap-1 bg-gray-100 dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-lg p-1">
                 {[
                 { id: 'dashboard', icon: Activity },
+                { id: 'arbitrage', icon: Scale },
                 { id: 'system', icon: Gauge },
                 { id: 'bridge', icon: Globe },
                 { id: 'marketplace', icon: Users },
@@ -3099,6 +3174,41 @@ return (
                         </div>
                     </div>
                 </div>
+            </div>
+        )}
+
+        {/* --- Arbitrage Tab --- */}
+        {activeTab === 'arbitrage' && (
+            <div className="space-y-12 animate-in fade-in slide-in-from-right-4 duration-500">
+                <div className="relative p-12 rounded-[3rem] bg-gradient-to-br from-emerald-600 via-emerald-700 to-teal-800 text-white overflow-hidden shadow-2xl">
+                    <div className="absolute top-0 right-0 p-12 opacity-10 pointer-events-none -rotate-12"><Landmark size={350}/></div>
+                    <div className="relative z-10">
+                        <div className="inline-flex items-center gap-3 px-4 py-1.5 rounded-full bg-black/20 border border-white/20 text-[10px] font-black uppercase tracking-[0.2em] mb-8">
+                            <Sparkles size={14} className="text-yellow-400"/> Autonomous Risk Engine
+                        </div>
+                        <h2 className="text-5xl font-black tracking-tighter mb-6">Arbitrage Terminal</h2>
+                        <p className="text-emerald-50/80 max-w-2xl text-xl leading-relaxed font-medium">
+                            The server engine automatically executes these spreads 24/7 if <strong>Autonomous Exploitation</strong> is enabled in your Vault.
+                        </p>
+                    </div>
+                </div>
+
+                <div className="flex items-center justify-between px-2">
+                    <div className="flex items-center gap-4">
+                        <div className="p-3 bg-emerald-500/10 rounded-2xl text-emerald-500"><Scale size={24}/></div>
+                        <div>
+                            <h3 className="text-xl font-black text-white">Live Arbitrage Opportunities</h3>
+                            <p className="text-xs text-slate-500">Scanning Negative Risk market inefficiencies</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-6">
+                        <button onClick={() => setIsPolling(!isPolling)} className="p-3 hover:bg-white/5 rounded-2xl transition-all border border-white/10">
+                            <RefreshCw size={18} className={isPolling ? "animate-spin text-emerald-500" : "text-slate-500"}/>
+                        </button>
+                    </div>
+                </div>
+
+                <ArbitrageFeed opportunities={arbOpps} onExecute={handleExecuteArb} isAutoArb={config.enableAutoArb} />
             </div>
         )}
         
@@ -3756,6 +3866,59 @@ return (
                                         Adding an owner requires a small blockchain transaction (~0.05 POL) to update the Safe contract on-chain.
                                     </p>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Arbitrage Protocols Section */}
+                <div className="glass-panel p-6 md:p-8 rounded-3xl space-y-6 border border-blue-200 dark:border-blue-500/30 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm mb-8 transition-colors duration-300">
+                    <div className="flex items-center gap-4 border-b border-gray-200 dark:border-slate-700 pb-4">
+                        <div className="w-10 h-10 md:w-12 md:h-12 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-2xl flex items-center justify-center shadow-sm">
+                            <Scale size={20} />
+                        </div>
+                        <div>
+                            <h4 className="font-bold text-gray-900 dark:text-white text-lg md:text-xl uppercase tracking-tight">Arbitrage Protocols</h4>
+                            <p className="text-xs text-gray-500 dark:text-slate-400">Automated Server Execution</p>
+                        </div>
+                    </div>
+
+                    <div className="space-y-6">
+                        <div className="p-5 rounded-2xl bg-blue-50/50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-500/20 flex justify-between items-center group hover:shadow-sm transition-all duration-200">
+                            <div className="max-w-[70%]">
+                                <div className="font-bold text-gray-800 dark:text-gray-100 text-sm md:text-base uppercase mb-1">Autonomous Exploitation</div>
+                                <p className="text-xs text-gray-600 dark:text-slate-400 leading-tight">When active, the server engine locks in spreads autonomously 24/7.</p>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    checked={config.enableAutoArb} 
+                                    onChange={(e) => updateConfig({ enableAutoArb: e.target.checked })} 
+                                    className="sr-only peer"
+                                />
+                                <div className="w-12 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-6 peer-checked:bg-blue-600 after:content-[''] after:absolute after:top-[4px] after:left-[4px] after:bg-white after:border after:rounded-full after:h-5 after:w-5 after:transition-all after:duration-200 peer-checked:after:border-blue-600"></div>
+                            </label>
+                        </div>
+
+                        <div className="space-y-3 p-4 bg-white/50 dark:bg-slate-800/30 rounded-xl border border-gray-100 dark:border-slate-700/50">
+                            <div className="flex justify-between items-center">
+                                <label className="text-xs font-bold text-gray-600 dark:text-gray-300 uppercase tracking-wider">Max Allocation per Leg</label>
+                                <span className="text-sm font-mono font-bold bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-2.5 py-1 rounded-lg">
+                                    ${config.maxTradeAmount}
+                                </span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <span className="text-xs text-gray-500 dark:text-slate-400 w-8">$10</span>
+                                <input 
+                                    type="range" 
+                                    min="10" 
+                                    max="500" 
+                                    step="10" 
+                                    className="flex-1 h-1.5 bg-gray-200 dark:bg-slate-600 rounded-full appearance-none cursor-pointer accent-blue-500" 
+                                    value={config.maxTradeAmount} 
+                                    onChange={e => updateConfig({ maxTradeAmount: Number(e.target.value) })}
+                                />
+                                <span className="text-xs text-gray-500 dark:text-slate-400 w-12 text-right">$500</span>
                             </div>
                         </div>
                     </div>

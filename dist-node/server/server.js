@@ -122,6 +122,9 @@ async function startUserBot(userId, config) {
                 }
             });
         },
+        onArbUpdate: async (opportunities) => {
+            // Memory update handled by poll
+        },
         onFeePaid: async (event) => {
             const lister = await Registry.findOne({ address: { $regex: new RegExp(`^${event.listerAddress}$`, "i") } });
             if (lister) {
@@ -372,7 +375,7 @@ app.post('/api/feedback', async (req, res) => {
 });
 // 5. Start Bot
 app.post('/api/bot/start', async (req, res) => {
-    const { userId, userAddresses, rpcUrl, geminiApiKey, multiplier, riskProfile, autoTp, notifications, autoCashout, maxTradeAmount } = req.body;
+    const { userId, userAddresses, rpcUrl, geminiApiKey, multiplier, riskProfile, enableAutoArb, autoTp, notifications, autoCashout, maxTradeAmount } = req.body;
     if (!userId) {
         res.status(400).json({ error: 'Missing userId' });
         return;
@@ -395,6 +398,7 @@ app.post('/api/bot/start', async (req, res) => {
             geminiApiKey,
             multiplier: Number(multiplier),
             riskProfile,
+            enableAutoArb,
             autoTp: autoTp ? Number(autoTp) : undefined,
             enableNotifications: notifications?.enabled,
             userPhoneNumber: notifications?.phoneNumber,
@@ -505,9 +509,15 @@ app.get('/api/bot/status/:userId', async (req, res) => {
         // LIVE FEED:
         // Use active memory state if running, else DB state.
         let livePositions = [];
+        let arbOpportunities = [];
         if (engine) {
             // Priority: Active Engine Memory (which is synced from DB)
             livePositions = engine.activePositions || [];
+            // Access arbitrage scanner from bot engine
+            const adapter = engine.getAdapter();
+            // In a real implementation, BotEngine would expose latest opportunities
+            // We'll mock it here or ensure BotEngine has a getter
+            arbOpportunities = engine.arbScanner?.getLatestOpportunities() || [];
         }
         else if (user && user.activePositions) {
             // Fallback: Database State
@@ -527,7 +537,7 @@ app.get('/api/bot/status/:userId', async (req, res) => {
             history: historyUI,
             positions: livePositions,
             stats: user?.stats || null,
-            config: user?.activeBotConfig || null
+            config: user?.activeBotConfig || null, arbOpportunities
         });
     }
     catch (e) {
@@ -811,6 +821,14 @@ app.post('/api/wallet/add-recovery', async (req, res) => {
     catch (e) {
         res.status(500).json({ error: e.message });
     }
+});
+app.post('/api/bot/execute-arb', async (req, res) => {
+    const { userId, marketId } = req.body;
+    const engine = ACTIVE_BOTS.get(userId.toLowerCase());
+    if (!engine)
+        return res.status(404).json({ error: "Engine offline" });
+    const success = await engine.dispatchManualArb(marketId);
+    res.json({ success });
 });
 app.post('/api/trade/sync', async (req, res) => {
     const { userId, force } = req.body;

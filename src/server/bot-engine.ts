@@ -1,3 +1,4 @@
+
 import { TradeMonitorService } from '../services/trade-monitor.service.js';
 import { TradeExecutorService, ExecutionResult } from '../services/trade-executor.service.js';
 import { aiAgent } from '../services/ai-agent.service.js';
@@ -15,6 +16,8 @@ import { FeeDistributorService } from '../services/fee-distributor.service.js';
 import { EvmWalletService } from '../services/evm-wallet.service.js';
 import { TOKENS } from '../config/env.js';
 import { registryAnalytics } from '../services/registry-analytics.service.js';
+import { ArbitrageScanner } from '../services/arbitrage-scanner.js';
+import { ArbitrageOpportunity } from '../adapters/interfaces.js';
 import crypto from 'crypto';
 
 export interface BotConfig {
@@ -30,6 +33,7 @@ export interface BotConfig {
     enableNotifications: boolean;
     userPhoneNumber?: string;
     autoCashout?: { enabled: boolean; maxAmount: number; destinationAddress: string; };
+    enableAutoArb?: boolean;
     activePositions?: ActivePosition[];
     stats?: UserStats;
     l2ApiCredentials?: L2ApiCredentials;
@@ -47,12 +51,14 @@ export interface BotCallbacks {
     onTradeComplete?: (trade: TradeHistoryEntry) => Promise<void>;
     onStatsUpdate?: (stats: UserStats) => Promise<void>;
     onPositionsUpdate?: (positions: ActivePosition[]) => Promise<void>;
+    onArbUpdate?: (opportunities: ArbitrageOpportunity[]) => Promise<void>;
 }
 
 export class BotEngine {
     public isRunning = false;
     private monitor?: TradeMonitorService;
     private executor?: TradeExecutorService;
+    private arbScanner?: ArbitrageScanner;
     private exchange?: PolymarketAdapter;
     private portfolioService?: PortfolioService;
     private runtimeEnv: any;
@@ -125,36 +131,35 @@ export class BotEngine {
         if (newConfig.autoCashout) {
             this.config.autoCashout = newConfig.autoCashout;
         }
+        if (newConfig.enableAutoArb !== undefined) {
+            this.config.enableAutoArb = newConfig.enableAutoArb;
+        } 
     }
 
     private async updateMarketState(position: ActivePosition): Promise<void> {
         if (!this.exchange) return;
         
         try {
-            // Try to get market info from Polymarket API
             const client = (this.exchange as any).getRawClient?.();
             if (client) {
                 const market = await client.getMarket(position.marketId);
                 
                 if (market) {
-                    // Update market state based on market data
                     position.marketClosed = market.closed || false;
                     position.marketActive = market.active || false;
                     position.marketAcceptingOrders = market.accepting_orders || false;
                     position.marketArchived = market.archived || false;
                     
-                    // Determine overall market state
                     if (market.closed) {
                         position.marketState = 'CLOSED';
                     } else if (market.archived) {
                         position.marketState = 'ARCHIVED';
                     } else if (!market.active || !market.accepting_orders) {
-                        position.marketState = 'RESOLVED'; // Likely resolved if not accepting orders
+                        position.marketState = 'RESOLVED'; 
                     } else {
                         position.marketState = 'ACTIVE';
                     }
                 } else {
-                    // If market not found, it's likely resolved/archived
                     position.marketState = 'RESOLVED';
                     position.marketClosed = true;
                     position.marketActive = false;
@@ -162,14 +167,12 @@ export class BotEngine {
                 }
             }
         } catch (e: any) {
-            // If we get a 404 or similar error, market is likely resolved
             if (String(e).includes("404") || String(e).includes("Not Found")) {
                 position.marketState = 'RESOLVED';
                 position.marketClosed = true;
                 position.marketActive = false;
                 position.marketAcceptingOrders = false;
             } else {
-                // For other errors, keep as ACTIVE but log
                 this.addLog('warn', `Failed to check market state for ${position.marketId}: ${e.message}`);
             }
         }
@@ -232,7 +235,6 @@ export class BotEngine {
                             image: image,
                             marketSlug: marketSlug,
                             eventSlug: eventSlug,
-                            // Add market state tracking
                             marketState: 'ACTIVE',
                             marketAcceptingOrders: true,
                             marketActive: true,
@@ -240,7 +242,6 @@ export class BotEngine {
                             marketArchived: false
                         });
                         
-                        // Check market state for each position
                         await this.updateMarketState(enrichedPositions[enrichedPositions.length - 1]);
                     }
 
@@ -291,7 +292,6 @@ export class BotEngine {
             this.stats.portfolioValue = cashBalance + positionValue;
             this.stats.cashBalance = cashBalance;
             
-            // Central callback triggers the DB update in server.ts
             if (this.callbacks?.onStatsUpdate) {
                 await this.callbacks.onStatsUpdate(this.stats);
             }
@@ -346,7 +346,6 @@ export class BotEngine {
                     });
                 }
 
-                // Remove from active tracking
                 if (position.tradeId && !position.tradeId.startsWith('imported')) {
                     await Trade.findByIdAndUpdate(position.tradeId, {
                         status: 'CLOSED',
@@ -399,6 +398,18 @@ export class BotEngine {
 
             await this.exchange.initialize();
 
+            // Initialize the real-time arbitrage scanner instance
+            this.arbScanner = new ArbitrageScanner(this.exchange, engineLogger);
+            
+            this.arbScanner.on('opportunity', async (opp: ArbitrageOpportunity) => {
+                if (this.callbacks?.onArbUpdate) {
+                    await this.callbacks.onArbUpdate(this.arbScanner!.getLatestOpportunities());
+                }
+                if (this.config.enableAutoArb) {
+                    await this.executeArbitrage(opp);
+                }
+            });
+
             const isFunded = await this.checkFunding();
             if (!isFunded) {
                 await this.addLog('warn', 'Safe Empty. Engine standby. Waiting for deposit (Min 1.00)...');
@@ -417,6 +428,7 @@ export class BotEngine {
 
     public stop() {
         this.isRunning = false;
+        this.arbScanner?.stop();
         if (this.monitor) this.monitor.stop();
         if (this.portfolioService) this.portfolioService.stopSnapshotService();
         if (this.fundWatcher) {
@@ -424,6 +436,48 @@ export class BotEngine {
             this.fundWatcher = undefined;
         }
         this.addLog('warn', 'Engine Stopped.').catch(console.error);
+    }
+
+    private async executeArbitrage(opp: ArbitrageOpportunity) {
+        if (!this.executor || !this.exchange) return;
+        
+        const size = Math.min(opp.capacityUsd, this.config.maxTradeAmount || 50);
+        if (size < 5) return;
+
+        this.addLog('info', `⚡ EXPLOITING ARB: ${opp.question} | ROI: ${opp.roi.toFixed(2)}%`);
+        
+        try {
+            const results = await Promise.all(opp.legs.map(leg => 
+                this.exchange!.createOrder({
+                    marketId: opp.marketId,
+                    tokenId: leg.tokenId,
+                    outcome: leg.outcome,
+                    side: 'BUY',
+                    sizeUsd: size / opp.legs.length,
+                    priceLimit: leg.price * 1.02 
+                })
+            ));
+
+            if (results.every(r => r.success)) {
+                this.addLog('success', `✅ ARB FILLED: Total Cost $${opp.combinedCost.toFixed(3)} | ROI: ${opp.roi.toFixed(2)}%`);
+                await this.syncPositions(true);
+            } else {
+                const failed = results.filter(r => !r.success).length;
+                this.addLog('warn', `⚠️ ARB PARTIAL: ${failed} leg(s) failed to fill at target price. Engine will attempt manual resolution.`);
+            }
+        } catch (e: any) {
+            this.addLog('error', `❌ ARB ERROR: ${e.message}`);
+        }
+    }
+
+    public async dispatchManualArb(marketId: string): Promise<boolean> {
+        const opps = this.arbScanner?.getLatestOpportunities();
+        const target = opps?.find(o => o.marketId === marketId);
+        if (target) {
+            await this.executeArbitrage(target);
+            return true;
+        }
+        return false;
     }
 
     private async checkFunding(): Promise<boolean> {
@@ -466,7 +520,6 @@ export class BotEngine {
             if(!this.exchange) return;
             await this.exchange.authenticate();
             
-            // Initialize portfolio service
             this.portfolioService = new PortfolioService(logger);
             this.portfolioService.startSnapshotService(
                 this.config.userId,
@@ -482,7 +535,13 @@ export class BotEngine {
                 }
             );
             
-            this.startServices(logger);
+            await this.startServices(logger);
+
+            // FIX: Start scanner only after exchange is authenticated and services are ready
+            if (this.arbScanner) {
+                await this.arbScanner.start();
+            }
+
             await this.syncPositions(true); 
             await this.syncStats();
         } catch (e: any) {
@@ -666,7 +725,12 @@ export class BotEngine {
                                 question: question,
                                 image: image,
                                 marketSlug: marketSlug,
-                                eventSlug: eventSlug
+                                eventSlug: eventSlug,
+                                marketState: 'ACTIVE',
+                                marketAcceptingOrders: true,
+                                marketActive: true,
+                                marketClosed: false,
+                                marketArchived: false
                             });
                         } else if (signal.side === 'SELL') {
                             const idx = this.activePositions.findIndex(p => p.marketId === signal.marketId && p.outcome === signal.outcome);
@@ -718,6 +782,9 @@ export class BotEngine {
     public getActivePositions(): ActivePosition[] {
         return this.activePositions;
     }
+
+    
+    public getArbOpportunities() { return this.arbScanner?.getLatestOpportunities() || []; }
 
     public getCallbacks(): BotCallbacks | undefined {
         return this.callbacks;

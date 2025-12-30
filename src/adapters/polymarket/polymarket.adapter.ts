@@ -291,6 +291,18 @@ export class PolymarketAdapter implements IExchangeAdapter {
         };
     }
 
+    async getNegRiskMarkets(): Promise<any[]> {
+        if (!this.client) return [];
+        try {
+            // Fetch all active markets and filter for NegRisk enabled
+            const res = await axios.get(`${HOST_URL}/markets?active=true&closed=false`);
+            const markets = res.data?.data || [];
+            return markets.filter((m: any) => m.neg_risk === true && m.tokens?.length > 1);
+        } catch (e) {
+            return [];
+        }
+    }
+
     private async fetchMarketSlugs(marketId: string): Promise<{ marketSlug: string; eventSlug: string; question: string; image: string }> {
         let marketSlug = "";
         let eventSlug = "";

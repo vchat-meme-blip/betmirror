@@ -140,31 +140,21 @@ export class PolymarketAdapter {
     async getOrderBook(tokenId) {
         if (!this.client)
             throw new Error("Not auth");
-        try {
-            const book = await this.client.getOrderBook(tokenId);
-            // MUST sort and parse - API may return strings in any order
-            const sortedBids = book.bids
-                .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }))
-                .sort((a, b) => b.price - a.price); // Highest bid first
-            const sortedAsks = book.asks
-                .map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
-                .sort((a, b) => a.price - b.price); // Lowest ask first
-            return {
-                bids: sortedBids,
-                asks: sortedAsks,
-                min_order_size: Number(book.min_order_size) || 5,
-                tick_size: Number(book.tick_size) || 0.01,
-                neg_risk: book.neg_risk
-            };
-        }
-        catch (e) {
-            if (String(e).includes("404") || String(e).includes("No orderbook")) {
-                // Return empty book for closed markets
-                this.logger.warn(`[OrderBook] Market closed or not found for token ${tokenId.slice(0, 10)}...`);
-                return { bids: [], asks: [], min_order_size: 5, tick_size: 0.01, neg_risk: false };
-            }
-            throw e;
-        }
+        const book = await this.client.getOrderBook(tokenId);
+        // MUST sort and parse - API may return strings in any order
+        const sortedBids = book.bids
+            .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }))
+            .sort((a, b) => b.price - a.price); // Highest bid first
+        const sortedAsks = book.asks
+            .map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
+            .sort((a, b) => a.price - b.price); // Lowest ask first
+        return {
+            bids: sortedBids,
+            asks: sortedAsks,
+            min_order_size: Number(book.min_order_size) || 5,
+            tick_size: Number(book.tick_size) || 0.01,
+            neg_risk: book.neg_risk
+        };
     }
     /**
      * UPDATED LIQUIDITY MATH:
@@ -175,10 +165,6 @@ export class PolymarketAdapter {
         if (!this.client)
             throw new Error("Not auth");
         const book = await this.client.getOrderBook(tokenId);
-        // Check if market is resolved (empty order book)
-        if (book.bids.length === 0 && book.asks.length === 0) {
-            throw new Error("No orderbook exists for the requested token id");
-        }
         // Force sort to ensure best prices are at index 0
         const sortedBids = [...book.bids]
             .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }))
@@ -224,28 +210,49 @@ export class PolymarketAdapter {
             bestPrice: side === 'SELL' ? bestBid : bestAsk
         };
     }
+    async getNegRiskMarkets() {
+        if (!this.client)
+            return [];
+        try {
+            // Fetch all active markets and filter for NegRisk enabled
+            const res = await axios.get(`${HOST_URL}/markets?active=true&closed=false`);
+            const markets = res.data?.data || [];
+            return markets.filter((m) => m.neg_risk === true && m.tokens?.length > 1);
+        }
+        catch (e) {
+            return [];
+        }
+    }
     async fetchMarketSlugs(marketId) {
         let marketSlug = "";
         let eventSlug = "";
         let question = marketId;
         let image = "";
-        try {
-            // Use Gamma API with condition_id - this returns BOTH slugs
-            const gammaUrl = `https://gamma-api.polymarket.com/markets?condition_id=${marketId}`;
-            const gammaResponse = await axios.get(gammaUrl);
-            if (gammaResponse.data && gammaResponse.data.length > 0) {
-                const market = gammaResponse.data[0];
-                marketSlug = market.slug || "";
-                question = market.question || question;
-                image = market.image || image;
-                // Get event slug from nested events array
-                if (market.events && market.events.length > 0) {
-                    eventSlug = market.events[0]?.slug || "";
+        if (this.client && marketId) {
+            try {
+                this.marketMetadataCache.delete(marketId);
+                const marketData = await this.client.getMarket(marketId);
+                this.marketMetadataCache.set(marketId, marketData);
+                if (marketData) {
+                    marketSlug = marketData.market_slug || "";
+                    question = marketData.question || question;
+                    image = marketData.image || image;
                 }
             }
+            catch (e) { }
         }
-        catch (e) {
-            this.logger.warn(`[fetchMarketSlugs] Failed for ${marketId}: ${e}`);
+        if (marketSlug) {
+            try {
+                const gammaUrl = `https://gamma-api.polymarket.com/markets/slug/${marketSlug}`;
+                const gammaResponse = await fetch(gammaUrl);
+                if (gammaResponse.ok) {
+                    const marketData = await gammaResponse.json();
+                    if (marketData.events && marketData.events.length > 0) {
+                        eventSlug = marketData.events[0]?.slug || "";
+                    }
+                }
+            }
+            catch (e) { }
         }
         return { marketSlug, eventSlug, question, image };
     }
@@ -262,41 +269,35 @@ export class PolymarketAdapter {
                     continue;
                 const marketId = p.conditionId || p.market;
                 const tokenId = p.asset;
-                // Get current price from midpoint (most reliable)
-                let currentPrice = 0;
-                if (this.client && tokenId) {
+                let currentPrice = parseFloat(p.price) || 0;
+                if (currentPrice === 0 && this.client && tokenId) {
                     try {
                         const mid = await this.client.getMidpoint(tokenId);
                         currentPrice = parseFloat(mid.mid) || 0;
                     }
                     catch (e) {
-                        // Fallback to API price if midpoint fails
-                        currentPrice = parseFloat(p.price) || 0;
+                        currentPrice = parseFloat(p.avgPrice) || 0.5;
                     }
                 }
-                else {
-                    currentPrice = parseFloat(p.price) || 0;
-                }
-                // Entry price from avgPrice, fallback to current
                 const entryPrice = parseFloat(p.avgPrice) || currentPrice || 0.5;
                 const currentValueUsd = size * currentPrice;
                 const investedValueUsd = size * entryPrice;
                 const unrealizedPnL = currentValueUsd - investedValueUsd;
                 const { marketSlug, eventSlug, question, image } = await this.fetchMarketSlugs(marketId);
                 positions.push({
-                    marketId,
-                    tokenId,
+                    marketId: marketId,
+                    tokenId: tokenId,
                     outcome: p.outcome || 'UNK',
                     balance: size,
                     valueUsd: currentValueUsd,
                     investedValue: investedValueUsd,
-                    entryPrice,
-                    currentPrice,
-                    unrealizedPnL,
-                    question,
-                    image,
-                    marketSlug,
-                    eventSlug,
+                    entryPrice: entryPrice,
+                    currentPrice: currentPrice,
+                    unrealizedPnL: unrealizedPnL,
+                    question: question,
+                    image: image,
+                    marketSlug: marketSlug,
+                    eventSlug: eventSlug,
                     clobOrderId: tokenId
                 });
             }

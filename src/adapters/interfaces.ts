@@ -1,3 +1,4 @@
+
 import { OrderBook, PositionData } from '../domain/market.types.js';
 import { TradeSignal, TradeHistoryEntry } from '../domain/trade.types.js';
 
@@ -16,6 +17,22 @@ export interface LiquidityMetrics {
     spreadPercent: number;
     availableDepthUsd: number;
     bestPrice: number;
+}
+
+export interface ArbitrageOpportunity {
+    marketId: string;
+    question: string;
+    combinedCost: number;
+    potentialProfit: number;
+    roi: number;
+    capacityUsd: number;
+    legs: Array<{
+        tokenId: string;
+        outcome: string;
+        price: number;
+        depth: number;
+    }>;
+    timestamp: number;
 }
 
 export interface OrderParams {
@@ -78,6 +95,9 @@ export interface IExchangeAdapter {
     // Order Management
     cashout(amount: number, destination: string): Promise<string>;
     
+    // Arbitrage Discovery
+    getNegRiskMarkets?(): Promise<any[]>;
+
     getRawClient?(): any;
     getSigner?(): any;
     getFunderAddress?(): string | undefined; 
