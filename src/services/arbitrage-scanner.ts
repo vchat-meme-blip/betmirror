@@ -98,29 +98,37 @@ export class ArbitrageScanner extends EventEmitter {
         }
     }
 
-    // FIX: Market channel is PUBLIC - no auth needed
+    // FIX: Updated for RTDS API
     private subscribe() {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
         const subMsg = {
-            type: "market",
-            assets_ids: [],
-            custom_feature_enabled: true // Required for new_market & best_bid_ask
+            type: "subscribe",
+            channel: "markets",
+            id: "markets-sub-1",
+            payload: {}
         };
 
         this.ws.send(JSON.stringify(subMsg));
+        this.logger.info('📡 Subscribed to market updates');
     }
 
-    // FIX: Dynamic subscription to new market assets
+    // FIX: Updated for RTDS API
     private subscribeToAssets(assetIds: string[]) {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !assetIds.length) return;
 
-        this.ws.send(JSON.stringify({
-            assets_ids: assetIds,
-            operation: "subscribe"
-        }));
-        
-        this.logger.info(`📡 Subscribed to ${assetIds.length} new assets`);
+        const subMsg = {
+            type: "subscribe",
+            channel: "orderbook",
+            id: `orderbook-${Date.now()}`,
+            payload: {
+                market: "all",
+                asset_ids: assetIds
+            }
+        };
+
+        this.ws.send(JSON.stringify(subMsg));
+        this.logger.info(`📡 Subscribed to ${assetIds.length} assets`);
     }
 
     private processMessage(msg: any) {

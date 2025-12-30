@@ -28,8 +28,8 @@ export const TOKENS = {
 };
 
 export const WS_URLS = {
-    CLOB: 'wss://clob.polymarket.com/ws',
-    DATA: 'wss://data.polymarket.com/ws' 
+    CLOB: 'wss://ws-live-data.polymarket.com',
+    DATA: 'wss://ws-live-data.polymarket.com' 
 };
 
 export type RuntimeEnv = {

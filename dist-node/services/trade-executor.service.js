@@ -131,7 +131,8 @@ export class TradeExecutorService {
                                 }
                             }
                             catch (e) {
-                                logger.warn(`Could not redeem losing position: ${e.message}`);
+                                const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+                                logger.warn(`Could not redeem losing position: ${errorMessage}`);
                             }
                             logger.warn(`No further redemption possible - this position has expired worthless.`);
                             return false;
