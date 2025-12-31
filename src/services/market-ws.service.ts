@@ -68,7 +68,8 @@ export class MarketWebSocketService extends EventEmitter {
                 const message = JSON.parse(data.toString());
                 this.handleMessage(message);
             } catch (error) {
-                this.logger.error('Error parsing WebSocket message:', error);
+                const errorMessage = error instanceof Error ? error : new Error(String(error));
+                this.logger.error('Error parsing WebSocket message:', errorMessage);
             }
         });
 
