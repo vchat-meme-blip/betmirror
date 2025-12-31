@@ -1023,6 +1023,54 @@ app.post('/api/feedback', async (req: any, res: any) => {
   }
 });
 
+// GET /api/market/:marketId
+app.get('/api/market/:marketId', async (req: any, res: any) => {
+    const { marketId } = req.params;
+    serverLogger.info(`[API-MARKET] Checking market data for: ${marketId}`);
+    
+    try {
+        // Find a running bot to get the market data
+        const engines = Array.from(ACTIVE_BOTS.values());
+        if (engines.length === 0) {
+            return res.status(404).json({ error: 'No active bot found' });
+        }
+        
+        const engine = engines[0];
+        const adapter = engine.getAdapter();
+        if (!adapter) {
+            return res.status(404).json({ error: 'No adapter found' });
+        }
+        
+        const client = (adapter as any).getRawClient?.();
+        if (!client) {
+            return res.status(404).json({ error: 'No client found' });
+        }
+        
+        const market = await client.getMarket(marketId);
+        if (!market) {
+            serverLogger.warn(`[API-MARKET] 404: Market ${marketId} not found in CLOB.`);
+            return res.status(404).json({ error: 'Market not found' });
+        }
+        
+        // CRITICAL DEBUG LOG FOR SLIPLANE
+        serverLogger.info(`[API-MARKET] Data: closed=${market.closed}, active=${market.active}, status=${market.status}`);
+        if (market.tokens) {
+            market.tokens.forEach((t: any) => {
+                serverLogger.info(`   - Outcome: ${t.outcome}, Winner: ${t.winner}`);
+            });
+        }
+        
+        res.json(market);
+    } catch (e: any) {
+        serverLogger.error(`Market data error: ${e.message}`);
+        if (String(e).includes("404") || String(e).includes("Not Found")) {
+            res.status(404).json({ error: 'Market not found or resolved' });
+        } else {
+            res.status(500).json({ error: e.message });
+        }
+    }
+});
+
 app.get('*', (req, res) => {
     const indexPath = path.join(distPath, 'index.html');
     if (!fs.existsSync(indexPath)) {
@@ -1128,44 +1176,6 @@ async function seedRegistry() {
     
     await registryAnalytics.updateAllRegistryStats();
 }
-
-// --- MARKET DATA ENDPOINTS ---
-app.get('/api/market/:marketId', async (req: any, res: any) => {
-    const { marketId } = req.params;
-    
-    try {
-        // Find a running bot to get the market data
-        const engines = Array.from(ACTIVE_BOTS.values());
-        if (engines.length === 0) {
-            return res.status(404).json({ error: 'No active bot found' });
-        }
-        
-        const engine = engines[0];
-        const adapter = engine.getAdapter();
-        if (!adapter) {
-            return res.status(404).json({ error: 'No adapter found' });
-        }
-        
-        const client = (adapter as any).getRawClient?.();
-        if (!client) {
-            return res.status(404).json({ error: 'No client found' });
-        }
-        
-        const market = await client.getMarket(marketId);
-        if (!market) {
-            return res.status(404).json({ error: 'Market not found' });
-        }
-        
-        res.json(market);
-    } catch (e: any) {
-        serverLogger.error(`Market data error: ${e.message}`);
-        if (String(e).includes("404") || String(e).includes("Not Found")) {
-            res.status(404).json({ error: 'Market not found or resolved' });
-        } else {
-            res.status(500).json({ error: e.message });
-        }
-    }
-});
 
 // --- PORTFOLIO ANALYTICS ENDPOINTS ---
 app.get('/api/portfolio/snapshots/:userId', async (req: any, res: any) => {
