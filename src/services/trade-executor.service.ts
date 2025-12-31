@@ -3,6 +3,7 @@ import type { Logger } from '../utils/logger.util.js';
 import type { TradeSignal, ActivePosition } from '../domain/trade.types.js';
 import { computeProportionalSizing } from '../config/copy-strategy.js';
 import { httpGet } from '../utils/http.js';
+import { TOKENS } from '../config/env.js';
 import { IExchangeAdapter, LiquidityHealth } from '../adapters/interfaces.js';
 import axios from 'axios';
 
@@ -357,18 +358,14 @@ export class TradeExecutorService {
 
       const traderBalance = await this.getTraderBalance(signal.trader);
 
-      // Check for insufficient funds BEFORE sizing computation
-      if (signal.side === 'BUY' && usableBalanceForTrade < 1) {
-          const chainBalance = await adapter.fetchBalance(proxyWallet);
-          return failResult(`insufficient_funds (balance: $${chainBalance.toFixed(2)}, pending: $${this.pendingSpend.toFixed(2)}, available: $${usableBalanceForTrade.toFixed(2)})`, "FAILED");
-      }
-
+      // Get minOrderSize for the market
       let minOrderSize = 5; 
       try {
           const book = await adapter.getOrderBook(signal.tokenId);
           if (book.min_order_size) minOrderSize = Number(book.min_order_size);
       } catch (e) {}
 
+      // First compute the desired trade size
       const sizing = computeProportionalSizing({
         yourUsdBalance: usableBalanceForTrade,
         yourShareBalance: currentShareBalance,
@@ -385,6 +382,18 @@ export class TradeExecutorService {
           return failResult(sizing.reason || "skipped_by_sizing_engine");
       }
 
+      // Now check if we have enough balance for this specific trade
+      if (signal.side === 'BUY' && usableBalanceForTrade < sizing.targetUsdSize) {
+          const chainBalance = await adapter.fetchBalance(proxyWallet);
+          return failResult(
+              `insufficient_funds (balance: $${chainBalance.toFixed(2)}, ` +
+              `pending: $${this.pendingSpend.toFixed(2)}, ` +
+              `available: $${usableBalanceForTrade.toFixed(2)}, ` +
+              `required: $${sizing.targetUsdSize.toFixed(2)})`,
+              "FAILED"
+          );
+      }
+
       let priceLimit: number | undefined = undefined;
       if (signal.side === 'BUY') {
           priceLimit = Math.min(0.99, signal.price * 1.05);
@@ -393,6 +402,22 @@ export class TradeExecutorService {
       }
 
       logger.info(`[Sizing] Whale: $${traderBalance.toFixed(0)} | Signal: $${signal.sizeUsd.toFixed(0)} (${signal.side}) | Target: $${sizing.targetUsdSize.toFixed(2)} (${sizing.targetShares} shares) | Reason: ${sizing.reason}`);
+
+      // Check and update allowance if needed for BUY orders
+      if (signal.side === 'BUY' && adapter.getSigner && adapter.getSigner().safeManager) {
+          const safeManager = adapter.getSigner().safeManager;
+          const requiredAmount = BigInt(Math.ceil(sizing.targetUsdSize * 1e6)); // Convert to USDC units (6 decimals)
+          const spender = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E'; // CTF Exchange address
+          
+          try {
+              this.deps.logger.info(`[Allowance] Checking USDC allowance for trade: $${sizing.targetUsdSize.toFixed(2)}`);
+              await safeManager.setDynamicAllowance(TOKENS.USDC_BRIDGED, spender, requiredAmount);
+          } catch (e) {
+              const errorMsg = e instanceof Error ? e.message : String(e);
+              this.deps.logger.error(`[Allowance] Failed to set allowance: ${errorMsg}`);
+              return failResult(`allowance_error: ${errorMsg}`, 'FAILED');
+          }
+      }
 
       const result = await adapter.createOrder({
         marketId: signal.marketId,
