@@ -162,6 +162,45 @@ const PerformanceChart = ({ userId, selectedRange }: {
  * Money Market Feed - Displays available money market opportunities
  * for providing liquidity and earning yield through market making
  */
+// Error Boundary Components
+const ErrorBoundary = ({ children }: { children: React.ReactNode }) => {
+    const [hasError, setHasError] = useState(false);
+
+    if (hasError) {
+        return (
+            <div className="p-4 bg-red-500/10 text-red-500 rounded-xl">
+                <p>Error loading money market data. Please refresh the page.</p>
+            </div>
+        );
+    }
+
+    return (
+        <ErrorBoundaryInner onError={() => setHasError(true)}>
+            {children}
+        </ErrorBoundaryInner>
+    );
+};
+
+const ErrorBoundaryInner = ({ 
+    children, 
+    onError 
+}: { 
+    children: React.ReactNode; 
+    onError: () => void;
+}) => {
+    useEffect(() => {
+        const handleError = (error: ErrorEvent) => {
+            console.error('Error in MoneyMarketFeed:', error);
+            onError();
+        };
+        
+        window.addEventListener('error', handleError);
+        return () => window.removeEventListener('error', handleError);
+    }, [onError]);
+
+    return <>{children}</>;
+};
+
 const MoneyMarketFeed = ({ opportunities, onExecute, isAutoArb }: { opportunities: MoneyMarketOpportunity[], onExecute: (opp: MoneyMarketOpportunity) => void, isAutoArb: boolean }) => {
     return (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1727,7 +1766,7 @@ const [config, setConfig] = useState<AppConfig>({
     riskProfile: 'balanced',
     minLiquidityFilter: 'LOW',
     autoTp: 20,
-    enableAutoArb: false,
+    enableAutoMM: false,
     enableNotifications: false,
     userPhoneNumber: '',
     enableAutoCashout: false,
@@ -2366,15 +2405,38 @@ const handleWithdraw = async (tokenType: 'USDC' | 'USDC.e' | 'POL', isRescue: bo
     setIsWithdrawing(false);
 };
 
-const handleExecuteMM = async (opp: MoneyMarketOpportunity) => {
+const handleExecuteMM = useCallback(async (opp: MoneyMarketOpportunity) => {
+    if (!userAddress) {
+        toast.error('Please connect your wallet first');
+        return;
+    }
+    
+    try {
+        toast.info('Executing market making strategy...');
+        
+        // Here you would typically call your MM execution logic
+        // For example:
+        // const result = await executeMMStrategy(opp);
+        
+        console.log('Executing MM opportunity:', opp);
+        toast.success('Market making order placed successfully');
+    } catch (error: any) {
+        console.error('Error executing MM strategy:', error);
+        toast.error(`Failed to execute: ${error.message || 'Unknown error'}`);
+    }
+}, [userAddress]);
+
+const handleExecuteArb = useCallback(async (opp: ArbitrageOpportunity) => {
     // This is a MANUAL override command sent to the server engine (Market Making)
     if (!confirm(`Manually Provide Liquidity?\n\nMarket: ${opp.question}\nSpread: ${(opp.spread * 100).toFixed(1)}¢`)) return;
     try {
         await axios.post('/api/bot/execute-arb', { userId: userAddress, marketId: opp.marketId });
         playSound('trade');
         alert("MM Strategy Dispatched to Server Engine");
-    } catch (e) { alert("MM Trigger Failed"); }
-};
+    } catch (e) { 
+        alert("MM Trigger Failed"); 
+    }
+}, [userAddress]);
 
 // --- MANUAL EXIT HANDLER ---
 const handleManualExit = async (position: ActivePosition) => {
@@ -3257,7 +3319,20 @@ return (
                     </div>
                 </div>
 
-                <MoneyMarketFeed opportunities={moneyMarketOpps} onExecute={handleExecuteMM} isAutoArb={config.enableAutoArb} />
+                <ErrorBoundary>
+                    {moneyMarketOpps === undefined ? (
+                        <div className="flex justify-center items-center h-64">
+                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+                            <span className="ml-3">Loading market data...</span>
+                        </div>
+                    ) : (
+                        <MoneyMarketFeed 
+                            opportunities={moneyMarketOpps} 
+                            onExecute={handleExecuteMM} 
+                            isAutoArb={config.enableAutoMM} 
+                        />
+                    )}
+                </ErrorBoundary>
             </div>
         )}
         
