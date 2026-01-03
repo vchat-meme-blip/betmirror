@@ -20,9 +20,9 @@ export interface LiquidityMetrics {
 }
 
 /**
- * Money Market Opportunity - Represents a yield opportunity in the money market
+ * Updated for Market Making / Spread Capture
  */
-export interface MoneyMarketOpportunity {
+export interface ArbitrageOpportunity {
     marketId: string;
     tokenId: string;
     question: string;

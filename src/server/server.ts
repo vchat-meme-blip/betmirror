@@ -7,7 +7,7 @@ import mongoose from 'mongoose';
 import { ethers, JsonRpcProvider } from 'ethers';
 import { BotEngine, BotConfig } from './bot-engine.js';
 import { TradingWalletConfig } from '../domain/wallet.types.js';
-import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog, DepositLog, HunterEarning, MoneyMarketOpportunity } from '../database/index.js';
+import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog, DepositLog, HunterEarning, MoneyMarketOpportunity, ITrade } from '../database/index.js';
 import { PortfolioSnapshotModel } from '../database/portfolio.schema.js';
 import { loadEnv, TOKENS } from '../config/env.js';
 import { DbRegistryService } from '../services/db-registry.service.js';
@@ -15,9 +15,13 @@ import { registryAnalytics } from '../services/registry-analytics.service.js';
 import { EvmWalletService } from '../services/evm-wallet.service.js';
 import { SafeManagerService } from '../services/safe-manager.service.js';
 import { BuilderVolumeData } from '../domain/alpha.types.js';
+import { ArbitrageOpportunity } from '../adapters/interfaces.js';
+// FIX: ActivePosition is defined in trade.types.ts, not interfaces.ts
+import { ActivePosition } from '../domain/trade.types.js';
 import axios from 'axios';
 import { Logger } from '../utils/logger.util.js';
 import fs from 'fs';
+import crypto from 'crypto';
 
 // ESM compatibility
 const __filename = fileURLToPath(import.meta.url);
@@ -118,7 +122,7 @@ async function startUserBot(userId: string, config: BotConfig) {
                     await Trade.findByIdAndUpdate(trade.id, {
                         status: trade.status,
                         pnl: trade.pnl,
-                        executedSize: trade.executedSize || exists.executedSize
+                        executedSize: trade.executedSize || (exists as any).executedSize
                     });
                 }
             } catch (err: any) {
@@ -562,21 +566,38 @@ app.get('/api/bot/status/:userId', async (req: any, res: any) => {
 
         // LIVE FEED:
         // Use active memory state if running, else DB state.
-        let livePositions = [];
-        let mmOpportunities = persistedMMOpps; // Start with historical ones
+        let livePositions: ActivePosition[] = [];
+        // FIX: Ensure persisted opportunities match the ArbitrageOpportunity interface expectations
+        let mmOpportunities: ArbitrageOpportunity[] = persistedMMOpps.map((o: any) => ({
+            marketId: o.marketId,
+            tokenId: o.tokenId,
+            question: o.question || '',
+            bestBid: o.bestBid || 0,
+            bestAsk: o.bestAsk || 0,
+            spread: o.spread || 0,
+            spreadPct: o.spreadPct || 0,
+            spreadCents: (o.spread || 0) * 100,
+            midpoint: o.midpoint || 0,
+            volume: o.volume || 0,
+            liquidity: o.liquidity || 0,
+            timestamp: o.timestamp instanceof Date ? o.timestamp.getTime() : new Date(o.timestamp).getTime(),
+            roi: o.roi || o.spreadPct || 0,
+            combinedCost: o.combinedCost || (1 - (o.spread || 0)),
+            capacityUsd: o.capacityUsd || o.liquidity || 0
+        }));
         
         if (engine) {
             // Priority: Active Engine Memory (which is synced from DB)
-            livePositions = (engine as any).activePositions || [];
+            livePositions = engine.getActivePositions() || [];
             
-            // Access arbitrage scanner from bot engine
-            const engineOpps = (engine as any).arbScanner?.getLatestOpportunities() || [];
+            // Access arbitrage scanner from bot engine via public method
+            const engineOpps = engine.getArbOpportunities() || [];
             if (engineOpps.length > 0) {
                 mmOpportunities = engineOpps; // Override with live ones if they exist
             }
         } else if (user && user.activePositions) {
             // Fallback: Database State
-            livePositions = user.activePositions;
+            livePositions = user.activePositions as ActivePosition[];
         }
 
         res.json({ 
@@ -945,7 +966,7 @@ app.post('/api/redeem', async (req: any, res: any) => {
         const result = await adapter.redeemPosition(marketId, position.tokenId);
         
         if (result.success) {
-            const costBasis = position.investedValue || (position.balance * position.entryPrice);
+            const costBasis = (position as any).investedValue || (position.balance * position.entryPrice);
             const realizedPnl = (result.amountUsd || 0) - costBasis;
             
             const Trade = (await import('../database/index.js')).Trade;
@@ -1127,7 +1148,7 @@ async function restoreBots() {
     }
 }
 
-// --- REGISTRY SEEDER ---
+// --- REGISTRY SEER ---
 async function seedRegistry() {
     const systemWallets = ENV.userAddresses; 
     if (!systemWallets || systemWallets.length === 0) return;

@@ -116,7 +116,7 @@ export class MarketMakingScanner extends EventEmitter {
 
     // ORIGINAL: Default config (EXTENDED)
     private config: MarketMakerConfig = {
-        minSpreadCents: 2,
+        minSpreadCents: 1, // Adjusted from 2 to 1 to capture high-volume markets
         maxSpreadCents: 15,
         minVolume: 5000,
         minLiquidity: 1000,
@@ -230,7 +230,7 @@ export class MarketMakingScanner extends EventEmitter {
                      * CRITICAL FILTER:
                      * Filter out closed markets found in logs that cause 404s.
                      */
-                    if (market.closed === true || market.acceptingOrders === false || market.resolved === true) {
+                    if (market.closed === true || market.acceptingOrders === false || market.resolved === true || market.active === false) {
                         continue;
                     }
 

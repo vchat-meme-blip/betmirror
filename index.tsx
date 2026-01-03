@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { toast } from 'react-toastify';
@@ -20,7 +21,7 @@ import { lifiService, BridgeTransactionRecord } from './src/services/lifi-bridge
 import { TradeHistoryEntry, ActivePosition } from './src/domain/trade.types';
 import { TraderProfile, CashoutRecord, BuilderVolumeData } from './src/domain/alpha.types';
 import { UserStats } from './src/domain/user.types';
-import { MoneyMarketOpportunity } from './src/adapters/interfaces';
+import { ArbitrageOpportunity } from './src/adapters/interfaces';
 import { Contract, BrowserProvider, JsonRpcProvider, formatUnits } from 'ethers';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Area, AreaChart } from 'recharts';
 
@@ -161,7 +162,7 @@ const PerformanceChart = ({ userId, selectedRange }: {
  * Money Market Feed - Displays available money market opportunities
  * for providing liquidity and earning yield through market making
  */
-const MoneyMarketFeed = ({ opportunities, onExecute, isAutoArb }: { opportunities: MoneyMarketOpportunity[], onExecute: (opp: MoneyMarketOpportunity) => void, isAutoArb: boolean }) => {
+const MoneyMarketFeed = ({ opportunities, onExecute, isAutoArb }: { opportunities: ArbitrageOpportunity[], onExecute: (opp: ArbitrageOpportunity) => void, isAutoArb: boolean }) => {
     return (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {opportunities.length === 0 ? (
@@ -842,7 +843,6 @@ const OrderManagementModal = ({
                 <div className="p-6 border-b border-gray-200 dark:border-gray-800 flex justify-between items-start bg-gray-50 dark:bg-black/20">
                     <div className="flex gap-4">
                         <div className="w-12 h-12 rounded-xl bg-blue-100 dark:bg-blue-900/20 flex items-center justify-center">
-                            {/* FIX: Added missing Activity icon */}
                             <Activity size={20} className="text-blue-600 dark:text-blue-400"/>
                         </div>
                         <div>
@@ -864,7 +864,6 @@ const OrderManagementModal = ({
                         onClick={onClose}
                         className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
                     >
-                        {/* FIX: Added missing X icon */}
                         <X size={20}/>
                     </button>
                 </div>
@@ -874,7 +873,6 @@ const OrderManagementModal = ({
                     {/* Open Orders Section */}
                     <div>
                         <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
-                            {/* FIX: Added missing Activity icon */}
                             <Activity size={16} className="text-blue-500"/>
                             Open Orders ({orders.length})
                         </h3>
@@ -918,7 +916,6 @@ const OrderManagementModal = ({
                         ) : (
                             <div className="text-center py-8 text-gray-400 dark:text-gray-600">
                                 <div className="w-16 h-16 bg-gray-100 dark:bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4">
-                                    {/* FIX: Added missing Activity icon */}
                                     <Activity size={24} className="opacity-50"/>
                                     <p className="text-sm">No open orders</p>
                                 </div>
@@ -929,7 +926,6 @@ const OrderManagementModal = ({
                     {/* Market Resolution Section */}
                     <div className="border-t border-gray-200 dark:border-white/10 pt-6">
                         <h4 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
-                            {/* FIX: Added missing Trophy icon */}
                             <Trophy size={16} className="text-yellow-500"/>
                             Market Resolution
                         </h4>
@@ -955,7 +951,6 @@ const OrderManagementModal = ({
                                                 ? 'bg-blue-500 text-white'
                                                 : 'bg-red-500 text-white'
                                     }`}>
-                                        {/* FIX: Added missing Trophy, Clock, and X icons */}
                                         {marketResolution.userWon ? <Trophy size={16}/> : marketResolution.settling ? <Clock size={16}/> : <X size={16}/>}
                                     </div>
                                     <div className="flex-1">
@@ -993,7 +988,6 @@ const OrderManagementModal = ({
                                         onClick={() => onRedeemWinnings(position)}
                                         className="w-full mt-4 px-4 py-3 bg-green-500 hover:bg-green-600 text-white font-bold rounded-xl transition-colors flex items-center justify-center gap-2"
                                     >
-                                        {/* FIX: Added missing Trophy icon */}
                                         <Trophy size={16}/>
                                         Redeem Winnings
                                     </button>
@@ -1002,7 +996,6 @@ const OrderManagementModal = ({
                         ) : (
                             <div className="bg-gray-50 dark:bg-white/5 rounded-lg p-4 border border-gray-200 dark:border-white/10">
                                 <div className="flex items-center gap-3 text-gray-600 dark:text-gray-400">
-                                    {/* FIX: Added missing Clock icon */}
                                     <Clock size={16} className="text-gray-400"/>
                                     <div>
                                         <p className="text-sm font-medium">Market Still Active</p>
@@ -1658,7 +1651,7 @@ const [logs, setLogs] = useState<Log[]>([]);
 // RENAMED from history to tradeHistory to prevent collision with History component from lucide-react
 const [tradeHistory, setTradeHistory] = useState<TradeHistoryEntry[]>([]);
 const [activePositions, setActivePositions] = useState<ActivePosition[]>([]); 
-const [moneyMarketOpps, setMoneyMarketOpps] = useState<MoneyMarketOpportunity[]>([]);
+const [moneyMarketOpps, setMoneyMarketOpps] = useState<ArbitrageOpportunity[]>([]);
 const [stats, setStats] = useState<UserStats | null>(null);
 const [registry, setRegistry] = useState<TraderProfile[]>([]);
 const [systemStats, setSystemStats] = useState<GlobalStatsResponse | null>(null);
@@ -1886,93 +1879,97 @@ const copyToClipboard = (text: string) => {
 };
 
 // --- POLL DATA ---
+const fetchBotStatus = useCallback(async () => {
+    if (!isConnected || !userAddress || needsActivation) return;
+    try {
+        const res = await axios.get(`/api/bot/status/${userAddress}`);
+        setIsRunning(res.data.isRunning);
+        setPollError(false); 
+        
+        if (res.data.logs) setLogs(res.data.logs); // Now fetches from DB
+        if (res.data.history) setTradeHistory(res.data.history);
+        if (res.data.stats) setStats(res.data.stats);
+        if (res.data.mmOpportunities) setMoneyMarketOpps(res.data.mmOpportunities);
+        // Sync Active Positions
+        if (res.data.positions) setActivePositions(res.data.positions);
+
+        // FIX: Track latest ID instead of length
+        const latestHistory = res.data.history || [];
+        if (latestHistory.length > 0) {
+            const latestId = latestHistory[0].id;
+            // Only play if initialized (not null) and different
+            if (lastTradeIdRef.current !== null && lastTradeIdRef.current !== latestId && config.enableSounds) {
+                playSound('trade');
+            }
+            lastTradeIdRef.current = latestId;
+        }
+
+        // ALSO check for failed trades in logs
+        if (res.data.logs && config.enableSounds) {
+            const latestLog = res.data.logs[0];
+            if (latestLog) {
+                const logTimestamp = new Date(latestLog.timestamp).getTime();
+                // Play error sound for failed trades (check if message contains trade failure indicators)
+                if (lastLogTimestampRef.current !== 0 && logTimestamp > lastLogTimestampRef.current) {
+                    const message = latestLog.message.toLowerCase();
+                    if (message.includes('insufficient_funds') || 
+                        message.includes('insufficient_balance') || 
+                        message.includes('insufficient_allowance') ||
+                        message.includes('dust_boost_exceeds_balance') ||
+                        message.includes('failed') && message.includes('trade')) {
+                        playSound('error');
+                    }
+                }
+                lastLogTimestampRef.current = logTimestamp;
+            }
+        }
+
+        // Sync Config from Server ONLY IF RUNNING (Source of Truth)
+        // If stopped, local state is king (allows editing without overwrite)
+        if (res.data.isRunning && res.data.config) {
+            const serverConfig = res.data.config;
+            setConfig(prev => ({
+                ...prev,
+                targets: serverConfig.userAddresses || [],
+                rpcUrl: serverConfig.rpcUrl,
+                geminiApiKey: serverConfig.geminiApiKey || prev.geminiApiKey,
+                multiplier: serverConfig.multiplier,
+                riskProfile: serverConfig.riskProfile,
+                autoTp: serverConfig.autoTp,
+                maxTradeAmount: serverConfig.maxTradeAmount || prev.maxTradeAmount, // ADDED
+                enableNotifications: serverConfig.enableNotifications,
+                userPhoneNumber: serverConfig.userPhoneNumber,
+                enableAutoCashout: serverConfig.autoCashout?.enabled,
+                maxRetentionAmount: serverConfig.autoCashout?.maxAmount,
+                coldWalletAddress: serverConfig.autoCashout?.destinationAddress
+            }));
+        }
+
+        if (activeTab === 'system') {
+            const sysRes = await axios.get('/api/stats/global');
+            setSystemStats(sysRes.data);
+        }
+    } catch (e) {
+        setPollError(true); 
+    }
+}, [isConnected, userAddress, needsActivation, activeTab, tradeHistory.length, config.enableSounds]);
+
 useEffect(() => {
     if (!isConnected || !userAddress || needsActivation) return;
     
     // Poll Server State
-    const interval = setInterval(async () => {
-        try {
-            const res = await axios.get(`/api/bot/status/${userAddress}`);
-            setIsRunning(res.data.isRunning);
-            setPollError(false); 
-            
-            if (res.data.logs) setLogs(res.data.logs); // Now fetches from DB
-            if (res.data.history) setTradeHistory(res.data.history);
-            if (res.data.stats) setStats(res.data.stats);
-            if (res.data.mmOpportunities) setMoneyMarketOpps(res.data.mmOpportunities);
-            // Sync Active Positions
-            if (res.data.positions) setActivePositions(res.data.positions);
-
-            // FIX: Track latest ID instead of length
-            const latestHistory = res.data.history || [];
-            if (latestHistory.length > 0) {
-                const latestId = latestHistory[0].id;
-                // Only play if initialized (not null) and different
-                if (lastTradeIdRef.current !== null && lastTradeIdRef.current !== latestId && config.enableSounds) {
-                    playSound('trade');
-                }
-                lastTradeIdRef.current = latestId;
-            }
-
-            // ALSO check for failed trades in logs
-            if (res.data.logs && config.enableSounds) {
-                const latestLog = res.data.logs[0];
-                if (latestLog) {
-                    const logTimestamp = new Date(latestLog.timestamp).getTime();
-                    // Play error sound for failed trades (check if message contains trade failure indicators)
-                    if (lastLogTimestampRef.current !== 0 && logTimestamp > lastLogTimestampRef.current) {
-                        const message = latestLog.message.toLowerCase();
-                        if (message.includes('insufficient_funds') || 
-                            message.includes('insufficient_balance') || 
-                            message.includes('insufficient_allowance') ||
-                            message.includes('dust_boost_exceeds_balance') ||
-                            message.includes('failed') && message.includes('trade')) {
-                            playSound('error');
-                        }
-                    }
-                    lastLogTimestampRef.current = logTimestamp;
-                }
-            }
-
-            // Sync Config from Server ONLY IF RUNNING (Source of Truth)
-            // If stopped, local state is king (allows editing without overwrite)
-            if (res.data.isRunning && res.data.config) {
-                const serverConfig = res.data.config;
-                setConfig(prev => ({
-                    ...prev,
-                    targets: serverConfig.userAddresses || [],
-                    rpcUrl: serverConfig.rpcUrl,
-                    geminiApiKey: serverConfig.geminiApiKey || prev.geminiApiKey,
-                    multiplier: serverConfig.multiplier,
-                    riskProfile: serverConfig.riskProfile,
-                    autoTp: serverConfig.autoTp,
-                    maxTradeAmount: serverConfig.maxTradeAmount || prev.maxTradeAmount, // ADDED
-                    enableNotifications: serverConfig.enableNotifications,
-                    userPhoneNumber: serverConfig.userPhoneNumber,
-                    enableAutoCashout: serverConfig.autoCashout?.enabled,
-                    maxRetentionAmount: serverConfig.autoCashout?.maxAmount,
-                    coldWalletAddress: serverConfig.autoCashout?.destinationAddress
-                }));
-            }
-
-            if (activeTab === 'system') {
-                const sysRes = await axios.get('/api/stats/global');
-                setSystemStats(sysRes.data);
-            }
-        } catch (e) {
-            setPollError(true); 
-        }
-    }, 15000);
+    const interval = setInterval(fetchBotStatus, 15000);
     
     // Poll Balances (Every 10s)
     const balanceInterval = setInterval(fetchBalances, 10000);
     fetchBalances(); // Initial
+    fetchBotStatus(); // Initial
 
     return () => {
         clearInterval(interval);
         clearInterval(balanceInterval);
     };
-}, [isConnected, userAddress, proxyAddress, needsActivation, activeTab, tradeHistory.length, config.enableSounds]);
+}, [isConnected, userAddress, needsActivation, activeTab, fetchBotStatus]);
 
 useEffect(() => {
     if(isConnected && !needsActivation) fetchRegistry();
@@ -2365,7 +2362,7 @@ const handleWithdraw = async (tokenType: 'USDC' | 'USDC.e' | 'POL', isRescue: bo
     setIsWithdrawing(false);
 };
 
-const handleExecuteMM = async (opp: MoneyMarketOpportunity) => {
+const handleExecuteMM = async (opp: ArbitrageOpportunity) => {
     // This is a MANUAL override command sent to the server engine (Market Making)
     if (!confirm(`Manually Provide Liquidity?\n\nMarket: ${opp.question}\nSpread: ${(opp.spread * 100).toFixed(1)}¢`)) return;
     try {
@@ -3250,7 +3247,10 @@ return (
                         </div>
                     </div>
                     <div className="flex items-center gap-6">
-                        <button onClick={() => setIsPolling(!isPolling)} className="p-3 hover:bg-white/5 rounded-2xl transition-all border border-white/10">
+                        <button 
+                            onClick={() => { fetchBotStatus(); setIsPolling(true); setTimeout(() => setIsPolling(false), 2000); }} 
+                            className="p-3 hover:bg-white/5 rounded-2xl transition-all border border-white/10"
+                        >
                             <RefreshCw size={18} className={isPolling ? "animate-spin text-emerald-500" : "text-slate-500"}/>
                         </button>
                     </div>
