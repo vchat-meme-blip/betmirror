@@ -276,7 +276,7 @@ export class MarketMakingScanner extends EventEmitter {
                             tokenId,
                             question: market.question || event.title || 'Unknown',
                             image: market.image || '',
-                            marketSlug: market.market_slug || '',
+                            marketSlug: market.slug || '',
                             bestBid: 0,
                             bestAsk: 0,
                             spread: 0,

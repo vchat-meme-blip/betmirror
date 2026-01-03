@@ -178,7 +178,7 @@ const MoneyMarketFeed = ({ opportunities, onExecute, isAutoArb }: {
     return (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {opportunities.length === 0 ? (
-                <div className="col-span-full text-center p-12 text-gray-400">
+                <div className="col-span-full py-20 text-center text-gray-500 italic bg-white/5 rounded-3xl border border-dashed border-white/10">
                     <Landmark size={48} className="mx-auto mb-4 opacity-20"/>
                     <p className="text-sm uppercase tracking-widest font-bold">Scanning Money Markets...</p>
                     <p className="text-xs mt-2 opacity-50">Yield opportunities will appear when spreads are favorable.</p>

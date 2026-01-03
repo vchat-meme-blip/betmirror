@@ -623,7 +623,7 @@ app.get('/api/registry', async (req, res) => {
     } catch (e) { res.status(500).json({error: 'DB Error'}); }
 });
 
-app.get('/api/registry/:address/earnings', async (req, res) => {
+app.get('/api/registry/:address/earnings', async (req: any, res: any) => {
     try {
         const address = req.params.address.toLowerCase();
         
