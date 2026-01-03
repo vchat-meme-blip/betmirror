@@ -168,11 +168,33 @@ export class MarketMakingScanner extends EventEmitter {
             }, this.config.refreshIntervalMs);
             
             this.logger.success('📊 MM ENGINE: Spread Capture Mode Active');
+
+            await this.debugGammaApi(); 
         } catch (error) {
             const err = error instanceof Error ? error : new Error(String(error));
             this.logger.error('❌ Failed to start scanner:', err);
             this.isScanning = false;
             throw err;
+        }
+    }
+
+    // run separately
+    private async debugGammaApi() {
+        const response = await fetch(
+            'https://gamma-api.polymarket.com/events?active=true&closed=false&limit=5&order=volume&ascending=false'
+        );
+        const data = await response.json();
+        
+        console.log('=== RAW RESPONSE ===');
+        console.log(JSON.stringify(data[0], null, 2));
+        
+        if (data[0]?.markets?.[0]) {
+            const m = data[0].markets[0];
+            console.log('\n=== FIRST MARKET ===');
+            console.log('volume:', m.volume, typeof m.volume);
+            console.log('liquidity:', m.liquidity, typeof m.liquidity);
+            console.log('clobTokenIds:', m.clobTokenIds);
+            console.log('conditionId:', m.conditionId);
         }
     }
 
@@ -189,42 +211,49 @@ export class MarketMakingScanner extends EventEmitter {
             );
             
             if (!response.ok) {
-                throw new Error(`Gamma API returned ${response.status}`);
+                throw new Error(`Gamma API error: ${response.status}`);
             }
-
-            const data = await response.json();
-            const events = Array.isArray(data) ? data : (data.data || []);
+            
+            const events = await response.json();
 
             let addedCount = 0;
             const newTokenIds: string[] = [];
 
             for (const event of events) {
                 const markets = event.markets || [];
-
+                
                 for (const market of markets) {
-                    const volume = parseFloat(market.volume || market.volumeNum || '0');
-                    const liquidity = parseFloat(market.liquidity || market.liquidityNum || '0');
+                    // Volume/liquidity can be string or number
+                    const volume = Number(market.volume) || 0;
+                    const liquidity = Number(market.liquidity) || 0;
+
+                    // Log for debugging (remove after fixing)
+                    if (addedCount === 0 && volume > 0) {
+                        this.logger.debug(`Sample market: vol=${volume}, liq=${liquidity}, tokens=${market.clobTokenIds?.length}`);
+                    }
 
                     if (volume < this.config.minVolume) continue;
                     if (liquidity < this.config.minLiquidity) continue;
 
-                    // Support multiple field naming conventions for token IDs
-                    const tokenIds: string[] = market.clobTokenIds || market.clob_token_ids || market.tokenIds || [];
-                    
-                    /**
-                     * 🔒 BINARY GUARD:
-                     * Strictly enforce 2 outcomes for mergePositions [1, 2] compatibility.
-                     */
-                    if (tokenIds.length !== 2) continue;
+                    // Get token IDs - try multiple field names
+                    const tokenIds: string[] = market.clobTokenIds || 
+                                            market.clob_token_ids || 
+                                            [];
+                                            
+                    if (tokenIds.length === 0) continue;
+
+                    // Skip closed/resolved markets
+                    if (market.closed || market.resolved) continue;
+
+                    const conditionId = market.conditionId || market.condition_id;
+                    if (!conditionId) continue;
 
                     const rewards = market.rewards || {};
                     const outcomes: string[] = market.outcomes || ['Yes', 'No'];
 
                     for (let i = 0; i < tokenIds.length; i++) {
                         const tokenId = tokenIds[i];
-                        const isYesToken = outcomes[i]?.toLowerCase() === 'yes' || i === 0;
-                        const pairedTokenId = tokenIds[i === 0 ? 1 : 0];
-
+                        
                         if (this.trackedMarkets.has(tokenId)) {
                             const existing = this.trackedMarkets.get(tokenId)!;
                             existing.volume = volume;
@@ -232,8 +261,11 @@ export class MarketMakingScanner extends EventEmitter {
                             continue;
                         }
 
+                        const isYesToken = outcomes[i]?.toLowerCase() === 'yes' || i === 0;
+                        const pairedTokenId = tokenIds.length > 1 ? tokenIds[i === 0 ? 1 : 0] : undefined;
+
                         this.trackedMarkets.set(tokenId, {
-                            conditionId: market.conditionId || market.condition_id,
+                            conditionId,
                             tokenId,
                             question: market.question || event.title || 'Unknown',
                             bestBid: 0,
@@ -257,8 +289,7 @@ export class MarketMakingScanner extends EventEmitter {
 
             this.logger.info(`✅ Tracking ${this.trackedMarkets.size} tokens (${addedCount} new) | Min volume: $${this.config.minVolume}`);
 
-            // FIX: Using numeric constant 1 instead of WebSocket.OPEN which sometimes errors in TS DOM/Node hybrid environments
-            if (newTokenIds.length > 0 && this.ws?.readyState === 1) {
+            if (newTokenIds.length > 0 && this.ws?.readyState === WebSocket.OPEN) {
                 this.subscribeToTokens(newTokenIds);
             }
 

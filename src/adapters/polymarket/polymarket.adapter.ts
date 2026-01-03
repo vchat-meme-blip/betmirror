@@ -414,41 +414,52 @@ export class PolymarketAdapter implements IExchangeAdapter {
                 if (params.priceLimit !== undefined && params.priceLimit < rawPrice) rawPrice = params.priceLimit;
             }
 
+            // Round price to tick size
             const inverseTick = Math.round(1 / tickSize);
             const roundedPrice = side === Side.BUY 
                 ? Math.ceil(rawPrice * inverseTick) / inverseTick
                 : Math.floor(rawPrice * inverseTick) / inverseTick;
-            const finalPrice = Math.max(0.001, Math.min(0.999, roundedPrice));
+            
+            // FIX: Round price to 2 decimal places max
+            const finalPrice = Math.max(0.01, Math.min(0.99, 
+                Math.round(roundedPrice * 100) / 100
+            ));
 
+            // Calculate shares
             let shares = params.sizeShares || (
                 params.side === 'BUY' 
                     ? Math.ceil(params.sizeUsd / finalPrice) 
                     : Math.floor(params.sizeUsd / finalPrice)
             );
             
+            // Ensure minimum $1 order for buys
             if (params.side === 'BUY' && (shares * finalPrice) < 1.00) {
                 shares = Math.ceil(1.00 / finalPrice);
             }
+
+            // FIX: Round shares to integer (no decimals for taker amount)
+            shares = Math.floor(shares);
 
             if (shares < minOrderSize) {
                 return { success: false, error: "BELOW_MIN_SIZE", sharesFilled: 0, priceFilled: 0 };
             }
 
+            // FIX: Ensure size is an integer
             const signedOrder = await this.client.createOrder({
                 tokenID: params.tokenId,
                 price: finalPrice,
                 side: side,
-                size: Math.floor(shares),
+                size: shares,  // Must be integer
                 feeRateBps: 0,
                 taker: "0x0000000000000000000000000000000000000000"
             });
 
-            // GTC for Market Making, FAK for Sells, FOK for Buys (default)
-            let orderType = OrderType.FOK; // Default to FOK for safety
+            // Order type selection
+            let orderType = OrderType.FOK;
             if (params.orderType === 'GTC') {
                 orderType = OrderType.GTC;
             } else if (side === Side.SELL) {
-                orderType = OrderType.FAK; // Use FAK for sells to allow partial fills
+                orderType = OrderType.FAK;
             }
 
             const res = await this.client.postOrder(signedOrder, orderType);
