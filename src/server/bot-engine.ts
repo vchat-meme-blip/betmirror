@@ -56,6 +56,7 @@ export interface BotCallbacks {
     onStatsUpdate?: (stats: UserStats) => Promise<void>;
     onPositionsUpdate?: (positions: ActivePosition[]) => Promise<void>;
     onMMUpdate?: (opportunities: MoneyMarketOpportunity[]) => Promise<void>;
+    onArbUpdate?: (opportunities: MoneyMarketOpportunity[]) => Promise<void>;
 }
 
 export class BotEngine {

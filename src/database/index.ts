@@ -1,4 +1,3 @@
-
 import mongoose, { Schema, Document } from 'mongoose';
 import { TraderProfile } from '../domain/alpha.types.js';
 import { TradingWalletConfig } from '../domain/wallet.types.js';
@@ -84,6 +83,43 @@ export interface IBotLog extends Document {
   timestamp: Date;
 }
 
+/**
+ * Money Market Opportunity Persistence
+ */
+export interface IMoneyMarketOpportunity extends Document {
+  marketId: string;
+  tokenId: string;
+  question: string;
+  bestBid: number;
+  bestAsk: number;
+  spread: number;
+  spreadPct: number;
+  midpoint: number;
+  volume: number;
+  liquidity: number;
+  isNew: boolean;
+  timestamp: Date;
+  roi: number;
+  capacityUsd: number;
+}
+
+const MoneyMarketOpportunitySchema = new Schema({
+  marketId: { type: String, required: true, index: true },
+  tokenId: { type: String, required: true, unique: true },
+  question: String,
+  bestBid: Number,
+  bestAsk: Number,
+  spread: Number,
+  spreadPct: Number,
+  midpoint: Number,
+  volume: Number,
+  liquidity: Number,
+  isNew: Boolean,
+  timestamp: { type: Date, default: Date.now, expires: 3600 }, // Expire after 1 hour
+  roi: Number,
+  capacityUsd: Number
+});
+
 const ActivePositionSchema = new Schema<ActivePosition>({
   tradeId: String,
   clobOrderId: String,
@@ -139,7 +175,7 @@ const TradingWalletSchema = new Schema({
       },
       secret: { 
         type: String,
-        select: false // Never include in queries by default
+        select: false // Never include in already queries by default
       },
       passphrase: { 
         type: String,
@@ -278,6 +314,7 @@ export { CopiedTrade, HunterEarning, WalletAnalytics } from './trade-tracking.sc
 export const BridgeTransaction = mongoose.model<IBridgeTransaction>('BridgeTransaction', BridgeTransactionSchema);
 export const DepositLog = mongoose.model<IDepositLog>('DepositLog', DepositLogSchema);
 export const BotLog = mongoose.model<IBotLog>('BotLog', BotLogSchema);
+export const MoneyMarketOpportunity = mongoose.model<IMoneyMarketOpportunity>('MoneyMarketOpportunity', MoneyMarketOpportunitySchema);
 
 // --- Connection ---
 

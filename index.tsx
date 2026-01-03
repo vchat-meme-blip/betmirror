@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { toast } from 'react-toastify';
@@ -1900,7 +1899,7 @@ useEffect(() => {
             if (res.data.logs) setLogs(res.data.logs); // Now fetches from DB
             if (res.data.history) setTradeHistory(res.data.history);
             if (res.data.stats) setStats(res.data.stats);
-            if (res.data.arbOpportunities) setMoneyMarketOpps(res.data.arbOpportunities);
+            if (res.data.mmOpportunities) setMoneyMarketOpps(res.data.mmOpportunities);
             // Sync Active Positions
             if (res.data.positions) setActivePositions(res.data.positions);
 
@@ -2628,10 +2627,10 @@ return (
             <nav className="hidden md:flex items-center gap-1 bg-gray-100 dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-lg p-1">
                 {[
                 { id: 'dashboard', icon: Activity, label: 'Dashboard' },
-                { id: 'money-market', icon: Scale, label: 'Money Market' },
+                { id: 'money-market', icon: Scale, label: 'M.Market' },
                 { id: 'system', icon: Gauge, label: 'System' },
                 { id: 'bridge', icon: Globe, label: 'Bridge' },
-                { id: 'marketplace', icon: Users, label: 'Marketplace' },
+                { id: 'marketplace', icon: Users, label: 'Alpha' },
                 { id: 'history', icon: History, label: 'History' },
                 { id: 'vault', icon: Lock, label: 'Vault' },
                 { id: 'help', icon: LifeBuoy, label: 'Help' }

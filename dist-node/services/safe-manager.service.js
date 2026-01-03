@@ -36,7 +36,8 @@ const MAX_UINT256 = "11579208923731619542357098500868790785326998466564056403945
 const ERC20_ABI = [
     "function approve(address spender, uint256 amount) returns (bool)",
     "function transfer(address to, uint256 amount) returns (bool)",
-    "function allowance(address owner, address spender) view returns (uint256)"
+    "function allowance(address owner, address spender) view returns (uint256)",
+    "function balanceOf(address owner) view returns (uint256)"
 ];
 const ERC1155_ABI = [
     "function setApprovalForAll(address operator, bool approved)",
@@ -164,6 +165,60 @@ export class SafeManagerService {
      * Bundles all missing USDC allowances and CTF operator permissions into one single multi-send transaction.
      * This prevents the "Bad Request" (nonce collision) errors from the Polymarket relayer.
      */
+    async checkAllowance(token, spender) {
+        try {
+            const allowance = await this.viemPublicClient.readContract({
+                address: token,
+                abi: parseAbi(ERC20_ABI),
+                functionName: 'allowance',
+                args: [this.safeAddress, spender]
+            });
+            return allowance;
+        }
+        catch (e) {
+            this.logger.error(`Error checking allowance: ${e}`);
+            return 0n;
+        }
+    }
+    async checkBalance(token) {
+        try {
+            const balance = await this.viemPublicClient.readContract({
+                address: token,
+                abi: parseAbi(ERC20_ABI),
+                functionName: 'balanceOf',
+                args: [this.safeAddress]
+            });
+            return balance;
+        }
+        catch (e) {
+            this.logger.error(`Error checking balance: ${e}`);
+            return 0n;
+        }
+    }
+    async setDynamicAllowance(token, spender, requiredAmount) {
+        try {
+            const currentAllowance = await this.checkAllowance(token, spender);
+            if (currentAllowance >= requiredAmount) {
+                return true; // Already approved enough
+            }
+            // Get current balance to ensure we don't approve more than we have
+            const balance = await this.checkBalance(token);
+            const approvalAmount = balance > 0 ? balance * 2n : requiredAmount * 2n;
+            this.logger.info(`   Setting allowance for ${spender.slice(0, 8)}... to ${ethers.formatUnits(approvalAmount, 6)} USDC`);
+            const usdcInterface = new Interface(ERC20_ABI);
+            const tx = await this.executeTransaction({
+                to: token,
+                data: usdcInterface.encodeFunctionData("approve", [spender, approvalAmount]),
+                value: "0x0"
+            });
+            this.logger.success(`   Allowance set in tx: ${tx}`);
+            return true;
+        }
+        catch (e) {
+            this.logger.error(`Failed to set allowance: ${e}`);
+            return false;
+        }
+    }
     async enableApprovals() {
         const usdcInterface = new Interface(ERC20_ABI);
         const ctfInterface = new Interface(ERC1155_ABI);
@@ -183,19 +238,17 @@ export class SafeManagerService {
             { addr: CTF_EXCHANGE_ADDRESS, name: "CTFExchange" },
             { addr: NEG_RISK_CTF_EXCHANGE_ADDRESS, name: "NegRiskExchange" }
         ];
+        // Get current balance to determine reasonable allowance
+        const currentBalance = await this.checkBalance(TOKENS.USDC_BRIDGED);
+        const minAllowance = currentBalance > 0n ? currentBalance * 2n : 1000000n; // 1 USDC minimum if balance is 0
         for (const spender of usdcSpenders) {
-            const allowance = await this.viemPublicClient.readContract({
-                address: TOKENS.USDC_BRIDGED,
-                abi: parseAbi(ERC20_ABI),
-                functionName: 'allowance',
-                args: [this.safeAddress, spender.addr]
-            });
-            if (allowance < 1000000000000n) { // Threshold: $1,000,000
-                this.logger.info(`     + Batching USDC approval for ${spender.name}`);
+            const allowance = await this.checkAllowance(TOKENS.USDC_BRIDGED, spender.addr);
+            if (allowance < minAllowance) {
+                this.logger.info(`     + Batching USDC approval for ${spender.name} (${ethers.formatUnits(minAllowance, 6)} USDC)`);
                 batch.push({
                     to: TOKENS.USDC_BRIDGED,
                     value: "0",
-                    data: usdcInterface.encodeFunctionData("approve", [spender.addr, MAX_UINT256]),
+                    data: usdcInterface.encodeFunctionData("approve", [spender.addr, minAllowance]),
                     operation: OperationType.Call
                 });
             }

@@ -9,7 +9,7 @@ import { PolymarketAdapter } from '../adapters/polymarket/polymarket.adapter.js'
 import { FeeDistributorService } from '../services/fee-distributor.service.js';
 import { EvmWalletService } from '../services/evm-wallet.service.js';
 import { TOKENS } from '../config/env.js';
-import { ArbitrageScanner } from '../services/arbitrage-scanner.js';
+import { MarketMakingScanner } from '../services/arbitrage-scanner.js';
 import crypto from 'crypto';
 export class BotEngine {
     config;
@@ -18,7 +18,7 @@ export class BotEngine {
     isRunning = false;
     monitor;
     executor;
-    arbScanner;
+    mmScanner;
     exchange;
     portfolioService;
     runtimeEnv;
@@ -172,6 +172,7 @@ export class BotEngine {
                             tradeId: realId,
                             clobOrderId: realId,
                             marketId: p.marketId,
+                            conditionId: p.conditionId,
                             tokenId: p.tokenId,
                             outcome: (p.outcome || 'YES').toUpperCase(),
                             entryPrice: p.entryPrice || 0.5,
@@ -333,21 +334,62 @@ export class BotEngine {
                 mongoEncryptionKey: this.config.mongoEncryptionKey
             }, engineLogger);
             await this.exchange.initialize();
-            // Initialize the real-time arbitrage scanner instance
-            this.arbScanner = new ArbitrageScanner(this.exchange, engineLogger);
-            this.arbScanner.on('opportunity', async (opp) => {
-                if (this.callbacks?.onArbUpdate) {
-                    await this.callbacks.onArbUpdate(this.arbScanner.getLatestOpportunities());
+            // Initialize the real-time money market scanner instance
+            this.mmScanner = new MarketMakingScanner(this.exchange, engineLogger);
+            // --- NEW MARKET MAKING EVENT WIREUP ---
+            // 1. Kill Switch: Stop trading if flash move detected
+            this.mmScanner.on('killSwitch', async ({ reason }) => {
+                await this.addLog('error', `🚨 EMERGENCY STOP: ${reason}`);
+                if (this.executor) {
+                    const adapter = this.executor.getAdapter();
+                    await adapter?.cancelAllOrders();
                 }
-                if (this.config.enableAutoArb) {
-                    await this.executeArbitrage(opp);
+                this.stop(); // Stop the bot loop
+            });
+            // 2. Auto Merge: If we have equal YES and NO, free up USDCe
+            this.mmScanner.on('mergeOpportunity', async ({ conditionId, amount }) => {
+                await this.addLog('info', `📦 Auto-Merging ${amount} pairs for ${conditionId}`);
+                try {
+                    const adapter = this.executor?.getAdapter();
+                    if (adapter) {
+                        const tx = await adapter.mergePositions(conditionId, amount);
+                        await this.addLog('success', `✅ Inventory Merged: ${tx}`);
+                    }
+                    else {
+                        throw new Error('Adapter not available');
+                    }
+                }
+                catch (e) {
+                    await this.addLog('warn', `Merge failed: ${e.message}`);
                 }
             });
-            // Start the arbitrage scanner
-            if (this.arbScanner) {
-                await this.arbScanner.start();
-                engineLogger.info('🔄 Arbitrage scanner started');
-            }
+            // 3. Instant Redemption
+            this.mmScanner.on('marketResolved', async ({ conditionId, question }) => {
+                await this.addLog('info', `🏁 Market Resolved: ${question}`);
+                // Force a position sync to find winning shares
+                await this.syncPositions(true);
+                const winner = this.activePositions.find(p => p.conditionId === conditionId);
+                if (winner) {
+                    await this.addLog('info', `🏆 Winning shares detected. Redeeming...`);
+                    await this.exchange?.redeemPosition(conditionId, winner.tokenId);
+                }
+            });
+            // 4. Standard Quote Signal
+            this.mmScanner.on('opportunity', async (opp) => {
+                if (this.callbacks?.onMMUpdate) {
+                    const mmOpps = this.mmScanner.getOpportunities().map(o => ({
+                        ...o,
+                        marketId: o.conditionId,
+                        roi: o.spreadPct,
+                        combinedCost: 1 - o.spread,
+                        capacityUsd: o.liquidity || 0
+                    }));
+                    await this.callbacks.onMMUpdate(mmOpps);
+                }
+                if (this.config.enableAutoMM) {
+                    await this.executeMarketMaking(opp);
+                }
+            });
             const isFunded = await this.checkFunding();
             if (!isFunded) {
                 await this.addLog('warn', 'Safe Empty. Engine standby. Waiting for deposit (Min 1.00)...');
@@ -364,7 +406,7 @@ export class BotEngine {
     }
     stop() {
         this.isRunning = false;
-        this.arbScanner?.stop();
+        this.mmScanner?.stop();
         if (this.monitor)
             this.monitor.stop();
         if (this.portfolioService)
@@ -375,40 +417,25 @@ export class BotEngine {
         }
         this.addLog('warn', 'Engine Stopped.').catch(console.error);
     }
-    async executeArbitrage(opp) {
+    /**
+     * Executes the new Market Making logic when an opportunity is detected.
+     * Replaces the old statistical arbitrage outcome-sum logic.
+     */
+    async executeMarketMaking(opp) {
         if (!this.executor || !this.exchange)
             return;
-        const size = Math.min(opp.capacityUsd, this.config.maxTradeAmount || 50);
-        if (size < 5)
-            return;
-        this.addLog('info', `⚡ EXPLOITING ARB: ${opp.question} | ROI: ${opp.roi.toFixed(2)}%`);
-        try {
-            const results = await Promise.all(opp.legs.map(leg => this.exchange.createOrder({
-                marketId: opp.marketId,
-                tokenId: leg.tokenId,
-                outcome: leg.outcome,
-                side: 'BUY',
-                sizeUsd: size / opp.legs.length,
-                priceLimit: leg.price * 1.02
-            })));
-            if (results.every(r => r.success)) {
-                this.addLog('success', `✅ ARB FILLED: Total Cost $${opp.combinedCost.toFixed(3)} | ROI: ${opp.roi.toFixed(2)}%`);
-                await this.syncPositions(true);
-            }
-            else {
-                const failed = results.filter(r => !r.success).length;
-                this.addLog('warn', `⚠️ ARB PARTIAL: ${failed} leg(s) failed to fill at target price. Engine will attempt manual resolution.`);
-            }
-        }
-        catch (e) {
-            this.addLog('error', `❌ ARB ERROR: ${e.message}`);
+        // Use MarketMaking specific executor method with skewed pricing
+        const result = await this.executor.executeMarketMakingQuotes(opp);
+        if (result.status === 'POSTED' || result.status === 'PARTIAL') {
+            await this.addLog('success', `⚡ MM QUOTE: ${opp.question.slice(0, 30)}... | Bid: ${result.bidPrice}¢ | Ask: ${result.askPrice}¢`);
+            await this.syncPositions(true);
         }
     }
-    async dispatchManualArb(marketId) {
-        const opps = this.arbScanner?.getLatestOpportunities();
-        const target = opps?.find(o => o.marketId === marketId);
+    async dispatchManualMM(marketId) {
+        const opps = this.mmScanner?.getOpportunities();
+        const target = opps?.find(o => o.conditionId === marketId);
         if (target) {
-            await this.executeArbitrage(target);
+            await this.executeMarketMaking(target);
             return true;
         }
         return false;
@@ -453,12 +480,12 @@ export class BotEngine {
             }
         }, 15000);
     }
-    async proceedWithPostFundingSetup(logger) {
+    async proceedWithPostFundingSetup(engineLogger) {
         try {
             if (!this.exchange)
                 return;
             await this.exchange.authenticate();
-            this.portfolioService = new PortfolioService(logger);
+            this.portfolioService = new PortfolioService(engineLogger);
             this.portfolioService.startSnapshotService(this.config.userId, async () => {
                 const totalValue = this.stats.portfolioValue || 0;
                 const cashBalance = this.stats.cashBalance || 0;
@@ -469,10 +496,10 @@ export class BotEngine {
                     totalPnL: this.stats.totalPnl || 0
                 };
             });
-            await this.startServices(logger);
-            // FIX: Start scanner only after exchange is authenticated and services are ready
-            if (this.arbScanner) {
-                await this.arbScanner.start();
+            await this.startServices(engineLogger);
+            // Start scanner only after exchange is authenticated and services are ready
+            if (this.mmScanner) {
+                await this.mmScanner.start();
             }
             await this.syncPositions(true);
             await this.syncStats();
@@ -617,6 +644,7 @@ export class BotEngine {
                                 tradeId: tradeId,
                                 clobOrderId: result.txHash,
                                 marketId: signal.marketId,
+                                conditionId: signal.marketId,
                                 tokenId: signal.tokenId,
                                 outcome: signal.outcome,
                                 entryPrice: result.priceFilled || signal.price,
@@ -677,12 +705,20 @@ export class BotEngine {
             }
         });
         await this.monitor.start(this.config.startCursor || Math.floor(Date.now() / 1000));
-        this.addLog('success', `Engine Active. Monitoring ${this.config.userAddresses.length} targets.`);
+        await this.addLog('success', `Engine Active. Monitoring ${this.config.userAddresses.length} targets.`);
     }
     getActivePositions() {
         return this.activePositions;
     }
-    getArbOpportunities() { return this.arbScanner?.getLatestOpportunities() || []; }
+    getMoneyMarketOpportunities() {
+        return this.mmScanner?.getOpportunities().map(o => ({
+            ...o,
+            marketId: o.conditionId,
+            roi: o.spreadPct,
+            combinedCost: 1 - o.spread,
+            capacityUsd: o.liquidity || 0
+        })) || [];
+    }
     getCallbacks() {
         return this.callbacks;
     }

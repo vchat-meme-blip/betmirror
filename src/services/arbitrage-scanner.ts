@@ -1,7 +1,7 @@
-
 import { IExchangeAdapter } from '../adapters/interfaces.js';
 import { Logger } from '../utils/logger.util.js';
 import { WS_URLS } from '../config/env.js';
+import { MoneyMarketOpportunity } from '../database/index.js';
 import EventEmitter from 'events';
 // Use default import for WebSocket
 import WebSocket from 'ws';
@@ -180,22 +180,24 @@ export class MarketMakingScanner extends EventEmitter {
 
     // run separately
     private async debugGammaApi() {
-        const response = await fetch(
-            'https://gamma-api.polymarket.com/events?active=true&closed=false&limit=5&order=volume&ascending=false'
-        );
-        const data = await response.json();
-        
-        console.log('=== RAW RESPONSE ===');
-        console.log(JSON.stringify(data[0], null, 2));
-        
-        if (data[0]?.markets?.[0]) {
-            const m = data[0].markets[0];
-            console.log('\n=== FIRST MARKET ===');
-            console.log('volume:', m.volume, typeof m.volume);
-            console.log('liquidity:', m.liquidity, typeof m.liquidity);
-            console.log('clobTokenIds:', m.clobTokenIds);
-            console.log('conditionId:', m.conditionId);
-        }
+        try {
+            const response = await fetch(
+                'https://gamma-api.polymarket.com/events?active=true&closed=false&limit=5&order=volume&ascending=false'
+            );
+            const data = await response.json();
+            
+            console.log('=== RAW RESPONSE ===');
+            const events = Array.isArray(data) ? data : (data.data || []);
+            if (events[0]) {
+                console.log(JSON.stringify(events[0], null, 2));
+                if (events[0].markets?.[0]) {
+                    const m = events[0].markets[0];
+                    console.log('\n=== FIRST MARKET ===');
+                    console.log('volume:', m.volume, typeof m.volume);
+                    console.log('liquidity:', m.liquidity, typeof m.liquidity);
+                }
+            }
+        } catch (e) {}
     }
 
     /**
@@ -214,7 +216,8 @@ export class MarketMakingScanner extends EventEmitter {
                 throw new Error(`Gamma API error: ${response.status}`);
             }
             
-            const events = await response.json();
+            const data = await response.json();
+            const events = Array.isArray(data) ? data : (data.data || []);
 
             let addedCount = 0;
             const newTokenIds: string[] = [];
@@ -223,14 +226,17 @@ export class MarketMakingScanner extends EventEmitter {
                 const markets = event.markets || [];
                 
                 for (const market of markets) {
-                    // Volume/liquidity can be string or number
-                    const volume = Number(market.volume) || 0;
-                    const liquidity = Number(market.liquidity) || 0;
-
-                    // Log for debugging (remove after fixing)
-                    if (addedCount === 0 && volume > 0) {
-                        this.logger.debug(`Sample market: vol=${volume}, liq=${liquidity}, tokens=${market.clobTokenIds?.length}`);
+                    /**
+                     * CRITICAL FILTER:
+                     * Filter out closed markets found in logs that cause 404s.
+                     */
+                    if (market.closed === true || market.acceptingOrders === false || market.resolved === true) {
+                        continue;
                     }
+
+                    // Volume/liquidity can be string or number
+                    const volume = parseFloat(market.volume || market.volumeNum || '0');
+                    const liquidity = parseFloat(market.liquidity || market.liquidityNum || '0');
 
                     if (volume < this.config.minVolume) continue;
                     if (liquidity < this.config.minLiquidity) continue;
@@ -238,12 +244,9 @@ export class MarketMakingScanner extends EventEmitter {
                     // Get token IDs - try multiple field names
                     const tokenIds: string[] = market.clobTokenIds || 
                                             market.clob_token_ids || 
-                                            [];
+                                            market.tokenIds || [];
                                             
-                    if (tokenIds.length === 0) continue;
-
-                    // Skip closed/resolved markets
-                    if (market.closed || market.resolved) continue;
+                    if (tokenIds.length !== 2) continue; // Strictly Binary for MM
 
                     const conditionId = market.conditionId || market.condition_id;
                     if (!conditionId) continue;
@@ -262,7 +265,7 @@ export class MarketMakingScanner extends EventEmitter {
                         }
 
                         const isYesToken = outcomes[i]?.toLowerCase() === 'yes' || i === 0;
-                        const pairedTokenId = tokenIds.length > 1 ? tokenIds[i === 0 ? 1 : 0] : undefined;
+                        const pairedTokenId = tokenIds[i === 0 ? 1 : 0];
 
                         this.trackedMarkets.set(tokenId, {
                             conditionId,
@@ -283,13 +286,16 @@ export class MarketMakingScanner extends EventEmitter {
 
                         newTokenIds.push(tokenId);
                         addedCount++;
+
+                        // SYNC FIX: Fetch initial price from REST immediately
+                        this.fetchInitialPrice(tokenId);
                     }
                 }
             }
 
             this.logger.info(`✅ Tracking ${this.trackedMarkets.size} tokens (${addedCount} new) | Min volume: $${this.config.minVolume}`);
 
-            if (newTokenIds.length > 0 && this.ws?.readyState === WebSocket.OPEN) {
+            if (newTokenIds.length > 0 && this.ws?.readyState === 1) {
                 this.subscribeToTokens(newTokenIds);
             }
 
@@ -297,6 +303,28 @@ export class MarketMakingScanner extends EventEmitter {
             const err = error instanceof Error ? error : new Error(String(error));
             this.logger.error('❌ Failed to discover markets:', err);
         }
+    }
+
+    /**
+     * NEW: Fetch initial midpoint from REST to avoid empty UI
+     */
+    private async fetchInitialPrice(tokenId: string) {
+        try {
+            const market = this.trackedMarkets.get(tokenId);
+            if (!market) return;
+            
+            const response = await fetch(`${WS_URLS.CLOB.replace('wss://ws-subscriptions-clob', 'https://clob')}/midpoint?token_id=${tokenId}`);
+            if (response.ok) {
+                const data = await response.json();
+                const mid = parseFloat(data.mid);
+                if (mid > 0) {
+                    market.bestBid = mid - 0.005;
+                    market.bestAsk = mid + 0.005;
+                    market.spread = 0.01;
+                    this.updateOpportunities();
+                }
+            }
+        } catch (e) {}
     }
 
     // ORIGINAL: WebSocket connection (UNCHANGED)
@@ -351,8 +379,7 @@ export class MarketMakingScanner extends EventEmitter {
      * Per docs: Enables best_bid_ask + new_market + market_resolved + tick_size_change
      */
     private subscribeToAllTrackedTokens() {
-        // FIX: Use WsWebSocket constant
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        if (!this.ws || this.ws.readyState !== 1) return;
 
         const assetIds = Array.from(this.trackedMarkets.keys());
         
@@ -368,7 +395,7 @@ export class MarketMakingScanner extends EventEmitter {
 
     // ORIGINAL: Dynamic subscription (UNCHANGED)
     private subscribeToTokens(tokenIds: string[]) {
-if (!this.ws || this.ws.readyState !== WebSocket.OPEN || tokenIds.length === 0) return;
+        if (!this.ws || this.ws.readyState !== 1 || tokenIds.length === 0) return;
 
         this.ws.send(JSON.stringify({
             assets_ids: tokenIds,
@@ -494,7 +521,7 @@ if (!this.ws || this.ws.readyState !== WebSocket.OPEN || tokenIds.length === 0) 
             }
         }
 
-if (assetIds.length > 0 && this.ws?.readyState === WebSocket.OPEN) {
+        if (assetIds.length > 0 && this.ws?.readyState === 1) {
             this.subscribeToTokens(assetIds);
             this.logger.success(`✨ Subscribed to new market: ${question.slice(0, 50)}...`);
         }
@@ -657,34 +684,82 @@ if (assetIds.length > 0 && this.ws?.readyState === WebSocket.OPEN) {
             skew
         };
 
-        const rewardEligible = market.rewardsMaxSpread && 
-            market.spread <= market.rewardsMaxSpread;
+        this.updateOpportunitiesInternal(opportunity);
+    }
 
-        const existingIdx = this.opportunities.findIndex(o => o.tokenId === market.tokenId);
-
+    private async updateOpportunitiesInternal(opp: MarketOpportunity) {
+        const existingIdx = this.opportunities.findIndex(o => o.tokenId === opp.tokenId);
         if (existingIdx !== -1) {
-            this.opportunities[existingIdx] = opportunity;
+            this.opportunities[existingIdx] = opp;
         } else {
-            this.opportunities.push(opportunity);
-            
-            const tags = [
-                isStillNew ? '🆕 NEW' : '',
-                rewardEligible ? '💰 REWARDS' : '',
-                market.volume > 50000 ? '🔥 HIGH-VOL' : ''
-            ].filter(Boolean).join(' ');
-
-            this.logger.success(
-                `📊 MM Opportunity: ${market.question.slice(0, 40)}... | ` +
-                `Spread: ${spreadCents.toFixed(1)}¢ | Vol: $${(market.volume / 1000).toFixed(1)}k ${tags}`
-            );
+            this.opportunities.push(opp);
         }
+
+        // PERSIST TO DATABASE
+        try {
+            await MoneyMarketOpportunity.findOneAndUpdate(
+                { tokenId: opp.tokenId },
+                { ...opp, timestamp: new Date() },
+                { upsert: true }
+            );
+        } catch (dbErr) {}
 
         this.opportunities.sort((a, b) => {
             if (a.isNew !== b.isNew) return a.isNew ? -1 : 1;
             return b.spreadCents - a.spreadCents;
         });
 
-        this.emit('opportunity', opportunity);
+        this.emit('opportunity', opp);
+    }
+
+    private updateOpportunities() {
+        const opps: MarketOpportunity[] = [];
+        const now = Date.now();
+
+        for (const [tokenId, market] of this.trackedMarkets.entries()) {
+            if (market.bestBid > 0 && market.bestAsk > 0) {
+                const spreadCents = market.spread * 100;
+                
+                if (spreadCents >= this.config.minSpreadCents && spreadCents <= this.config.maxSpreadCents) {
+                    const midpoint = (market.bestBid + market.bestAsk) / 2;
+                    const isNew = (now - market.discoveredAt) < (this.config.newMarketAgeMinutes * 60 * 1000);
+                    
+                    const opp: MarketOpportunity = {
+                        marketId: market.conditionId,
+                        conditionId: market.conditionId,
+                        tokenId,
+                        question: market.question,
+                        bestBid: market.bestBid,
+                        bestAsk: market.bestAsk,
+                        spread: market.spread,
+                        spreadPct: (market.spread / midpoint) * 100,
+                        spreadCents,
+                        midpoint,
+                        volume: market.volume,
+                        liquidity: market.liquidity,
+                        isNew,
+                        rewardsMaxSpread: market.rewardsMaxSpread,
+                        rewardsMinSize: market.rewardsMinSize,
+                        timestamp: now,
+                        roi: (market.spread / midpoint) * 100,
+                        combinedCost: 1 - market.spread,
+                        capacityUsd: market.liquidity
+                    };
+                    opps.push(opp);
+                    
+                    // Fire update to DB
+                    MoneyMarketOpportunity.findOneAndUpdate(
+                        { tokenId: opp.tokenId },
+                        { ...opp, timestamp: new Date() },
+                        { upsert: true }
+                    ).catch(() => {});
+                }
+            }
+        }
+        this.opportunities = opps.sort((a, b) => b.spreadPct - a.spreadPct);
+        if (this.opportunities.length > 0) {
+            this.emit('opportunity', this.opportunities[0]);
+        }
     }
 
     // ============================================================
@@ -693,7 +768,7 @@ if (assetIds.length > 0 && this.ws?.readyState === WebSocket.OPEN) {
 
     private startPing() {
         this.pingInterval = setInterval(() => {
-if (this.ws?.readyState === WebSocket.OPEN) {
+            if (this.ws?.readyState === 1) {
                 this.ws.send('PING');
             }
         }, 10000);
@@ -734,10 +809,9 @@ if (this.ws?.readyState === WebSocket.OPEN) {
         }
 
         if (this.ws) {
-            // FIX: Using cast to any to satisfy 'removeAllListeners' and 'terminate' which might missing in mix-type environment
             const wsAny = this.ws as any;
             wsAny.removeAllListeners();
-if (this.ws.readyState === WebSocket.OPEN) {
+            if (this.ws.readyState === 1) {
                 wsAny.terminate();
             }
             this.ws = undefined;
@@ -792,15 +866,7 @@ if (this.ws.readyState === WebSocket.OPEN) {
     // NEW: Risk Management Public Methods
     // ============================================================
 
-    /**
-     * Track order fills for inventory management
-     * Call this from your trade executor when orders fill
-     */
-    onOrderFilled(
-        tokenId: string,
-        side: 'BUY' | 'SELL',
-        size: number
-    ) {
+    onOrderFilled(tokenId: string, side: 'BUY' | 'SELL', size: number) {
         const market = this.trackedMarkets.get(tokenId);
         if (!market) return;
 
@@ -818,7 +884,6 @@ if (this.ws.readyState === WebSocket.OPEN) {
             this.inventoryBalances.set(conditionId, balance);
         }
 
-        // Update balance
         const isYes = market.isYesToken;
         if (side === 'BUY') {
             if (isYes) balance.yes += size;
@@ -828,17 +893,11 @@ if (this.ws.readyState === WebSocket.OPEN) {
             else balance.no -= size;
         }
 
-        // Check for auto-merge opportunity
         const mergeableAmount = Math.min(balance.yes, balance.no);
         if (mergeableAmount >= this.config.autoMergeThreshold) {
-            this.emit('mergeOpportunity', {
-                conditionId,
-                amount: mergeableAmount,
-                balance
-            });
+            this.emit('mergeOpportunity', { conditionId, amount: mergeableAmount, balance });
         }
 
-        // Check inventory limits
         const midpoint = market.bestBid > 0 ? (market.bestBid + market.bestAsk) / 2 : 0.5;
         const yesExposure = Math.max(0, balance.yes - balance.no) * midpoint;
         const noExposure = Math.max(0, balance.no - balance.yes) * (1 - midpoint);
@@ -846,102 +905,60 @@ if (this.ws.readyState === WebSocket.OPEN) {
 
         if (maxExposure > this.config.maxInventoryPerToken) {
             this.logger.warn(`⚠️ Inventory limit exceeded: $${maxExposure.toFixed(2)} on ${market.question.slice(0, 30)}...`);
-            this.emit('inventoryLimit', {
-                conditionId,
-                tokenId,
-                exposure: maxExposure,
-                balance
-            });
+            this.emit('inventoryLimit', { conditionId, tokenId, exposure: maxExposure, balance });
         }
     }
 
-    /**
-     * Get inventory skew for quote adjustment
-     * Returns -1 to +1 (negative = long NO, positive = long YES)
-     */
     getInventorySkew(conditionId: string): number {
         const balance = this.inventoryBalances.get(conditionId);
         if (!balance) return 0;
-
         const total = balance.yes + balance.no;
         if (total === 0) return 0;
         return (balance.yes - balance.no) / total;
     }
 
-    /**
-     * Get current tick size for a token
-     */
     getTickSize(tokenId: string): string {
         const info = this.tickSizes.get(tokenId);
         return info?.tickSize || '0.01';
     }
 
-    /**
-     * Round price to valid tick size
-     */
     roundToTickSize(price: number, tokenId: string): number {
         const tickSize = parseFloat(this.getTickSize(tokenId));
         return Math.round(price / tickSize) * tickSize;
     }
 
-    /**
-     * Trigger kill switch - stops all processing
-     */
     triggerKillSwitch(reason: string) {
         if (!this.config.enableKillSwitch) return;
-
         this.killSwitchActive = true;
         this.logger.error(`🚨 KILL SWITCH TRIGGERED: ${reason}`);
-        
         this.emit('killSwitch', { reason, timestamp: Date.now() });
     }
 
-    /**
-     * Reset kill switch
-     */
     resetKillSwitch() {
         this.killSwitchActive = false;
         this.logger.info('🔄 Kill switch reset');
     }
 
-    /**
-     * Check if kill switch is active
-     */
     isKillSwitchActive(): boolean {
         return this.killSwitchActive;
     }
 
-    /**
-     * Get inventory balance for a market
-     */
     getInventoryBalance(conditionId: string): InventoryBalance | undefined {
         return this.inventoryBalances.get(conditionId);
     }
 
-    /**
-     * Get all inventory balances
-     */
     getAllInventoryBalances(): Map<string, InventoryBalance> {
         return new Map(this.inventoryBalances);
     }
 
-    /**
-     * Get tracked market info
-     */
     getTrackedMarket(tokenId: string): TrackedMarket | undefined {
         return this.trackedMarkets.get(tokenId);
     }
 
-    /**
-     * Check if market is resolved
-     */
     isMarketResolved(conditionId: string): boolean {
         return this.resolvedMarkets.has(conditionId);
     }
 
-    /**
-     * Emergency stop - triggers kill switch and stops scanner
-     */
     async emergencyStop(reason: string) {
         this.triggerKillSwitch(reason);
         this.stop();

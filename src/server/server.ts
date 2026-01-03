@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
@@ -8,7 +7,7 @@ import mongoose from 'mongoose';
 import { ethers, JsonRpcProvider } from 'ethers';
 import { BotEngine, BotConfig } from './bot-engine.js';
 import { TradingWalletConfig } from '../domain/wallet.types.js';
-import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog, DepositLog, HunterEarning } from '../database/index.js';
+import { connectDB, User, Registry, Trade, Feedback, BridgeTransaction, BotLog, DepositLog, HunterEarning, MoneyMarketOpportunity } from '../database/index.js';
 import { PortfolioSnapshotModel } from '../database/portfolio.schema.js';
 import { loadEnv, TOKENS } from '../config/env.js';
 import { DbRegistryService } from '../services/db-registry.service.js';
@@ -138,7 +137,7 @@ async function startUserBot(userId: string, config: BotConfig) {
                 }
             });
         },
-        onMMUpdate: async (opportunities) => {
+        onArbUpdate: async (opportunities) => {
             // Memory update handled by poll
         },
         onFeePaid: async (event) => {
@@ -421,7 +420,7 @@ app.post('/api/feedback', async (req: any, res: any) => {
 
 // 5. Start Bot
 app.post('/api/bot/start', async (req: any, res: any) => {
-  const { userId, userAddresses, rpcUrl, geminiApiKey, multiplier, riskProfile, enableAutoMM, autoTp, notifications, autoCashout, maxTradeAmount } = req.body;
+  const { userId, userAddresses, rpcUrl, geminiApiKey, multiplier, riskProfile, enableAutoArb, autoTp, notifications, autoCashout, maxTradeAmount } = req.body;
   
   if (!userId) { res.status(400).json({ error: 'Missing userId' }); return; }
   const normId = userId.toLowerCase();
@@ -446,7 +445,7 @@ app.post('/api/bot/start', async (req: any, res: any) => {
         geminiApiKey,
         multiplier: Number(multiplier),
         riskProfile,
-        enableAutoMM,
+        enableAutoArb,
         autoTp: autoTp ? Number(autoTp) : undefined,
         enableNotifications: notifications?.enabled,
         userPhoneNumber: notifications?.phoneNumber,
@@ -545,6 +544,9 @@ app.get('/api/bot/status/:userId', async (req: any, res: any) => {
         const user = await User.findOne({ address: normId }).lean();
         const dbLogs = await BotLog.find({ userId: normId }).sort({ timestamp: -1 }).limit(100).lean();
         
+        // PERSISTED RECENT OPPORTUNITIES FALLBACK
+        const persistedMMOpps = await MoneyMarketOpportunity.find().sort({ timestamp: -1 }).limit(20).lean();
+
         const formattedLogs = dbLogs.map(l => ({
             id: l._id.toString(),
             time: l.timestamp.toLocaleTimeString(),
@@ -561,28 +563,21 @@ app.get('/api/bot/status/:userId', async (req: any, res: any) => {
         // LIVE FEED:
         // Use active memory state if running, else DB state.
         let livePositions = [];
-        let mmOpportunities = [];
+        let mmOpportunities = persistedMMOpps; // Start with historical ones
         
         if (engine) {
             // Priority: Active Engine Memory (which is synced from DB)
             livePositions = (engine as any).activePositions || [];
-            // Access money market scanner from bot engine
-            const adapter = engine.getAdapter();
-            // Get latest money market opportunities
-            mmOpportunities = (engine as any).arbScanner?.getLatestOpportunities() || [];
+            
+            // Access arbitrage scanner from bot engine
+            const engineOpps = (engine as any).arbScanner?.getLatestOpportunities() || [];
+            if (engineOpps.length > 0) {
+                mmOpportunities = engineOpps; // Override with live ones if they exist
+            }
         } else if (user && user.activePositions) {
             // Fallback: Database State
             livePositions = user.activePositions;
         }
-
-        // --- DEBUG LOG FOR POSITIONS ---
-        // CLARIFICATION: This logs the payload for the current USER VIEWING THE DASHBOARD (normId),
-        // but the positions themselves are fetched for the SAFE associated with that user.
-        if (livePositions.length > 0) {
-            //console.log(`\n📦 [DEBUG] Raw Positions Payload for User ${normId.slice(0, 6)}... (Safe: ${user?.tradingWallet?.safeAddress?.slice(0,6) || 'Unknown'}) :`);
-            //console.dir(livePositions, { depth: null, colors: true });
-        }
-        // -------------------------------
 
         res.json({ 
             isRunning: engine ? engine.isRunning : (user?.isBotRunning || false),
@@ -591,7 +586,7 @@ app.get('/api/bot/status/:userId', async (req: any, res: any) => {
             positions: livePositions, 
             stats: user?.stats || null,
             config: user?.activeBotConfig || null,
-            mmOpportunities
+            mmOpportunities: mmOpportunities // SYNC KEY NAME WITH index.tsx
         });
     } catch (e) {
         console.error("Status Error:", e);
@@ -840,7 +835,7 @@ app.post('/api/wallet/add-recovery', async (req: any, res: any) => {
     }
 });
 
-app.post('/api/bot/execute-mm', async (req, res) => {
+app.post('/api/bot/execute-arb', async (req, res) => {
     const { userId, marketId } = req.body;
     const engine = ACTIVE_BOTS.get(userId.toLowerCase());
     if (!engine) return res.status(404).json({ error: "Engine offline" });

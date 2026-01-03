@@ -101,4 +101,5 @@ portfolioSnapshotSchema.statics.cleanupOldSnapshots = async function () {
         timestamp: { $lt: cutoffDate }
     });
 };
+// FIX: Use named generic parameters to ensure the exported model has both base and custom methods
 export const PortfolioSnapshotModel = mongoose.model('PortfolioSnapshot', portfolioSnapshotSchema);

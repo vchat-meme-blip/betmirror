@@ -22,8 +22,8 @@ export const TOKENS = {
     USDC_BRIDGED: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174' // Polymarket Standard (USDC.e)
 };
 export const WS_URLS = {
-    CLOB: 'wss://clob.polymarket.com/ws',
-    DATA: 'wss://data.polymarket.com/ws'
+    CLOB: 'wss://ws-subscriptions-clob.polymarket.com',
+    DATA: 'wss://ws-live-data.polymarket.com'
 };
 export function loadEnv() {
     const parseList = (val) => {

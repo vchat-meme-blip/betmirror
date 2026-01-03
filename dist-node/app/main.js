@@ -71,6 +71,8 @@ async function main() {
                 return res.data.map((p) => ({
                     marketId: p.conditionId || p.market,
                     tokenId: p.asset,
+                    // FIX: Added conditionId to satisfy bot-engine requirements and align with updated PositionData interface
+                    conditionId: p.conditionId || p.asset,
                     outcome: p.outcome || 'UNK',
                     balance: Number(p.size),
                     valueUsd: Number(p.size) * Number(p.price),
@@ -81,6 +83,10 @@ async function main() {
             catch (e) {
                 return [];
             }
+        },
+        // FIX: Added missing mergePositions method
+        mergePositions: async (conditionId, amount) => {
+            return "merge_not_supported_in_headless";
         },
         fetchPublicTrades: async (address, limit = 20) => {
             try {
@@ -113,6 +119,10 @@ async function main() {
         getTradeHistory: async (address, limit = 20) => {
             return []; // Simplified for headless
         },
+        // FIX: Added missing getOpenOrders method to match IExchangeAdapter interface
+        getOpenOrders: async () => [],
+        // FIX: Added missing cancelAllOrders method
+        cancelAllOrders: async () => true,
         createOrder: async (params) => {
             const isBuy = params.side === 'BUY';
             const orderSide = isBuy ? Side.BUY : Side.SELL;

@@ -122,7 +122,7 @@ async function startUserBot(userId, config) {
                 }
             });
         },
-        onArbUpdate: async (opportunities) => {
+        onMMUpdate: async (opportunities) => {
             // Memory update handled by poll
         },
         onFeePaid: async (event) => {
@@ -375,7 +375,7 @@ app.post('/api/feedback', async (req, res) => {
 });
 // 5. Start Bot
 app.post('/api/bot/start', async (req, res) => {
-    const { userId, userAddresses, rpcUrl, geminiApiKey, multiplier, riskProfile, enableAutoArb, autoTp, notifications, autoCashout, maxTradeAmount } = req.body;
+    const { userId, userAddresses, rpcUrl, geminiApiKey, multiplier, riskProfile, enableAutoMM, autoTp, notifications, autoCashout, maxTradeAmount } = req.body;
     if (!userId) {
         res.status(400).json({ error: 'Missing userId' });
         return;
@@ -398,7 +398,7 @@ app.post('/api/bot/start', async (req, res) => {
             geminiApiKey,
             multiplier: Number(multiplier),
             riskProfile,
-            enableAutoArb,
+            enableAutoMM,
             autoTp: autoTp ? Number(autoTp) : undefined,
             enableNotifications: notifications?.enabled,
             userPhoneNumber: notifications?.phoneNumber,
@@ -509,15 +509,14 @@ app.get('/api/bot/status/:userId', async (req, res) => {
         // LIVE FEED:
         // Use active memory state if running, else DB state.
         let livePositions = [];
-        let arbOpportunities = [];
+        let mmOpportunities = [];
         if (engine) {
             // Priority: Active Engine Memory (which is synced from DB)
             livePositions = engine.activePositions || [];
-            // Access arbitrage scanner from bot engine
+            // Access money market scanner from bot engine
             const adapter = engine.getAdapter();
-            // In a real implementation, BotEngine would expose latest opportunities
-            // We'll mock it here or ensure BotEngine has a getter
-            arbOpportunities = engine.arbScanner?.getLatestOpportunities() || [];
+            // Get latest money market opportunities
+            mmOpportunities = engine.arbScanner?.getLatestOpportunities() || [];
         }
         else if (user && user.activePositions) {
             // Fallback: Database State
@@ -537,7 +536,8 @@ app.get('/api/bot/status/:userId', async (req, res) => {
             history: historyUI,
             positions: livePositions,
             stats: user?.stats || null,
-            config: user?.activeBotConfig || null, arbOpportunities
+            config: user?.activeBotConfig || null,
+            mmOpportunities
         });
     }
     catch (e) {
@@ -822,12 +822,12 @@ app.post('/api/wallet/add-recovery', async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-app.post('/api/bot/execute-arb', async (req, res) => {
+app.post('/api/bot/execute-mm', async (req, res) => {
     const { userId, marketId } = req.body;
     const engine = ACTIVE_BOTS.get(userId.toLowerCase());
     if (!engine)
         return res.status(404).json({ error: "Engine offline" });
-    const success = await engine.dispatchManualArb(marketId);
+    const success = await engine.dispatchManualMM(marketId);
     res.json({ success });
 });
 app.post('/api/trade/sync', async (req, res) => {
@@ -999,6 +999,49 @@ app.post('/api/feedback', async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
+// GET /api/market/:marketId
+app.get('/api/market/:marketId', async (req, res) => {
+    const { marketId } = req.params;
+    serverLogger.info(`[API-MARKET] Checking market data for: ${marketId}`);
+    try {
+        // Find a running bot to get the market data
+        const engines = Array.from(ACTIVE_BOTS.values());
+        if (engines.length === 0) {
+            return res.status(404).json({ error: 'No active bot found' });
+        }
+        const engine = engines[0];
+        const adapter = engine.getAdapter();
+        if (!adapter) {
+            return res.status(404).json({ error: 'No adapter found' });
+        }
+        const client = adapter.getRawClient?.();
+        if (!client) {
+            return res.status(404).json({ error: 'No client found' });
+        }
+        const market = await client.getMarket(marketId);
+        if (!market) {
+            serverLogger.warn(`[API-MARKET] 404: Market ${marketId} not found in CLOB.`);
+            return res.status(404).json({ error: 'Market not found' });
+        }
+        // CRITICAL DEBUG LOG FOR SLIPLANE
+        serverLogger.info(`[API-MARKET] Data: closed=${market.closed}, active=${market.active}, status=${market.status}`);
+        if (market.tokens) {
+            market.tokens.forEach((t) => {
+                serverLogger.info(`   - Outcome: ${t.outcome}, Winner: ${t.winner}`);
+            });
+        }
+        res.json(market);
+    }
+    catch (e) {
+        serverLogger.error(`Market data error: ${e.message}`);
+        if (String(e).includes("404") || String(e).includes("Not Found")) {
+            res.status(404).json({ error: 'Market not found or resolved' });
+        }
+        else {
+            res.status(500).json({ error: e.message });
+        }
+    }
+});
 app.get('*', (req, res) => {
     const indexPath = path.join(distPath, 'index.html');
     if (!fs.existsSync(indexPath)) {
@@ -1097,40 +1140,6 @@ async function seedRegistry() {
     }
     await registryAnalytics.updateAllRegistryStats();
 }
-// --- MARKET DATA ENDPOINTS ---
-app.get('/api/market/:marketId', async (req, res) => {
-    const { marketId } = req.params;
-    try {
-        // Find a running bot to get the market data
-        const engines = Array.from(ACTIVE_BOTS.values());
-        if (engines.length === 0) {
-            return res.status(404).json({ error: 'No active bot found' });
-        }
-        const engine = engines[0];
-        const adapter = engine.getAdapter();
-        if (!adapter) {
-            return res.status(404).json({ error: 'No adapter found' });
-        }
-        const client = adapter.getRawClient?.();
-        if (!client) {
-            return res.status(404).json({ error: 'No client found' });
-        }
-        const market = await client.getMarket(marketId);
-        if (!market) {
-            return res.status(404).json({ error: 'Market not found' });
-        }
-        res.json(market);
-    }
-    catch (e) {
-        serverLogger.error(`Market data error: ${e.message}`);
-        if (String(e).includes("404") || String(e).includes("Not Found")) {
-            res.status(404).json({ error: 'Market not found or resolved' });
-        }
-        else {
-            res.status(500).json({ error: e.message });
-        }
-    }
-});
 // --- PORTFOLIO ANALYTICS ENDPOINTS ---
 app.get('/api/portfolio/snapshots/:userId', async (req, res) => {
     const { userId } = req.params;
