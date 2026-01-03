@@ -17,7 +17,7 @@ import { EvmWalletService } from '../services/evm-wallet.service.js';
 import { TOKENS } from '../config/env.js';
 import { registryAnalytics } from '../services/registry-analytics.service.js';
 import { MarketMakingScanner, MarketOpportunity } from '../services/arbitrage-scanner.js';
-import { ArbitrageOpportunity } from '../adapters/interfaces.js';
+import { MoneyMarketOpportunity } from '../adapters/interfaces.js';
 import crypto from 'crypto';
 
 export interface BotConfig {
@@ -36,7 +36,8 @@ export interface BotConfig {
     enableAutoCashout?: boolean; // Legacy compat
     maxRetentionAmount?: number; // Legacy compat
     coldWalletAddress?: string; // Legacy compat
-    enableAutoArb?: boolean;
+    enableAutoMM?: boolean;
+    enableAutoArb?: boolean; // Legacy compat
     activePositions?: ActivePosition[];
     stats?: UserStats;
     l2ApiCredentials?: L2ApiCredentials;
@@ -54,14 +55,14 @@ export interface BotCallbacks {
     onTradeComplete?: (trade: TradeHistoryEntry) => Promise<void>;
     onStatsUpdate?: (stats: UserStats) => Promise<void>;
     onPositionsUpdate?: (positions: ActivePosition[]) => Promise<void>;
-    onArbUpdate?: (opportunities: ArbitrageOpportunity[]) => Promise<void>;
+    onMMUpdate?: (opportunities: MoneyMarketOpportunity[]) => Promise<void>;
 }
 
 export class BotEngine {
     public isRunning = false;
     private monitor?: TradeMonitorService;
     private executor?: TradeExecutorService;
-    private arbScanner?: MarketMakingScanner;
+    private mmScanner?: MarketMakingScanner;
     private exchange?: PolymarketAdapter;
     private portfolioService?: PortfolioService;
     private runtimeEnv: any;
@@ -402,13 +403,13 @@ export class BotEngine {
 
             await this.exchange.initialize();
 
-            // Initialize the real-time arbitrage scanner instance (Actually Market Making)
-            this.arbScanner = new MarketMakingScanner(this.exchange, engineLogger);
+            // Initialize the real-time money market scanner instance
+            this.mmScanner = new MarketMakingScanner(this.exchange, engineLogger);
             
             // --- NEW MARKET MAKING EVENT WIREUP ---
 
             // 1. Kill Switch: Stop trading if flash move detected
-            this.arbScanner.on('killSwitch', async ({ reason }) => {
+            this.mmScanner.on('killSwitch', async ({ reason }) => {
                 await this.addLog('error', `🚨 EMERGENCY STOP: ${reason}`);
                 if (this.executor) {
                     const adapter = this.executor.getAdapter();
@@ -418,7 +419,7 @@ export class BotEngine {
             });
 
             // 2. Auto Merge: If we have equal YES and NO, free up USDCe
-            this.arbScanner.on('mergeOpportunity', async ({ conditionId, amount }) => {
+            this.mmScanner.on('mergeOpportunity', async ({ conditionId, amount }) => {
                 await this.addLog('info', `📦 Auto-Merging ${amount} pairs for ${conditionId}`);
                 try {
                     const adapter = this.executor?.getAdapter();
@@ -434,7 +435,7 @@ export class BotEngine {
             });
 
             // 3. Instant Redemption
-            this.arbScanner.on('marketResolved', async ({ conditionId, question }) => {
+            this.mmScanner.on('marketResolved', async ({ conditionId, question }) => {
                 await this.addLog('info', `🏁 Market Resolved: ${question}`);
                 // Force a position sync to find winning shares
                 await this.syncPositions(true);
@@ -446,18 +447,18 @@ export class BotEngine {
             });
 
             // 4. Standard Quote Signal
-            this.arbScanner.on('opportunity', async (opp: MarketOpportunity) => {
-                if (this.callbacks?.onArbUpdate) {
-                    const arbOpps = this.arbScanner!.getOpportunities().map(o => ({
+            this.mmScanner.on('opportunity', async (opp: MarketOpportunity) => {
+                if (this.callbacks?.onMMUpdate) {
+                    const mmOpps = this.mmScanner!.getOpportunities().map(o => ({
                         ...o,
                         marketId: o.conditionId,
                         roi: o.spreadPct,
                         combinedCost: 1 - o.spread,
                         capacityUsd: o.liquidity || 0
-                    } as ArbitrageOpportunity));
-                    await this.callbacks.onArbUpdate(arbOpps);
+                    } as MoneyMarketOpportunity));
+                    await this.callbacks.onMMUpdate(mmOpps);
                 }
-                if (this.config.enableAutoArb) {
+                if (this.config.enableAutoMM) {
                     await this.executeMarketMaking(opp);
                 }
             });
@@ -480,7 +481,7 @@ export class BotEngine {
 
     public stop() {
         this.isRunning = false;
-        this.arbScanner?.stop();
+        this.mmScanner?.stop();
         if (this.monitor) this.monitor.stop();
         if (this.portfolioService) this.portfolioService.stopSnapshotService();
         if (this.fundWatcher) {
@@ -506,8 +507,8 @@ export class BotEngine {
         }
     }
 
-    public async dispatchManualArb(marketId: string): Promise<boolean> {
-        const opps = this.arbScanner?.getOpportunities();
+    public async dispatchManualMM(marketId: string): Promise<boolean> {
+        const opps = this.mmScanner?.getOpportunities();
         const target = opps?.find(o => o.conditionId === marketId);
         if (target) {
             await this.executeMarketMaking(target);
@@ -574,8 +575,8 @@ export class BotEngine {
             await this.startServices(engineLogger);
 
             // Start scanner only after exchange is authenticated and services are ready
-            if (this.arbScanner) {
-                await this.arbScanner.start();
+            if (this.mmScanner) {
+                await this.mmScanner.start();
             }
 
             await this.syncPositions(true); 
@@ -821,14 +822,14 @@ export class BotEngine {
     }
 
     
-    public getArbOpportunities() { 
-        return this.arbScanner?.getOpportunities().map(o => ({
+public getMoneyMarketOpportunities() { 
+        return this.mmScanner?.getOpportunities().map(o => ({
             ...o,
             marketId: o.conditionId,
             roi: o.spreadPct,
             combinedCost: 1 - o.spread,
             capacityUsd: o.liquidity || 0
-        } as ArbitrageOpportunity)) || []; 
+        } as MoneyMarketOpportunity)) || []; 
     }
 
     public getCallbacks(): BotCallbacks | undefined {
