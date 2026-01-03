@@ -190,7 +190,7 @@ const MoneyMarketFeed = ({ opportunities, onExecute, isAutoArb }: {
                     const marketLink = opp.marketSlug ? `https://polymarket.com/market/${opp.marketSlug}` : null;
 
                     return (
-                        <div key={opp.tokenId} className="glass-panel p-6 rounded-3xl border border-emerald-500/20 hover:border-emerald-500/50 transition-all group relative overflow-hidden flex flex-col">
+                        <div key={opp.tokenId} className="bg-white dark:bg-gray-900 p-6 rounded-3xl border border-gray-200 dark:border-gray-700 hover:border-emerald-300 dark:hover:border-emerald-500/50 transition-all group relative overflow-hidden flex flex-col shadow-sm hover:shadow-md dark:shadow-gray-900/30">
                             {isAutoArb && (
                                 <div className="absolute top-0 right-0 px-3 py-1 bg-blue-500 text-white text-[8px] font-black uppercase tracking-tighter rounded-bl-xl z-20">
                                     Autonomous MM Active
@@ -208,59 +208,68 @@ const MoneyMarketFeed = ({ opportunities, onExecute, isAutoArb }: {
                                     )}
                                 </div>
                                 <div className="text-right">
-                                    <div className="text-[10px] font-bold text-gray-500 uppercase tracking-[0.2em]">Target ROI</div>
-                                    <div className="text-2xl font-black text-blue-500">+{opp.spreadPct.toFixed(2)}%</div>
+                                    <div className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-[0.2em]">Target ROI</div>
+                                    <div className="text-2xl font-black bg-gradient-to-r from-emerald-600 to-teal-500 bg-clip-text text-transparent">+{opp.spreadPct.toFixed(2)}%</div>
                                 </div>
                             </div>
 
                             <h4 className="font-bold text-gray-900 dark:text-white text-sm line-clamp-2 mb-6 h-10 leading-tight flex-grow">{opp.question}</h4>
                             
                             <div className="grid grid-cols-2 gap-2 mb-4">
-                                <div className="p-2 bg-black/20 rounded-xl border border-white/5">
-                                    <div className="text-[8px] text-gray-500 font-bold uppercase tracking-widest">Total Volume</div>
-                                    <div className="text-xs font-mono font-bold text-white">${formatCompactNumber(opp.volume || 0)}</div>
+                                <div className="p-3 bg-white dark:bg-white/5 rounded-xl border border-gray-100 dark:border-white/10 hover:border-emerald-200 dark:hover:border-emerald-500/30 transition-colors">
+                                    <div className="text-[9px] text-gray-400 dark:text-gray-500 font-bold uppercase tracking-wider mb-1">Total Volume</div>
+                                    <div className="text-sm font-mono font-bold text-gray-800 dark:text-white">${formatCompactNumber(opp.volume || 0)}</div>
                                 </div>
-                                <div className="p-2 bg-black/20 rounded-xl border border-white/5">
-                                    <div className="text-[8px] text-gray-500 font-bold uppercase tracking-widest">Deep Liquidity</div>
-                                    <div className="text-xs font-mono font-bold text-white">${formatCompactNumber(opp.liquidity || 0)}</div>
+                                <div className="p-3 bg-white dark:bg-white/5 rounded-xl border border-gray-100 dark:border-white/10 hover:border-emerald-200 dark:hover:border-emerald-500/30 transition-colors">
+                                    <div className="text-[9px] text-gray-400 dark:text-gray-500 font-bold uppercase tracking-wider mb-1">Deep Liquidity</div>
+                                    <div className="text-sm font-mono font-bold text-gray-800 dark:text-white">${formatCompactNumber(opp.liquidity || 0)}</div>
                                 </div>
                             </div>
 
-                            <div className="space-y-4 bg-black/20 p-4 rounded-2xl mb-6 border border-white/5">
+                            <div className="space-y-4 bg-white dark:bg-white/5 p-4 rounded-2xl mb-6 border border-gray-100 dark:border-white/10">
                                 <div className="flex justify-between text-[10px]">
-                                    <span className="text-gray-500 uppercase font-black tracking-widest">Bid-Ask Spread</span>
-                                    <span className="font-mono text-blue-400 font-bold">{spreadCents}¢</span>
+                                    <span className="text-gray-500 dark:text-gray-400 uppercase font-black tracking-widest">Bid-Ask Spread</span>
+                                    <span className="font-mono text-emerald-500 dark:text-emerald-400 font-bold">{spreadCents}¢</span>
                                 </div>
-                                <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden flex">
-                                    <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 shadow-[0_0_10px_#3b82f6]" style={{ width: `${Math.min(100, opp.spreadPct * 10)}%` }}></div>
+                                <div className="w-full h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden flex">
+                                    <div 
+                                        className="h-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.3)]" 
+                                        style={{ 
+                                            width: `${Math.min(100, opp.spreadPct * 10)}%`,
+                                            backgroundImage: 'linear-gradient(90deg, #10b981, #34d399)'
+                                        }}
+                                    ></div>
                                 </div>
                                 <div className="flex justify-between text-[10px]">
-                                    <span className="text-gray-500 uppercase font-black tracking-widest">Midpoint</span>
-                                    <span className="font-mono text-white font-bold">${opp.midpoint.toFixed(3)}</span>
+                                    <span className="text-gray-500 dark:text-gray-400 uppercase font-black tracking-widest">Midpoint</span>
+                                    <span className="font-mono text-gray-800 dark:text-white font-bold">${opp.midpoint.toFixed(3)}</span>
                                 </div>
                             </div>
 
                             {rewardEligible && (
-                                <div className="mb-4 p-2 bg-yellow-500/10 border border-yellow-500/30 rounded-xl text-[9px] font-black text-yellow-600 text-center uppercase tracking-widest">
-                                    💰 Reward Eligible (Spread ≤ {opp.rewardsMaxSpread}%)
+                                <div className="mb-4 p-2.5 bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20 rounded-xl text-[10px] font-bold text-amber-700 dark:text-amber-400 text-center uppercase tracking-widest flex items-center justify-center gap-1.5">
+                                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M12 2L1 12h3v9h6v-6h4v6h6v-9h3L12 2z"/>
+                                    </svg>
+                                    Reward Eligible (Spread ≤ {opp.rewardsMaxSpread}%)
                                 </div>
                             )}
 
                             <div className="flex flex-col gap-2">
                                 <button 
                                     onClick={() => onExecute(opp)} 
-                                    className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-black rounded-xl text-xs transition-all shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2 group-hover:-translate-y-1"
+                                    className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl text-xs transition-all shadow-lg shadow-emerald-500/10 hover:shadow-emerald-500/20 flex items-center justify-center gap-2 group-hover:-translate-y-0.5"
                                 >
-                                    <ZapIcon size={16}/> DEPLOY MM STRATEGY
+                                    <ZapIcon size={16} className="text-emerald-200"/> DEPLOY MM STRATEGY
                                 </button>
                                 {marketLink && (
                                     <a 
                                         href={marketLink} 
                                         target="_blank" 
                                         rel="noreferrer"
-                                        className="w-full py-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-500 dark:text-gray-400 font-bold rounded-xl text-[10px] text-center uppercase tracking-widest transition-all flex items-center justify-center gap-1"
+                                        className="w-full py-2.5 bg-white dark:bg-white/5 hover:bg-gray-50 dark:hover:bg-white/10 border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 font-bold rounded-xl text-[10px] text-center uppercase tracking-widest transition-all flex items-center justify-center gap-1.5 hover:shadow-sm"
                                     >
-                                        Inspect on Polymarket <ExternalLink size={10}/>
+                                        Inspect on Polymarket <ExternalLink size={10} className="opacity-60"/>
                                     </a>
                                 )}
                             </div>
