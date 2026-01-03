@@ -162,45 +162,6 @@ const PerformanceChart = ({ userId, selectedRange }: {
  * Money Market Feed - Displays available money market opportunities
  * for providing liquidity and earning yield through market making
  */
-// Error Boundary Components
-const ErrorBoundary = ({ children }: { children: React.ReactNode }) => {
-    const [hasError, setHasError] = useState(false);
-
-    if (hasError) {
-        return (
-            <div className="p-4 bg-red-500/10 text-red-500 rounded-xl">
-                <p>Error loading money market data. Please refresh the page.</p>
-            </div>
-        );
-    }
-
-    return (
-        <ErrorBoundaryInner onError={() => setHasError(true)}>
-            {children}
-        </ErrorBoundaryInner>
-    );
-};
-
-const ErrorBoundaryInner = ({ 
-    children, 
-    onError 
-}: { 
-    children: React.ReactNode; 
-    onError: () => void;
-}) => {
-    useEffect(() => {
-        const handleError = (error: ErrorEvent) => {
-            console.error('Error in MoneyMarketFeed:', error);
-            onError();
-        };
-        
-        window.addEventListener('error', handleError);
-        return () => window.removeEventListener('error', handleError);
-    }, [onError]);
-
-    return <>{children}</>;
-};
-
 const MoneyMarketFeed = ({ opportunities, onExecute, isAutoArb }: { opportunities: MoneyMarketOpportunity[], onExecute: (opp: MoneyMarketOpportunity) => void, isAutoArb: boolean }) => {
     return (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1766,7 +1727,7 @@ const [config, setConfig] = useState<AppConfig>({
     riskProfile: 'balanced',
     minLiquidityFilter: 'LOW',
     autoTp: 20,
-    enableAutoMM: false,
+    enableAutoArb: false,
     enableNotifications: false,
     userPhoneNumber: '',
     enableAutoCashout: false,
@@ -2405,38 +2366,15 @@ const handleWithdraw = async (tokenType: 'USDC' | 'USDC.e' | 'POL', isRescue: bo
     setIsWithdrawing(false);
 };
 
-const handleExecuteMM = useCallback(async (opp: MoneyMarketOpportunity) => {
-    if (!userAddress) {
-        toast.error('Please connect your wallet first');
-        return;
-    }
-    
-    try {
-        toast.info('Executing market making strategy...');
-        
-        // Here you would typically call your MM execution logic
-        // For example:
-        // const result = await executeMMStrategy(opp);
-        
-        console.log('Executing MM opportunity:', opp);
-        toast.success('Market making order placed successfully');
-    } catch (error: any) {
-        console.error('Error executing MM strategy:', error);
-        toast.error(`Failed to execute: ${error.message || 'Unknown error'}`);
-    }
-}, [userAddress]);
-
-const handleExecuteArb = useCallback(async (opp: ArbitrageOpportunity) => {
+const handleExecuteMM = async (opp: MoneyMarketOpportunity) => {
     // This is a MANUAL override command sent to the server engine (Market Making)
     if (!confirm(`Manually Provide Liquidity?\n\nMarket: ${opp.question}\nSpread: ${(opp.spread * 100).toFixed(1)}¢`)) return;
     try {
         await axios.post('/api/bot/execute-arb', { userId: userAddress, marketId: opp.marketId });
         playSound('trade');
         alert("MM Strategy Dispatched to Server Engine");
-    } catch (e) { 
-        alert("MM Trigger Failed"); 
-    }
-}, [userAddress]);
+    } catch (e) { alert("MM Trigger Failed"); }
+};
 
 // --- MANUAL EXIT HANDLER ---
 const handleManualExit = async (position: ActivePosition) => {
@@ -2689,14 +2627,14 @@ return (
             {/* Desktop Navigation */}
             <nav className="hidden md:flex items-center gap-1 bg-gray-100 dark:bg-terminal-card border border-gray-200 dark:border-terminal-border rounded-lg p-1">
                 {[
-                { id: 'dashboard', icon: Activity },
-                { id: 'arbitrage', icon: Scale },
-                { id: 'system', icon: Gauge },
-                { id: 'bridge', icon: Globe },
-                { id: 'marketplace', icon: Users },
-                { id: 'history', icon: History },
-                { id: 'vault', icon: Lock },
-                { id: 'help', icon: LifeBuoy }
+                { id: 'dashboard', icon: Activity, label: 'Dashboard' },
+                { id: 'money-market', icon: Scale, label: 'Money Market' },
+                { id: 'system', icon: Gauge, label: 'System' },
+                { id: 'bridge', icon: Globe, label: 'Bridge' },
+                { id: 'marketplace', icon: Users, label: 'Marketplace' },
+                { id: 'history', icon: History, label: 'History' },
+                { id: 'vault', icon: Lock, label: 'Vault' },
+                { id: 'help', icon: LifeBuoy, label: 'Help' }
                 ].map((tab) => (
                     <button 
                         key={tab.id}
@@ -2708,7 +2646,7 @@ return (
                         }`}
                     >
                         <tab.icon size={14} />
-                        <span className="capitalize">{tab.id}</span>
+                        <span className="capitalize">{tab.label || tab.id.replace('-', ' ')}</span>
                     </button>
                 ))}
             </nav>
@@ -2783,14 +2721,14 @@ return (
             <div className="absolute top-16 left-0 w-full bg-white dark:bg-terminal-card border-b border-gray-200 dark:border-terminal-border z-40 md:hidden animate-in slide-in-from-top-5 shadow-xl">
                 <div className="p-4 grid grid-cols-2 gap-2">
                     {[
-                    { id: 'dashboard', icon: Activity },
-                    { id: 'system', icon: Gauge },
-                    { id: 'money-market', icon: Scale },
-                    { id: 'bridge', icon: Globe },
-                    { id: 'marketplace', icon: Users },
-                    { id: 'history', icon: History },
-                    { id: 'vault', icon: Lock },
-                    { id: 'help', icon: LifeBuoy }
+                    { id: 'dashboard', icon: Activity, label: 'Dashboard' },
+                    { id: 'system', icon: Gauge, label: 'System' },
+                    { id: 'money-market', icon: Scale, label: 'Money Market' },
+                    { id: 'bridge', icon: Globe, label: 'Bridge' },
+                    { id: 'marketplace', icon: Users, label: 'Marketplace' },
+                    { id: 'history', icon: History, label: 'History' },
+                    { id: 'vault', icon: Lock, label: 'Vault' },
+                    { id: 'help', icon: LifeBuoy, label: 'Help' }
                     ].map((tab) => (
                         <button 
                             key={tab.id}
@@ -2802,7 +2740,7 @@ return (
                             }`}
                         >
                             <tab.icon size={20} />
-                            <span className="capitalize">{tab.id}</span>
+                            <span className="capitalize">{tab.label || tab.id.replace('-', ' ')}</span>
                         </button>
                     ))}
                 </div>
@@ -3319,20 +3257,7 @@ return (
                     </div>
                 </div>
 
-                <ErrorBoundary>
-                    {moneyMarketOpps === undefined ? (
-                        <div className="flex justify-center items-center h-64">
-                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
-                            <span className="ml-3">Loading market data...</span>
-                        </div>
-                    ) : (
-                        <MoneyMarketFeed 
-                            opportunities={moneyMarketOpps} 
-                            onExecute={handleExecuteMM} 
-                            isAutoArb={config.enableAutoMM} 
-                        />
-                    )}
-                </ErrorBoundary>
+                <MoneyMarketFeed opportunities={moneyMarketOpps} onExecute={handleExecuteMM} isAutoArb={config.enableAutoArb} />
             </div>
         )}
         
