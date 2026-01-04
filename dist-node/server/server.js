@@ -60,7 +60,6 @@ async function startUserBot(userId, config) {
             try {
                 serverLogger.info(`Trade Complete for ${normId}: ${trade.side} ${trade.outcome} | Executed: $${trade.executedSize?.toFixed(2) || 0} | PnL: $${trade.pnl?.toFixed(2) || 0}`);
                 // ATOMIC STATS UPDATE
-                // We use $inc to prevent race conditions and ensure accurate accounting
                 const update = {
                     $inc: {
                         'stats.totalVolume': trade.executedSize || 0,
@@ -112,9 +111,6 @@ async function startUserBot(userId, config) {
             }
         },
         onStatsUpdate: async (stats) => {
-            // CRITICAL FIX: Use $set on specific non-cumulative fields only.
-            // This prevents overwriting 'totalPnl' and 'totalVolume' back to 0 
-            // when the bot engine synchronizes its in-memory balance.
             await User.updateOne({ address: normId }, {
                 $set: {
                     'stats.portfolioValue': stats.portfolioValue,
@@ -171,11 +167,6 @@ app.post('/api/wallet/status', async (req, res) => {
             let safeAddr = user.tradingWallet.safeAddress || null;
             if (user.tradingWallet.address) {
                 try {
-                    /**
-                     * DERIVATION GUARD:
-                     * We recalculate the address now to ensure parity with the Polymarket SDK logic.
-                     * If the address in the DB was derived using a different factory, we override it here.
-                     */
                     const correctSafeAddr = await SafeManagerService.computeAddress(user.tradingWallet.address);
                     if (!safeAddr || safeAddr.toLowerCase() !== correctSafeAddr.toLowerCase()) {
                         safeAddr = correctSafeAddr;
@@ -286,7 +277,7 @@ app.post('/api/wallet/add-recovery', async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-// 3. Global Stats (No Change)
+// 3. Global Stats
 app.get('/api/stats/global', async (req, res) => {
     try {
         const userCount = await User.countDocuments();
@@ -383,7 +374,6 @@ app.post('/api/bot/start', async (req, res) => {
     }
     const normId = userId.toLowerCase();
     try {
-        // MUST explicitly select encrypted fields for the signer key and credentials
         const user = await User.findOne({ address: normId })
             .select('+tradingWallet.encryptedPrivateKey +tradingWallet.l2ApiCredentials.key +tradingWallet.l2ApiCredentials.secret +tradingWallet.l2ApiCredentials.passphrase');
         if (!user || !user.tradingWallet) {
@@ -435,7 +425,7 @@ app.post('/api/bot/stop', async (req, res) => {
     await User.updateOne({ address: normId }, { isBotRunning: false });
     res.json({ success: true, status: 'STOPPED' });
 });
-// 6b. Live Update Bot (NEW)
+// Live Update Bot
 app.post('/api/bot/update', async (req, res) => {
     const { userId, targets, multiplier, riskProfile, autoTp, autoCashout, notifications, maxTradeAmount } = req.body;
     if (!userId) {
@@ -496,7 +486,6 @@ app.get('/api/bot/status/:userId', async (req, res) => {
         const tradeHistory = await Trade.find({ userId: normId }).sort({ timestamp: -1 }).limit(50).lean();
         const user = await User.findOne({ address: normId }).lean();
         const dbLogs = await BotLog.find({ userId: normId }).sort({ timestamp: -1 }).limit(100).lean();
-        // PERSISTED RECENT OPPORTUNITIES FALLBACK
         const persistedMMOpps = await MoneyMarketOpportunity.find().sort({ timestamp: -1 }).limit(20).lean();
         const formattedLogs = dbLogs.map(l => ({
             id: l._id.toString(),
@@ -509,12 +498,11 @@ app.get('/api/bot/status/:userId', async (req, res) => {
             timestamp: t.timestamp.toISOString(),
             id: t._id.toString()
         }));
-        // LIVE FEED:
-        // Use active memory state if running, else DB state.
         let livePositions = [];
-        // FIX: Ensure persisted opportunities match the ArbitrageOpportunity interface expectations
+        // FIX: Added conditionId to satisfy ArbitrageOpportunity interface requirements
         let mmOpportunities = persistedMMOpps.map((o) => ({
             marketId: o.marketId,
+            conditionId: o.conditionId || o.marketId,
             tokenId: o.tokenId,
             question: o.question || '',
             bestBid: o.bestBid || 0,
@@ -525,22 +513,22 @@ app.get('/api/bot/status/:userId', async (req, res) => {
             midpoint: o.midpoint || 0,
             volume: o.volume || 0,
             liquidity: o.liquidity || 0,
+            isNew: o.isNew || false,
             timestamp: o.timestamp instanceof Date ? o.timestamp.getTime() : new Date(o.timestamp).getTime(),
             roi: o.roi || o.spreadPct || 0,
             combinedCost: o.combinedCost || (1 - (o.spread || 0)),
-            capacityUsd: o.capacityUsd || o.liquidity || 0
+            capacityUsd: o.capacityUsd || o.liquidity || 0,
+            status: o.status || 'active',
+            acceptingOrders: o.acceptingOrders !== false
         }));
         if (engine) {
-            // Priority: Active Engine Memory (which is synced from DB)
             livePositions = engine.getActivePositions() || [];
-            // Access arbitrage scanner from bot engine via public method
             const engineOpps = engine.getArbOpportunities() || [];
             if (engineOpps.length > 0) {
-                mmOpportunities = engineOpps; // Override with live ones if they exist
+                mmOpportunities = engineOpps;
             }
         }
         else if (user && user.activePositions) {
-            // Fallback: Database State
             livePositions = user.activePositions;
         }
         res.json({
@@ -550,13 +538,60 @@ app.get('/api/bot/status/:userId', async (req, res) => {
             positions: livePositions,
             stats: user?.stats || null,
             config: user?.activeBotConfig || null,
-            mmOpportunities: mmOpportunities // SYNC KEY NAME WITH index.tsx
+            mmOpportunities: mmOpportunities
         });
     }
     catch (e) {
         console.error("Status Error:", e);
         res.status(500).json({ error: 'DB Error' });
     }
+});
+// --- NEW MM SCANNER ENDPOINTS ---
+app.post('/api/bot/mm/add-market', async (req, res) => {
+    const { userId, conditionId, slug } = req.body;
+    const normId = userId.toLowerCase();
+    const engine = ACTIVE_BOTS.get(normId);
+    if (!engine)
+        return res.status(404).json({ error: "Engine offline" });
+    let success = false;
+    if (conditionId) {
+        success = await engine.addMarketToMM(conditionId);
+    }
+    else if (slug) {
+        success = await engine.addMarketBySlug(slug);
+    }
+    res.json({ success });
+});
+app.post('/api/bot/mm/bookmark', async (req, res) => {
+    const { userId, conditionId, action } = req.body;
+    const normId = userId.toLowerCase();
+    const engine = ACTIVE_BOTS.get(normId);
+    if (!engine)
+        return res.status(404).json({ error: "Engine offline" });
+    if (action === 'add') {
+        engine.bookmarkMarket(conditionId);
+    }
+    else {
+        engine.unbookmarkMarket(conditionId);
+    }
+    res.json({ success: true });
+});
+app.get('/api/bot/mm/bookmarks', async (req, res) => {
+    const { userId } = req.query;
+    const normId = userId.toLowerCase();
+    const engine = ACTIVE_BOTS.get(normId);
+    if (!engine)
+        return res.status(404).json({ error: "Engine offline" });
+    res.json({ success: true, bookmarks: engine.getBookmarkedOpportunities() });
+});
+app.get('/api/bot/mm/opportunities/:category', async (req, res) => {
+    const { userId } = req.query;
+    const { category } = req.params;
+    const normId = userId.toLowerCase();
+    const engine = ACTIVE_BOTS.get(normId);
+    if (!engine)
+        return res.status(404).json({ error: "Engine offline" });
+    res.json({ success: true, opportunities: engine.getOpportunitiesByCategory(category) });
 });
 // 8. Registry Routes
 app.get('/api/registry', async (req, res) => {
@@ -700,7 +735,6 @@ app.post('/api/wallet/withdraw', async (req, res) => {
         if (!safeAddr) {
             safeAddr = await SafeManagerService.computeAddress(walletConfig.address);
         }
-        // Calculate balances ONCE - available to both Safe and EOA paths
         let balanceToWithdraw = 0n;
         let eoaBalance = 0n;
         if (tokenType === 'POL') {
@@ -721,7 +755,6 @@ app.post('/api/wallet/withdraw', async (req, res) => {
                 const signer = await evmWalletService.getWalletInstance(walletConfig.encryptedPrivateKey);
                 const safeManager = new SafeManagerService(signer, ENV.builderApiKey, ENV.builderApiSecret, ENV.builderApiPassphrase, serverLogger, safeAddr);
                 if (tokenType === 'POL') {
-                    // Use Safe's on-chain withdrawal to move POL from Safe to user
                     const reserve = ethers.parseEther("0.05");
                     if (balanceToWithdraw > reserve) {
                         const amountStr = ethers.formatEther(balanceToWithdraw - reserve);
@@ -756,11 +789,9 @@ app.post('/api/wallet/withdraw', async (req, res) => {
             }
         }
         else if (isForceEoa) {
-            let tokenAddress = TOKENS.USDC_BRIDGED;
             const signer = await evmWalletService.getWalletInstance(walletConfig.encryptedPrivateKey);
             const safeManager = new SafeManagerService(signer, ENV.builderApiKey, ENV.builderApiSecret, ENV.builderApiPassphrase, serverLogger, safeAddr);
             if (tokenType === 'POL') {
-                // Use Safe's on-chain withdrawal to move POL from Safe to user
                 const reserve = ethers.parseEther("0.05");
                 if (balanceToWithdraw > reserve) {
                     const amountStr = ethers.formatEther(balanceToWithdraw - reserve);
@@ -777,62 +808,11 @@ app.post('/api/wallet/withdraw', async (req, res) => {
         res.json({ success: true, txHash });
     }
     catch (e) {
-        console.error('=== WITHDRAWAL ERROR DEBUG ===');
-        console.error('Error type:', typeof e);
-        console.error('Error name:', e?.name);
-        console.error('Error message:', e?.message);
-        console.error('Error stack:', e?.stack);
-        console.error('Error details:', JSON.stringify(e, null, 2));
-        console.error('Request body:', { userId, tokenType, toAddress, forceEoa, targetSafeAddress });
-        console.error('=== END DEBUG ===');
-        // User-friendly error messages
-        let userMessage = 'Withdrawal failed. Please try again.';
-        if (e?.code === 'INSUFFICIENT_FUNDS') {
-            userMessage = 'Insufficient funds for withdrawal. Please ensure you have enough POL for gas fees.';
-        }
-        else if (e?.message?.includes('insufficient funds')) {
-            userMessage = 'Insufficient funds for withdrawal. Please ensure you have enough POL for gas fees.';
-        }
-        else if (e?.message?.includes('RelayerError')) {
-            userMessage = 'Withdrawal service temporarily unavailable. Please try again in a few minutes.';
-        }
-        else if (e?.message?.includes('invalid signature')) {
-            userMessage = 'Withdrawal signature validation failed. Please try again.';
-        }
-        else if (e?.message?.includes('nonce too low')) {
-            userMessage = 'Transaction conflict detected. Please try again.';
-        }
-        else if (e?.message?.includes('gas')) {
-            userMessage = 'Gas estimation failed. Please try again.';
-        }
-        else if (e?.message) {
-            userMessage = e?.message;
-        }
         res.status(500).json({
             error: e?.message || 'Withdrawal failed',
             type: e?.name || 'Unknown',
             details: e?.stack || 'No stack trace available'
         });
-    }
-});
-app.post('/api/wallet/add-recovery', async (req, res) => {
-    const { userId } = req.body;
-    const normId = userId.toLowerCase();
-    try {
-        // MUST explicitly select encrypted field
-        const user = await User.findOne({ address: normId }).select('+tradingWallet.encryptedPrivateKey');
-        if (!user || !user.tradingWallet || !user.tradingWallet.encryptedPrivateKey)
-            throw new Error("Wallet not configured");
-        const signer = await evmWalletService.getWalletInstance(user.tradingWallet.encryptedPrivateKey);
-        const safeAddr = user.tradingWallet.safeAddress || await SafeManagerService.computeAddress(user.tradingWallet.address);
-        const safeManager = new SafeManagerService(signer, ENV.builderApiKey, ENV.builderApiSecret, ENV.builderApiPassphrase, serverLogger, safeAddr);
-        const txHash = await safeManager.addOwner(normId);
-        user.tradingWallet.recoveryOwnerAdded = true;
-        await user.save();
-        res.json({ success: true, txHash });
-    }
-    catch (e) {
-        res.status(500).json({ error: e.message });
     }
 });
 app.post('/api/bot/execute-arb', async (req, res) => {
@@ -883,7 +863,6 @@ app.get('/api/orders/open', async (req, res) => {
         const engine = ACTIVE_BOTS.get(normId);
         if (!engine)
             return res.status(404).json({ error: 'Bot not running' });
-        // Get open orders from adapter
         const adapter = engine.getAdapter();
         if (!adapter)
             return res.status(500).json({ error: 'Adapter not initialized' });
@@ -934,13 +913,11 @@ app.post('/api/redeem', async (req, res) => {
         const adapter = engine.getAdapter();
         if (!adapter)
             return res.status(500).json({ error: 'Adapter not initialized' });
-        // Get the position to find the tokenId and calculate PnL
         const positions = await adapter.getPositions(adapter.getFunderAddress());
         const position = positions.find(p => p.marketId === marketId && p.outcome === outcome);
         if (!position) {
             return res.status(404).json({ error: 'Position not found' });
         }
-        // Call the actual redeem method
         const result = await adapter.redeemPosition(marketId, position.tokenId);
         if (result.success) {
             const costBasis = position.investedValue || (position.balance * position.entryPrice);
@@ -954,7 +931,6 @@ app.post('/api/redeem', async (req, res) => {
                     pnl: realizedPnl
                 });
             }
-            // Remove from active positions
             const positionIndex = activePositions.findIndex(p => p.marketId === marketId && p.outcome === outcome);
             if (positionIndex !== -1) {
                 activePositions.splice(positionIndex, 1);
@@ -963,7 +939,6 @@ app.post('/api/redeem', async (req, res) => {
                     await callbacks.onPositionsUpdate(activePositions);
                 }
             }
-            // Trigger callbacks
             const callbacks = engine.getCallbacks();
             if (callbacks?.onTradeComplete && activePosition) {
                 await callbacks.onTradeComplete({
@@ -997,27 +972,10 @@ app.post('/api/redeem', async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-app.post('/api/feedback', async (req, res) => {
-    const { userId, rating, comment } = req.body;
-    try {
-        await Feedback.create({
-            userId: userId?.toLowerCase() || "anonymous",
-            rating: Number(rating),
-            comment,
-            timestamp: new Date()
-        });
-        res.json({ success: true });
-    }
-    catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-// GET /api/market/:marketId
 app.get('/api/market/:marketId', async (req, res) => {
     const { marketId } = req.params;
     serverLogger.info(`[API-MARKET] Checking market data for: ${marketId}`);
     try {
-        // Find a running bot to get the market data
         const engines = Array.from(ACTIVE_BOTS.values());
         if (engines.length === 0) {
             return res.status(404).json({ error: 'No active bot found' });
@@ -1035,13 +993,6 @@ app.get('/api/market/:marketId', async (req, res) => {
         if (!market) {
             serverLogger.warn(`[API-MARKET] 404: Market ${marketId} not found in CLOB.`);
             return res.status(404).json({ error: 'Market not found' });
-        }
-        // CRITICAL DEBUG LOG FOR SLIPLANE
-        serverLogger.info(`[API-MARKET] Data: closed=${market.closed}, active=${market.active}, status=${market.status}`);
-        if (market.tokens) {
-            market.tokens.forEach((t) => {
-                serverLogger.info(`   - Outcome: ${t.outcome}, Winner: ${t.winner}`);
-            });
         }
         res.json(market);
     }
@@ -1067,14 +1018,12 @@ app.get('*', (req, res) => {
 async function restoreBots() {
     console.log("🔄 Restoring Active Bots from Database...");
     try {
-        // MUST explicitly select encrypted private keys for restoration
         const activeUsers = await User.find({ isBotRunning: true, "tradingWallet.address": { $exists: true } })
             .select('+tradingWallet.encryptedPrivateKey +tradingWallet.l2ApiCredentials.key +tradingWallet.l2ApiCredentials.secret +tradingWallet.l2ApiCredentials.passphrase');
         console.log(`Found ${activeUsers.length} bots to restore.`);
         for (const user of activeUsers) {
             if (user.activeBotConfig && user.tradingWallet) {
                 const normId = user.address.toLowerCase();
-                // ALIGNMENT CHECK
                 const correctSafeAddr = await SafeManagerService.computeAddress(user.tradingWallet.address);
                 if (user.tradingWallet.safeAddress !== correctSafeAddr) {
                     console.log(`[RESTORE] Aligning mismatched safe for ${normId}`);

@@ -462,6 +462,15 @@ export class BotEngine {
                 }
             });
 
+            // 5. Re-quote on price movement
+            this.arbScanner.on('tickSizeChange', async (data) => {
+                const opps = this.arbScanner?.getOpportunities();
+                const target = opps?.find(o => o.tokenId === data.tokenId);
+                if (target && this.config.enableAutoArb) {
+                    await this.executeMarketMaking(target);
+                }
+            });
+
             const isFunded = await this.checkFunding();
             if (!isFunded) {
                 await this.addLog('warn', 'Safe Empty. Engine standby. Waiting for deposit (Min 1.00)...');
@@ -504,14 +513,58 @@ export class BotEngine {
         }
     }
 
+    /**
+     * Direct dispatch for manual Market Making via UI button.
+     * Robustly searches opportunities and forces GTC maker lane.
+     */
     public async dispatchManualMM(marketId: string): Promise<boolean> {
-        const opps = this.arbScanner?.getOpportunities();
-        const target = opps?.find(o => o.conditionId === marketId);
+        if (!this.executor) return false;
+        
+        const opps = this.arbScanner?.getOpportunities() || [];
+        // Support searching by both conditionId and tokenId for UI resilience
+        let target = opps.find(o => o.conditionId === marketId || o.tokenId === marketId);
+        
+        if (!target) {
+            this.addLog('info', `🔍 Fetching direct data for MM Strategy: ${marketId}`);
+            try {
+                // If not in scanner, try to find in current tracking
+                const tracked = this.arbScanner?.getTrackedMarket(marketId);
+                if (tracked) {
+                    // Create synthetic opportunity for immediate execution
+                    target = {
+                        marketId: tracked.conditionId,
+                        conditionId: tracked.conditionId,
+                        tokenId: tracked.tokenId,
+                        question: tracked.question,
+                        image: tracked.image,
+                        bestBid: tracked.bestBid,
+                        bestAsk: tracked.bestAsk,
+                        spread: tracked.spread,
+                        spreadPct: (tracked.spread / (tracked.bestBid + 0.005)) * 100,
+                        spreadCents: tracked.spread * 100,
+                        midpoint: (tracked.bestBid + tracked.bestAsk) / 2,
+                        volume: tracked.volume,
+                        liquidity: tracked.liquidity,
+                        isNew: tracked.isNew,
+                        timestamp: Date.now(),
+                        roi: 1.0,
+                        combinedCost: 1.0,
+                        capacityUsd: tracked.liquidity,
+                        status: tracked.status,
+                        acceptingOrders: tracked.acceptingOrders
+                    };
+                }
+            } catch (e) {}
+        }
+
         if (target) {
+            this.addLog('info', `🚀 FORCING MAKER PATH (GTC): ${target.question.slice(0, 30)}...`);
             await this.executeMarketMaking(target);
             return true;
+        } else {
+            this.addLog('warn', `❌ Market Maker Strategy rejected: Market ${marketId} not currently tradeable as maker.`);
+            return false;
         }
-        return false;
     }
 
     private async checkFunding(): Promise<boolean> {
@@ -642,6 +695,13 @@ export class BotEngine {
             userAddresses: this.config.userAddresses,
             onDetectedTrade: async (signal: TradeSignal) => {
                 if (!this.isRunning) return;
+
+                // --- MM EXCLUSION ZONE ---
+                const isManagedByMM = this.arbScanner?.getOpportunities().some(o => o.tokenId === signal.tokenId);
+                if (isManagedByMM && this.config.enableAutoArb) {
+                    this.addLog('info', `🛡️ Signal Skipped: Market ${signal.marketId.slice(0,8)} is managed by MM Strategy.`);
+                    return;
+                }
 
                 if (signal.side === 'SELL') {
                     const hasPosition = this.activePositions.some(p => 
@@ -817,18 +877,62 @@ export class BotEngine {
         return this.activePositions;
     }
 
-    
     public getArbOpportunities(): ArbitrageOpportunity[] { 
-        return this.arbScanner?.getOpportunities().map(o => ({
-            ...o,
-            marketId: o.conditionId,
-            roi: o.spreadPct,
-            combinedCost: 1 - o.spread,
-            capacityUsd: o.liquidity || 0
-        } as ArbitrageOpportunity)) || []; 
+        return this.arbScanner?.getOpportunities() || []; 
     }
 
     public getCallbacks(): BotCallbacks | undefined {
         return this.callbacks;
+    }
+
+    /**
+     * Manually add a market to MM scanner by condition ID
+     */
+    public async addMarketToMM(conditionId: string): Promise<boolean> {
+        if (!this.arbScanner) {
+            this.addLog('warn', 'MM Scanner not initialized');
+            return false;
+        }
+        return this.arbScanner.addMarketByConditionId(conditionId);
+    }
+
+    /**
+     * Manually add a market to MM scanner by slug
+     */
+    public async addMarketBySlug(slug: string): Promise<boolean> {
+        if (!this.arbScanner) {
+            this.addLog('warn', 'MM Scanner not initialized');
+            return false;
+        }
+        return this.arbScanner.addMarketBySlug(slug);
+    }
+
+    /**
+     * Bookmark a market for priority tracking
+     */
+    public bookmarkMarket(conditionId: string): void {
+        this.arbScanner?.bookmarkMarket(conditionId);
+    }
+
+    /**
+     * Remove bookmark a market
+     */
+    public unbookmarkMarket(conditionId: string): void {
+        this.arbScanner?.unbookmarkMarket(conditionId);
+    }
+
+    /**
+     * Get bookmarked opportunities
+     */
+    public getBookmarkedOpportunities(): ArbitrageOpportunity[] {
+        return this.arbScanner?.getBookmarkedOpportunities() || [];
+    }
+
+    /**
+     * Get opportunities by category
+     */
+    public getOpportunitiesByCategory(category: string): ArbitrageOpportunity[] {
+        return this.arbScanner?.getOpportunities()
+            .filter(o => o.category === category) || [];
     }
 }

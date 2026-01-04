@@ -42,7 +42,6 @@ export class PolymarketAdapter {
         else {
             throw new Error("Missing Encrypted Private Key for Trading Wallet");
         }
-        // Derive deterministic address aligned with Polymarket SDK logic
         const sdkAlignedAddress = await SafeManagerService.computeAddress(this.config.walletConfig.address);
         this.safeAddress = sdkAlignedAddress;
         this.safeManager = new SafeManagerService(this.wallet, this.config.builderApiKey, this.config.builderApiSecret, this.config.builderApiPassphrase, this.logger, this.safeAddress);
@@ -60,7 +59,6 @@ export class PolymarketAdapter {
     async authenticate() {
         if (!this.wallet || !this.safeManager || !this.safeAddress)
             throw new Error("Adapter not initialized");
-        // Ensure Safe is deployed and permissions (USDC/CTF) are set gaslessly
         await this.safeManager.deploySafe();
         await this.safeManager.enableApprovals();
         let apiCreds = this.config.l2ApiCredentials;
@@ -346,42 +344,39 @@ export class PolymarketAdapter {
                 if (params.priceLimit !== undefined && params.priceLimit < rawPrice)
                     rawPrice = params.priceLimit;
             }
-            // Round price to tick size
             const inverseTick = Math.round(1 / tickSize);
             const roundedPrice = side === Side.BUY
                 ? Math.ceil(rawPrice * inverseTick) / inverseTick
                 : Math.floor(rawPrice * inverseTick) / inverseTick;
-            // FIX: Round price to 2 decimal places max
-            const finalPrice = Math.max(0.01, Math.min(0.99, Math.round(roundedPrice * 100) / 100));
-            // Calculate shares
+            const finalPrice = Math.max(0.001, Math.min(0.999, roundedPrice));
             let shares = params.sizeShares || (params.side === 'BUY'
                 ? Math.ceil(params.sizeUsd / finalPrice)
                 : Math.floor(params.sizeUsd / finalPrice));
-            // Ensure minimum $1 order for buys
             if (params.side === 'BUY' && (shares * finalPrice) < 1.00) {
                 shares = Math.ceil(1.00 / finalPrice);
             }
-            // FIX: Round shares to integer (no decimals for taker amount)
-            shares = Math.floor(shares);
             if (shares < minOrderSize) {
                 return { success: false, error: "BELOW_MIN_SIZE", sharesFilled: 0, priceFilled: 0 };
             }
-            // FIX: Ensure size is an integer
             const signedOrder = await this.client.createOrder({
                 tokenID: params.tokenId,
                 price: finalPrice,
                 side: side,
-                size: shares, // Must be integer
+                size: Math.floor(shares),
                 feeRateBps: 0,
                 taker: "0x0000000000000000000000000000000000000000"
             });
-            // Order type selection
-            let orderType = OrderType.FOK;
+            // CRITICAL: Respect orderType parameter for GTC (Maker) support
+            let orderType = OrderType.FOK; // Default to FOK for Safety (Taker)
             if (params.orderType === 'GTC') {
                 orderType = OrderType.GTC;
+                this.logger.info(`🚀 [MAKER] Posting GTC Order for ${params.tokenId} @ ${finalPrice}`);
+            }
+            else if (params.orderType === 'FAK') {
+                orderType = OrderType.FAK;
             }
             else if (side === Side.SELL) {
-                orderType = OrderType.FAK;
+                orderType = OrderType.FAK; // Use FAK for sells to allow partial fills
             }
             const res = await this.client.postOrder(signedOrder, orderType);
             if (res && res.success) {

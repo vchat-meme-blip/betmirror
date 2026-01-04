@@ -202,6 +202,8 @@ async function main(): Promise<void> {
         }
       },
       cancelOrder: async () => true,
+      // Added missing getFunderAddress method to match IExchangeAdapter interface
+      getFunderAddress: () => client.wallet.address,
       cashout: async () => "",
       redeemPosition: async (marketId: string, tokenId: string) => {
           // Mock implementation for headless mode - not actually supported

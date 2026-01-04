@@ -227,7 +227,7 @@ export class TradeExecutorService {
 
   /**
    * Place a GTC limit order (required for liquidity rewards)
-   * Per docs: createAndPostOrder with OrderType.GTC
+   * Refactored to use adapter.createOrder for Safe/Relayer/Attribution support
    */
   private async placeGTCOrder(params: {
       tokenId: string;
@@ -239,36 +239,26 @@ export class TradeExecutorService {
       tickSize: string;
   }): Promise<{ success: boolean; orderId?: string; error?: string }> {
       const { adapter } = this.deps;
-      const client = (adapter as any).getRawClient?.();
       
-      if (!client) {
-          return { success: false, error: 'No CLOB client available' };
-      }
-
       try {
-          // Round price to tick size
           const tickSize = parseFloat(params.tickSize) || 0.01;
           const roundedPrice = Math.round(params.price / tickSize) * tickSize;
 
-          // Per docs: createAndPostOrder with GTC type
-          const response = await client.createAndPostOrder(
-              {
-                  tokenID: params.tokenId,
-                  price: roundedPrice,
-                  size: params.size,
-                  side: params.side === 'BUY' ? 0 : 1, // 0 = BUY, 1 = SELL per docs
-              },
-              {
-                  tickSize: params.tickSize,
-                  negRisk: params.negRisk
-              },
-              'GTC' // Good Till Cancelled - required for rewards
-          );
+          const response = await adapter.createOrder({
+              marketId: params.conditionId,
+              tokenId: params.tokenId,
+              outcome: params.side === 'BUY' ? 'YES' : 'NO', // Outcome used for metadata
+              side: params.side,
+              sizeUsd: roundedPrice * params.size,
+              sizeShares: params.size,
+              priceLimit: roundedPrice,
+              orderType: 'GTC' // CRITICAL: This flag forces the maker lane in adapter
+          });
 
           if (response.success) {
-              return { success: true, orderId: response.orderID };
+              return { success: true, orderId: response.orderId };
           } else {
-              return { success: false, error: response.errorMsg || 'Order rejected' };
+              return { success: false, error: response.error || 'Order rejected' };
           }
       } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
@@ -280,7 +270,7 @@ export class TradeExecutorService {
    * Cancel existing quotes for a token before placing new ones
    * Per docs: cancelMarketOrders with asset_id
    */
-  private async cancelExistingQuotes(tokenId: string): Promise<void> {
+  public async cancelExistingQuotes(tokenId: string): Promise<void> {
       const { adapter, logger } = this.deps;
       const client = (adapter as any).getRawClient?.();
       
@@ -770,8 +760,10 @@ export class TradeExecutorService {
 
       logger.info(`[Sizing] Whale: $${traderBalance.toFixed(0)} | Signal: $${signal.sizeUsd.toFixed(0)} (${signal.side}) | Target: $${sizing.targetUsdSize.toFixed(2)} (${sizing.targetShares} shares) | Reason: ${sizing.reason}`);
 
-      if (signal.side === 'BUY' && adapter.getSigner && adapter.getSigner().safeManager) {
-          const safeManager = adapter.getSigner().safeManager;
+      // FIX: Access safeManager from adapter via any-casting to bypass IExchangeAdapter interface restrictions and access internal Safe implementation details
+      const anyAdapter = adapter as any;
+      if (signal.side === 'BUY' && anyAdapter.safeManager) {
+          const safeManager = anyAdapter.safeManager;
           const requiredAmount = BigInt(Math.ceil(sizing.targetUsdSize * 1e6));
           const spender = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
           
